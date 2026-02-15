@@ -1,0 +1,49 @@
+{
+  "step1_analysis_first": "success",
+  "step2_recommendation_added": "success",
+  "screenshots": [
+    "C:\\Workspace\\Daeng\\Git\\Project\\trip-time-service\\ui_verification_screenshots\\01_analysis_and_progress.png",
+    "C:\\Workspace\\Daeng\\Git\\Project\\trip-time-service\\ui_verification_screenshots\\02_analysis_and_recommendation.png",
+    "C:\\Workspace\\Daeng\\Git\\Project\\trip-time-service\\ui_verification_screenshots\\03_candidate_tooltip_hover.png"
+  ],
+  "screenshot_1_ok": true,
+  "screenshot_2_ok": true,
+  "screenshot_3_ok": true,
+  "observed_text": {
+    "page_title": "Trip Time Service",
+    "datetime_set": "2026-02-17T22:00",
+    "analysis_card": "출발 시각 분석",
+    "progress_card": "추천 출발 시각 계산 중",
+    "tight_tag": "기준",
+    "safe_tag": "안정적",
+    "safe_multiplier": "x1.25",
+    "recommendation_card": "추천 출발 시각"
+  },
+  "tooltip_check": {
+    "status": "success",
+    "overflow_left_px": 0.0,
+    "overflow_right_px": 0.0,
+    "datetime_pattern_ok": true,
+    "hover_persist_ok": true,
+    "header_scrolls_ok": true,
+    "order_ascending_ok": true,
+    "rows_preview": [
+      "조회 후보 상세 (21건)",
+      "2026-02-17 22:00 -> 2026-02-17 22:21",
+      "2026-02-17 23:00 -> 2026-02-17 23:20",
+      "2026-02-17 23:10 -> 2026-02-17 23:31",
+      "2026-02-17 23:20 -> 2026-02-17 23:41",
+      "2026-02-17 23:30 -> 2026-02-17 23:51"
+    ],
+    "sidebar_width_px": 400.0,
+    "panel_width_px": 360.0,
+    "panel_left_style": "32px",
+    "panel_transform": "matrix(1, 0, 0, 1, 0, 0)",
+    "header_before_top": 447,
+    "header_after_top": 307,
+    "header_moved_px": 140.0,
+    "panel_scroll_top": 140,
+    "panel_max_scroll": 1554
+  },
+  "errors": []
+}

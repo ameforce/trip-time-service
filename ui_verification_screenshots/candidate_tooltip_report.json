@@ -1,0 +1,12 @@
+{
+  "tooltip_visible": false,
+  "overflow_left_px": null,
+  "overflow_right_px": null,
+  "datetime_pattern_ok": false,
+  "screenshot": "C:\\Workspace\\Daeng\\Git\\Project\\trip-time-service\\ui_verification_screenshots\\03_candidate_tooltip_hover.png",
+  "screenshot_ok": false,
+  "rows_preview": [],
+  "errors": [
+    "HTTPConnectionPool(host='localhost', port=1622): Read timed out. (read timeout=120)"
+  ]
+}
