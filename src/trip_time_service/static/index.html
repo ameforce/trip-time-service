@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trip Time Service</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+
+  <!-- ── Sidebar ───────────────────────────────────────── -->
+  <aside id="sidebar" class="sidebar">
+    <header class="sidebar-header">
+      <h1 class="logo">
+        <span class="logo-icon">&#128663;</span>
+        Trip Time
+      </h1>
+      <p class="subtitle">네이버 지도 기반 소요시간 분석</p>
+    </header>
+
+    <!-- Favorites (자주 가는 곳) -->
+    <section id="favorites-section" class="favorites-section hidden">
+      <div class="section-header">
+        <span class="section-title">⭐ 자주 가는 곳</span>
+        <button id="favorites-toggle" class="section-toggle" type="button">관리</button>
+      </div>
+      <div id="favorites-list" class="favorites-list"></div>
+      <div id="favorites-add-form" class="favorites-add-form hidden">
+        <input id="fav-name" type="text" placeholder="별칭 (예: 회사)" maxlength="20">
+        <input id="fav-address" type="text" placeholder="주소 (예: 판교역로 230)" maxlength="100">
+        <button id="fav-add-btn" class="fav-add-btn" type="button">추가</button>
+      </div>
+    </section>
+
+    <!-- Route inputs -->
+    <section class="route-section">
+      <div class="input-group">
+        <label for="origin">출발지</label>
+        <div class="input-wrap">
+          <svg class="input-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="#03C75A"/><circle cx="12" cy="12" r="8" fill="none" stroke="#03C75A" stroke-width="2"/></svg>
+          <input id="origin" type="text" placeholder="예: 강남역" autocomplete="off">
+          <div id="origin-ac" class="ac-dropdown hidden"></div>
+        </div>
+      </div>
+
+      <button id="swap-btn" class="swap-btn" type="button" title="출발지 ↔ 도착지 교환">
+        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M7.5 3.5L3 8l4.5 4.5M3 8h13M16.5 20.5L21 16l-4.5-4.5M21 16H8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+
+      <div class="input-group">
+        <label for="destination">도착지</label>
+        <div class="input-wrap">
+          <svg class="input-icon" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" fill="#E53935"/><circle cx="12" cy="9" r="2.5" fill="#fff"/></svg>
+          <input id="destination" type="text" placeholder="예: 판교역" autocomplete="off">
+          <div id="dest-ac" class="ac-dropdown hidden"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Recent searches (최근 검색) -->
+    <section id="recent-section" class="recent-section hidden">
+      <div class="section-header">
+        <span class="section-title">🕑 최근 검색</span>
+        <button id="recent-clear" class="section-toggle" type="button">전체 삭제</button>
+      </div>
+      <div id="recent-list" class="recent-list"></div>
+    </section>
+
+    <!-- Mode selector -->
+    <section class="mode-section">
+      <div class="mode-tabs" role="tablist">
+        <button id="tab-arrival" class="mode-tab active" role="tab" aria-selected="true" data-mode="arrival">
+          출발 시각 기준
+        </button>
+        <button id="tab-departure" class="mode-tab" role="tab" aria-selected="false" data-mode="departure">
+          도착 시각 기준
+        </button>
+      </div>
+    </section>
+
+    <!-- DateTime input -->
+    <section class="datetime-section">
+      <label id="datetime-label" for="datetime-input">출발 시각</label>
+      <div id="datetime-picker" class="datetime-picker">
+        <div class="datetime-input-wrap">
+          <input
+            id="datetime-input"
+            type="datetime-local"
+            inputmode="numeric"
+            autocomplete="off"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            step="60"
+          >
+          <button id="datetime-toggle" class="datetime-toggle" type="button" aria-label="날짜/시간 선택기 열기">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path
+                d="M7 2v3M17 2v3M3 9h18M5 5h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
+          <div id="datetime-input-tooltip" class="datetime-input-tooltip hidden" role="status" aria-live="polite"></div>
+        </div>
+        <div id="datetime-panel" class="datetime-panel hidden" role="dialog" aria-modal="false" aria-label="날짜와 시간 선택">
+          <div class="datetime-panel-calendar">
+            <div class="datetime-ymd-inputs">
+              <input id="datetime-year" type="text" inputmode="numeric" maxlength="4" aria-label="년">
+              <span>년</span>
+              <input id="datetime-month" type="text" inputmode="numeric" maxlength="2" aria-label="월">
+              <span>월</span>
+              <input id="datetime-day" type="text" inputmode="numeric" maxlength="2" aria-label="일">
+              <span>일</span>
+            </div>
+            <div class="datetime-calendar-header">
+              <button id="datetime-prev-month" class="datetime-nav-btn" type="button" aria-label="이전 달">&#8592;</button>
+              <div id="datetime-calendar-title" class="datetime-calendar-title"></div>
+              <button id="datetime-next-month" class="datetime-nav-btn" type="button" aria-label="다음 달">&#8594;</button>
+            </div>
+            <div class="datetime-weekdays">
+              <span>일</span>
+              <span>월</span>
+              <span>화</span>
+              <span>수</span>
+              <span>목</span>
+              <span>금</span>
+              <span>토</span>
+            </div>
+            <div id="datetime-calendar-days" class="datetime-calendar-days"></div>
+          </div>
+          <div class="datetime-panel-time">
+            <div class="datetime-time-col datetime-period-col">
+              <span class="datetime-time-title">구분</span>
+              <select id="datetime-period" aria-label="오전 오후 선택">
+                <option value="am">오전</option>
+                <option value="pm">오후</option>
+              </select>
+            </div>
+            <div class="datetime-time-col">
+              <span class="datetime-time-title">시간</span>
+              <select id="datetime-hour" aria-label="시간 선택"></select>
+            </div>
+            <div class="datetime-time-col">
+              <span class="datetime-time-title">분</span>
+              <select id="datetime-minute" aria-label="분 선택"></select>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Search button -->
+    <button id="search-btn" class="search-btn" type="button">
+      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 21l-4.35-4.35M10 18a8 8 0 110-16 8 8 0 010 16z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      검색
+    </button>
+
+    <!-- Results -->
+    <section id="results" class="results-section hidden">
+      <!-- dynamically populated -->
+    </section>
+
+    <!-- Error -->
+    <section id="error-box" class="error-box hidden">
+      <p id="error-msg"></p>
+    </section>
+
+    <!-- Loading overlay -->
+    <div id="loading" class="loading hidden">
+      <div class="spinner"></div>
+      <p>경로를 분석하고 있습니다…</p>
+    </div>
+
+  </aside>
+
+  <!-- ── Map ───────────────────────────────────────────── -->
+  <main id="map-container" class="map-container">
+    <div id="map" class="map"></div>
+    <div id="map-placeholder" class="map-placeholder">
+      <div class="map-placeholder-inner">
+        <svg viewBox="0 0 24 24" width="48" height="48"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1112 6.5a2.5 2.5 0 010 5z" fill="#adb5bd"/></svg>
+        <p>지도를 불러오는 중…</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- Mobile toggle -->
+  <button id="mobile-toggle" class="mobile-toggle" type="button" aria-label="사이드바 열기/닫기">
+    <svg viewBox="0 0 24 24" width="24" height="24"><path d="M3 12h18M3 6h18M3 18h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  </button>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
