@@ -126,6 +126,63 @@ function formatArrivalDelta(recommendedArrivalIso, baselineArrivalIso) {
   return diffSeconds < 0 ? diffText + " 빠름" : diffText + " 늦음";
 }
 
+function escapeHtml(value) {
+  var source = value == null ? "" : String(value);
+  return source
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatUtcOffset(offsetMinutes) {
+  var sign = offsetMinutes >= 0 ? "+" : "-";
+  var abs = Math.abs(offsetMinutes);
+  var hours = String(Math.floor(abs / 60)).padStart(2, "0");
+  var minutes = String(abs % 60).padStart(2, "0");
+  return sign + hours + ":" + minutes;
+}
+
+function resolveTimezoneOffsetMinutes(dateObj) {
+  var timezone = _config && _config.timezone ? _config.timezone : null;
+  if (timezone && typeof Intl !== "undefined" && Intl.DateTimeFormat) {
+    try {
+      var formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        timeZoneName: "shortOffset",
+      });
+      var parts = formatter.formatToParts(dateObj);
+      var zonePart = "";
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i].type === "timeZoneName") {
+          zonePart = parts[i].value || "";
+          break;
+        }
+      }
+      var match = zonePart.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/i);
+      if (match) {
+        var sign = match[1] === "-" ? -1 : 1;
+        var hours = parseInt(match[2], 10) || 0;
+        var minutes = parseInt(match[3] || "0", 10) || 0;
+        return sign * (hours * 60 + minutes);
+      }
+    } catch (_) {
+      // fallback below
+    }
+  }
+  return -dateObj.getTimezoneOffset();
+}
+
+function toApiDatetimeString(localDatetimeValue) {
+  var parsed = parseLocalIsoMinutes(localDatetimeValue);
+  if (!parsed) {
+    return null;
+  }
+  var offsetMinutes = resolveTimezoneOffsetMinutes(parsed);
+  return localDatetimeValue + ":00" + formatUtcOffset(offsetMinutes);
+}
+
 function setProviderName(provider) {
   if (!$providerBadge && !$providerWarning) {
     return;
@@ -1171,12 +1228,15 @@ function renderACDropdown($dropdown, items, onSelect) {
   var html = "";
   for (var i = 0; i < items.length; i++) {
     var it = items[i];
-    var typeBadge = it.type ? '<span class="ac-item-type">' + it.type + '</span>' : '';
+    var safeType = escapeHtml(it.type || "");
+    var safeDisplayName = escapeHtml(it.display_name || it.address || "");
+    var safeAddress = escapeHtml(it.address || "");
+    var typeBadge = safeType ? '<span class="ac-item-type">' + safeType + "</span>" : "";
     html +=
       '<div class="ac-item" data-idx="' + i + '">' +
-      '  <div class="ac-item-name">' + (it.display_name || it.address || "") + typeBadge + '</div>' +
-      '  <div class="ac-item-addr">' + (it.address || "") + '</div>' +
-      '</div>';
+      '  <div class="ac-item-name">' + safeDisplayName + typeBadge + "</div>" +
+      '  <div class="ac-item-addr">' + safeAddress + "</div>" +
+      "</div>";
   }
   $dropdown.innerHTML = html;
   $dropdown.classList.remove("hidden");
@@ -1532,28 +1592,38 @@ var _RENDER_CONTEXT_BY_MODE = {
     baselineHint: "입력한 출발 시각 결과를 먼저 표시",
     desiredLabel: "지정 출발시 예상 도착 시간",
     analysisTitle: "출발 시각 분석",
+    analysisDirectionLabel: "전방향 탐색",
     tightTag: "타이트",
     tightLabel: "기준 출발",
     safeLabel: "여유 도착 (출발 고정 &times;1.25)",
     calcBaseDurationLabel: "기준 소요시간",
     calcFormulaText: "기준출발 + 보정소요 = 여유 도착시각",
+    baselineDepartureLabel: "지정 출발 시간",
+    arrivalDeltaLabel: "지정 출발 대비 도착 시간 차이",
+    candidatePassText: "지정 출발보다 빠름",
+    candidateFailText: "지정 출발보다 느림",
     statusPass: '<span class="result-badge badge-success">&#10003; 지정 출발 소요 시간보다 빠름</span>',
     statusFail: '<span class="result-badge badge-danger">&#9888; 지정 출발 소요 시간보다 느림</span>',
   },
   departure: {
     mode: "departure",
-    baselineTitle: "단일 조회(현재 출발 기준)",
+    baselineTitle: "참고 단일 조회(현재 시각 출발 기준)",
     baselineDurationLabel: "현재 출발 기준 소요시간",
     pendingTitle: "추천 출발 시각 계산 중",
-    pendingCopy: "단일 조회 결과를 먼저 보여주고, 추천 결과가 준비되면 자동으로 갱신합니다.",
-    baselineHint: "추천 계산 중에도 먼저 표시",
+    pendingCopy: "참고용 단일 조회(현재 시각 출발 기준)를 먼저 보여주고, 추천 결과가 준비되면 자동으로 갱신합니다.",
+    baselineHint: "참고용: 현재 시각 출발 기준 단일 조회",
     desiredLabel: "희망 도착",
     analysisTitle: "마지노선 분석",
+    analysisDirectionLabel: "역방향 탐색",
     tightTag: "타이트",
     tightLabel: "마지노선 출발",
     safeLabel: "여유 출발 (&times;1.25)",
     calcBaseDurationLabel: "마지노선 기준 소요시간",
     calcFormulaText: "희망도착 - 보정소요 = 안정적 출발시각",
+    baselineDepartureLabel: "참고 출발 시간(현재 기준)",
+    arrivalDeltaLabel: "희망 도착 대비 도착 시간 차이",
+    candidatePassText: "정시 도착 가능",
+    candidateFailText: "정시 도착 불가",
     statusPass: '<span class="result-badge badge-success">&#10003; 정시 도착 가능</span>',
     statusFail: '<span class="result-badge badge-danger">&#9888; 정시 도착 불가</span>',
   },
@@ -1587,7 +1657,8 @@ function buildCandidateScoreRow(label, score) {
   );
 }
 
-function buildCandidateTooltip(candidates) {
+function buildCandidateTooltip(candidates, context) {
+  var ctx = context || _renderContext("departure");
   var items = candidates || [];
   var sorted = items.slice().sort(function (a, b) {
     return new Date(a.departure_time).getTime() - new Date(b.departure_time).getTime();
@@ -1603,8 +1674,8 @@ function buildCandidateTooltip(candidates) {
   for (var i = 0; i < sorted.length; i++) {
     var item = sorted[i];
     var resultText = item.meets_deadline
-      ? "지정 출발보다 빠름"
-      : "지정 출발보다 느림";
+      ? ctx.candidatePassText
+      : ctx.candidateFailText;
     var statusClass = item.meets_deadline
       ? "status-pass"
       : "status-fail";
@@ -1943,7 +2014,9 @@ function buildAnalysisCard(data, context, options) {
     : (
       '<div class="calc-explain-row"><span class="label">분석 후보 수</span><span class="val">' +
       candidateCount +
-      '개 (역방향 탐색)</span></div>'
+      "개 (" +
+      ctx.analysisDirectionLabel +
+      ")</span></div>"
     );
   return (
     '<div class="result-card deadline-card">' +
@@ -2204,7 +2277,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     html += buildAnalysisCard(analysisData, ctx);
   }
 
-  var candidateTooltipHtml = buildCandidateTooltip(data.candidate_evaluations || []);
+  var candidateTooltipHtml = buildCandidateTooltip(data.candidate_evaluations || [], ctx);
   var checkedCount = data.candidates_checked || 0;
   var plannedCount = data.planned_queries || checkedCount;
   var remainingCount = Math.max(0, plannedCount - checkedCount);
@@ -2225,6 +2298,9 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
   var baselineDepartureText = latestDepartureTime
     ? formatDatetime(latestDepartureTime)
     : "-";
+  var baselineDepartureLabel = ctx.baselineDepartureLabel || "지정 출발 시간";
+  var arrivalDeltaLabel = ctx.arrivalDeltaLabel || "지정 출발 대비 도착 시간 차이";
+  var baselineScoreLabel = ctx.mode === "arrival" ? "지정 출발 점수 " : "참고 출발 점수 ";
   var recommendedScoreBadge =
     '<span class="result-badge badge-success">' +
     "추천 출발 점수 " +
@@ -2233,7 +2309,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
   var baselineScoreBadge = latestDepartureTime
     ? (
       '<span class="result-badge badge-warn">' +
-      "지정 출발 점수 " +
+      baselineScoreLabel +
       baselineScoreText +
       "</span>"
     )
@@ -2249,7 +2325,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     '      <span class="value">' + formatDatetime(data.recommended_departure_time) + "</span>" +
     "    </div>" +
     '    <div class="result-row row-baseline-departure">' +
-    '      <span class="label">지정 출발 시간</span>' +
+    '      <span class="label">' + baselineDepartureLabel + "</span>" +
     '      <span class="value">' + baselineDepartureText + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
@@ -2261,7 +2337,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     '      <span class="value">' + formatDatetime(data.desired_arrival_time) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
-    '      <span class="label">지정 출발 대비 도착 시간 차이</span>' +
+    '      <span class="label">' + arrivalDeltaLabel + "</span>" +
     '      <span class="value">' + arrivalDeltaText + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
@@ -2307,12 +2383,14 @@ function renderRecentSearches() {
   var html = "";
   for (var i = 0; i < items.length; i++) {
     var r = items[i];
+    var safeOrigin = escapeHtml(r.origin || "");
+    var safeDestination = escapeHtml(r.destination || "");
     html +=
       '<div class="recent-item" data-idx="' + i + '">' +
       '  <span class="recent-item-route">' +
-           r.origin +
+           safeOrigin +
            ' <span class="recent-item-arrow">&rarr;</span> ' +
-           r.destination +
+           safeDestination +
       '  </span>' +
       '  <span class="recent-item-time">' + timeAgo(r.ts) + '</span>' +
       '</div>';
@@ -2352,9 +2430,11 @@ function renderFavorites() {
   var html = "";
   for (var i = 0; i < items.length; i++) {
     var f = items[i];
+    var safeAddress = escapeHtml(f.address || "");
+    var safeName = escapeHtml(f.name || "");
     html +=
-      '<div class="fav-chip" data-idx="' + i + '" title="' + f.address + '">' +
-      '  <span class="fav-chip-name">' + f.name + '</span>' +
+      '<div class="fav-chip" data-idx="' + i + '" title="' + safeAddress + '">' +
+      '  <span class="fav-chip-name">' + safeName + '</span>' +
       '  <span class="fav-chip-del" data-delidx="' + i + '">&times;</span>' +
       '</div>';
   }
@@ -2512,7 +2592,11 @@ async function handleSearch() {
   showLoading();
   $results.classList.add("hidden");
 
-  var isoTime = datetimeVal + ":00+09:00";
+  var isoTime = toApiDatetimeString(datetimeVal);
+  if (!isoTime) {
+    showError("시각 값을 해석할 수 없습니다. 다시 선택해 주세요.");
+    return;
+  }
 
   try {
     // ── Step 1: 출발/도착 좌표를 병렬 resolve ──
@@ -2685,7 +2769,8 @@ async function handleSearch() {
         oCoords,
         dCoords
       );
-      var baselineDepartureTime = nowCeilTo10() + ":00+09:00";
+      var baselineDepartureLocal = nowCeilTo10();
+      var baselineDepartureTime = toApiDatetimeString(baselineDepartureLocal) || isoTime;
       var baselinePromise = apiEstimateArrival(
         origin,
         destination,

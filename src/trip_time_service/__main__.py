@@ -23,6 +23,17 @@ def _is_port_available(host: str, port: int) -> bool:
         return False
 
 
+def _reserve_ephemeral_port(host: str) -> int:
+    bind_host = host
+    if host in {"0.0.0.0", "::"}:
+        # Wildcard host uses an empty bind target.
+        bind_host = ""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((bind_host, 0))
+        return int(sock.getsockname()[1])
+
+
 def _find_available_port(host: str, preferred: int) -> int:
     if _is_port_available(host, preferred):
         return preferred
@@ -37,12 +48,16 @@ def _find_available_port(host: str, preferred: int) -> int:
             logger.info("대체 포트 %d 사용", port)
             return port
 
-    raise OSError(
-        f"포트 {preferred} 및 fallback 범위 {_FALLBACK_RANGE.start}-"
-        f"{_FALLBACK_RANGE.stop - 1} 모두 사용 불가. "
-        "netsh interface ipv4 show excludedportrange protocol=tcp 으로 "
-        "예약 범위를 확인하세요."
+    fallback_port = _reserve_ephemeral_port(host)
+    logger.warning(
+        "포트 %d 및 fallback 범위 %d-%d 모두 사용 불가. "
+        "OS 임시 가용 포트 %d를 사용합니다.",
+        preferred,
+        _FALLBACK_RANGE.start,
+        _FALLBACK_RANGE.stop - 1,
+        fallback_port,
     )
+    return fallback_port
 
 
 def main() -> None:

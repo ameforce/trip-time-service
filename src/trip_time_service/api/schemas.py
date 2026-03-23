@@ -8,20 +8,22 @@ from pydantic import BaseModel, ConfigDict, Field
 class RouteModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    origin: str = Field(min_length=1)
-    destination: str = Field(min_length=1)
+    origin: str = Field(min_length=1, max_length=500)
+    destination: str = Field(min_length=1, max_length=500)
 
 
 class CoordsInput(BaseModel):
-    lat: float
-    lon: float
+    model_config = ConfigDict(extra="forbid")
+
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
 
 
 class ArrivalTimeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    origin: str = Field(min_length=1)
-    destination: str = Field(min_length=1)
+    origin: str = Field(min_length=1, max_length=500)
+    destination: str = Field(min_length=1, max_length=500)
     departure_time: datetime
     origin_coords: CoordsInput | None = None
     dest_coords: CoordsInput | None = None
@@ -41,8 +43,8 @@ class ArrivalTimeResponse(BaseModel):
 class DepartureRecommendationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    origin: str = Field(min_length=1)
-    destination: str = Field(min_length=1)
+    origin: str = Field(min_length=1, max_length=500)
+    destination: str = Field(min_length=1, max_length=500)
     desired_arrival_time: datetime
     origin_coords: CoordsInput | None = None
     dest_coords: CoordsInput | None = None

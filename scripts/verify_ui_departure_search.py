@@ -32,12 +32,12 @@ except ImportError:
 
 BASE_URL = "http://127.0.0.1:8500"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "ui_verification_screenshots"
-PATH_1 = Path("C:/Workspace/Daeng/Git/Project/trip-time-service/ui_verification_screenshots/01_analysis_and_progress.png")
-PATH_2 = Path("C:/Workspace/Daeng/Git/Project/trip-time-service/ui_verification_screenshots/02_analysis_and_recommendation.png")
-PATH_3 = Path("C:/Workspace/Daeng/Git/Project/trip-time-service/ui_verification_screenshots/03_candidate_tooltip_hover.png")
 SCREENSHOT_1 = "01_analysis_and_progress.png"
 SCREENSHOT_2 = "02_analysis_and_recommendation.png"
 SCREENSHOT_3 = "03_candidate_tooltip_hover.png"
+PATH_1 = OUTPUT_DIR / SCREENSHOT_1
+PATH_2 = OUTPUT_DIR / SCREENSHOT_2
+PATH_3 = OUTPUT_DIR / SCREENSHOT_3
 DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
 
 
@@ -138,7 +138,9 @@ def main() -> None:
         )
 
         # 5. 검색 클릭
-        actual_datetime = driver.find_element(By.ID, "datetime-input").get_attribute("value")
+        actual_datetime = driver.find_element(By.ID, "datetime-input").get_attribute(
+            "value"
+        )
         if not actual_datetime:
             results["errors"].append("datetime-input 값이 비어 있음")
         results["observed_text"]["datetime_set"] = actual_datetime or "(empty)"
@@ -150,7 +152,8 @@ def main() -> None:
             WebDriverWait(driver, 90).until(
                 lambda d: (
                     "출발 시각 분석" in d.find_element(By.ID, "results").text
-                    and "추천 출발 시각 계산 중" in d.find_element(By.ID, "results").text
+                    and "추천 출발 시각 계산 중"
+                    in d.find_element(By.ID, "results").text
                 )
             )
             results["step1_analysis_first"] = "success"
@@ -192,7 +195,8 @@ def main() -> None:
             WebDriverWait(driver, 180).until(
                 lambda d: (
                     "추천 출발 시각" in d.find_element(By.ID, "results").text
-                    and "추천 출발 시각 계산 중" not in d.find_element(By.ID, "results").text
+                    and "추천 출발 시각 계산 중"
+                    not in d.find_element(By.ID, "results").text
                 )
             )
             results["step2_recommendation_added"] = "success"
@@ -222,13 +226,15 @@ def main() -> None:
             )
             ActionChains(driver).move_to_element(candidate_badge).perform()
             WebDriverWait(driver, 5).until(
-                lambda d: float(
-                    d.execute_script(
-                        "const p=document.querySelector('.candidate-tooltip-portal.is-visible');"
-                        "return p ? getComputedStyle(p).opacity : 0;"
+                lambda d: (
+                    float(
+                        d.execute_script(
+                            "const p=document.querySelector('.candidate-tooltip-portal.is-visible');"
+                            "return p ? getComputedStyle(p).opacity : 0;"
+                        )
                     )
+                    > 0.9
                 )
-                > 0.9
             )
             time.sleep(0.35)
 
@@ -236,7 +242,9 @@ def main() -> None:
                 By.CSS_SELECTOR,
                 ".candidate-tooltip-portal.is-visible",
             )
-            tooltip_items = tooltip_panel.find_elements(By.CSS_SELECTOR, ".candidate-tooltip-item")
+            tooltip_items = tooltip_panel.find_elements(
+                By.CSS_SELECTOR, ".candidate-tooltip-item"
+            )
             if tooltip_items:
                 ActionChains(driver).move_to_element(tooltip_items[0]).perform()
             else:
@@ -315,11 +323,13 @@ def main() -> None:
 
             overflow_left = max(
                 0.0,
-                float(tooltip_state["sidebar_left"]) - float(tooltip_state["panel_left"]),
+                float(tooltip_state["sidebar_left"])
+                - float(tooltip_state["panel_left"]),
             )
             overflow_right = max(
                 0.0,
-                float(tooltip_state["panel_right"]) - float(tooltip_state["sidebar_right"]),
+                float(tooltip_state["panel_right"])
+                - float(tooltip_state["sidebar_right"]),
             )
             rows = tooltip_state.get("rows", [])
             row_list = rows if isinstance(rows, list) else []
@@ -332,9 +342,7 @@ def main() -> None:
                 match = DATETIME_RE.search(line)
                 if not match:
                     continue
-                departures.append(
-                    datetime.strptime(match.group(0), "%Y-%m-%d %H:%M")
-                )
+                departures.append(datetime.strptime(match.group(0), "%Y-%m-%d %H:%M"))
             order_ascending_ok = True
             if len(departures) >= 2:
                 order_ascending_ok = all(
@@ -351,7 +359,9 @@ def main() -> None:
                 "header_scrolls_ok": header_scrolls_ok,
                 "order_ascending_ok": order_ascending_ok,
                 "rows_preview": rows_preview,
-                "sidebar_width_px": round(float(tooltip_state.get("sidebar_width", 0)), 2),
+                "sidebar_width_px": round(
+                    float(tooltip_state.get("sidebar_width", 0)), 2
+                ),
                 "panel_width_px": round(float(tooltip_state.get("panel_width", 0)), 2),
                 "panel_left_style": tooltip_state.get("panel_left_style"),
                 "panel_transform": tooltip_state.get("panel_transform"),

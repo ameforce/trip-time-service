@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -42,11 +43,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 def create_app() -> FastAPI:
+    settings = load_settings()
     app = FastAPI(
         title="trip-time-service",
         version=__version__,
         lifespan=lifespan,
     )
+    if settings.cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_allowed_origins),
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["*"],
+        )
     app.include_router(router)
 
     @app.exception_handler(ProviderError)
@@ -54,10 +64,14 @@ def create_app() -> FastAPI:
         request: Request,
         exc: ProviderError,
     ) -> JSONResponse:
+        _log.exception("ProviderError handled")
         status = 503 if exc.is_retryable else 502
         return JSONResponse(
             status_code=status,
-            content={"detail": str(exc), "retryable": exc.is_retryable},
+            content={
+                "detail": "교통 정보 제공자 호출 중 오류가 발생했습니다.",
+                "retryable": exc.is_retryable,
+            },
         )
 
     @app.exception_handler(NoFeasibleDepartureError)
@@ -65,9 +79,13 @@ def create_app() -> FastAPI:
         request: Request,
         exc: NoFeasibleDepartureError,
     ) -> JSONResponse:
+        _log.info("NoFeasibleDepartureError handled: %s", exc)
         return JSONResponse(
             status_code=422,
-            content={"detail": str(exc), "retryable": False},
+            content={
+                "detail": "입력 조건에서 유효한 추천 출발 후보를 찾지 못했습니다.",
+                "retryable": False,
+            },
         )
 
     @app.get("/", include_in_schema=False)

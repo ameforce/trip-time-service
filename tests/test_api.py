@@ -193,6 +193,19 @@ class TestArrivalTimeEndpoint:
         body = resp.json()
         assert body["duration_seconds"] == 900
 
+    def test_out_of_range_coords_return_422(self) -> None:
+        client = _build_client()
+        resp = client.post(
+            "/v1/trip/arrival-time",
+            json={
+                "origin": "강남역",
+                "destination": "판교역",
+                "departure_time": "2099-01-24T09:00:00+09:00",
+                "origin_coords": {"lat": 200, "lon": 127.0},
+            },
+        )
+        assert resp.status_code == 422
+
 
 class TestDepartureRecommendationEndpoint:
     def test_valid_request(self) -> None:
@@ -312,6 +325,13 @@ class TestFrontendConfig:
         assert body["provider"] == "test"
 
 
+class TestRouteEndpointValidation:
+    def test_invalid_route_query_returns_422(self) -> None:
+        client = _build_client()
+        resp = client.get("/api/route?olat=999&olon=127.0&dlat=37.5&dlon=127.1")
+        assert resp.status_code == 422
+
+
 class TestNaverUrlCoordExtraction:
     def test_extract_coords_from_address_path_url(self) -> None:
         url = (
@@ -368,6 +388,7 @@ class TestProviderErrorHandling:
         assert resp.status_code == 503
         body = resp.json()
         assert body["retryable"] is True
+        assert body["detail"] == "교통 정보 제공자 호출 중 오류가 발생했습니다."
 
     def test_non_retryable_provider_error_returns_502(self) -> None:
         client = _build_client(_FailingProvider(retryable=False))
@@ -382,3 +403,4 @@ class TestProviderErrorHandling:
         assert resp.status_code == 502
         body = resp.json()
         assert body["retryable"] is False
+        assert body["detail"] == "교통 정보 제공자 호출 중 오류가 발생했습니다."

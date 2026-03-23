@@ -37,6 +37,14 @@ def _getenv_bool(name: str, default: bool) -> bool:
     raise ValueError(f"Invalid boolean env var: {name}={value!r}")
 
 
+def _getenv_csv(name: str) -> tuple[str, ...]:
+    value = _getenv_stripped(name)
+    if value is None:
+        return ()
+    parts = [part.strip() for part in value.split(",")]
+    return tuple(part for part in parts if part)
+
+
 def _cpu_parallel_target(logical_cpus: int) -> int:
     # CPU logical thread의 80%를 기본 병렬도 목표치로 사용
     return max(1, math.ceil(logical_cpus * 0.8))
@@ -57,6 +65,7 @@ class Settings:
     naver_map_client_id: str | None
     recommend_workers: int = 1
     naver_session_pool_size: int = 1
+    cors_allowed_origins: tuple[str, ...] = ()
 
 
 @lru_cache(maxsize=1)
@@ -95,6 +104,7 @@ def load_settings() -> Settings:
     chrome_binary_path = _getenv_stripped("TTS_CHROME_BINARY_PATH")
     chrome_user_data_dir = _getenv_stripped("TTS_CHROME_USER_DATA_DIR")
     naver_map_client_id = _getenv_stripped("TTS_NAVER_MAP_CLIENT_ID")
+    cors_allowed_origins = _getenv_csv("TTS_CORS_ALLOW_ORIGINS")
 
     if step_minutes <= 0:
         raise ValueError("TTS_STEP_MINUTES must be positive")
@@ -122,4 +132,5 @@ def load_settings() -> Settings:
         naver_map_client_id=naver_map_client_id,
         recommend_workers=recommend_workers,
         naver_session_pool_size=naver_session_pool_size,
+        cors_allowed_origins=cors_allowed_origins,
     )
