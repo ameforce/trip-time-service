@@ -69,6 +69,52 @@ body {
   color: var(--text-secondary);
 }
 
+.provider-status {
+  margin-top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.2px;
+}
+
+.provider-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid #cfe8cf;
+  background: var(--primary-light);
+  color: var(--primary-dark);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.provider-badge.is-warning {
+  border-color: #ffd9ad;
+  background: #fff4e8;
+  color: #d77300;
+}
+
+.provider-warning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #ffd9ad;
+  background: #fff7ed;
+  color: #b85d00;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
 /* ── Route Section ────────────────────────────────── */
 .route-section {
   padding: 20px 24px 0;
@@ -499,6 +545,25 @@ body {
   animation: slideUp 0.3s ease;
 }
 
+.provider-notice-card {
+  border: 1px solid #ffd9ad;
+  background: #fff7ed;
+  padding: 12px 14px;
+}
+
+.provider-notice-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #b85d00;
+}
+
+.provider-notice-copy {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #985100;
+  line-height: 1.45;
+}
+
 .baseline-card {
   border: 1px solid #d8e4ff;
   background: #f6f9ff;
@@ -808,6 +873,73 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.calendar-actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.calendar-actions-title {
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.calendar-actions-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.calendar-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.calendar-action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(20, 28, 45, 0.14);
+}
+
+.calendar-action-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(66, 102, 197, 0.28);
+}
+
+.calendar-action-btn.is-recommended {
+  border-color: #c7ebd5;
+  background: #effbf4;
+  color: #0b7a3e;
+}
+
+.calendar-action-btn.is-tight {
+  border-color: #d8e2ff;
+  background: #f2f6ff;
+  color: #2f4f9c;
+}
+
+.calendar-action-btn.is-disabled {
+  pointer-events: none;
+  cursor: not-allowed;
+  border-color: #e0e5ef;
+  background: #f5f7fb;
+  color: #9aa3b2;
+  box-shadow: none;
+  transform: none;
 }
 
 /* ── Deadline (마지노선) Card ─────────────────────── */

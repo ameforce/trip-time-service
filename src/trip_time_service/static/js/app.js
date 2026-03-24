@@ -82,20 +82,82 @@ let _datetimeRefocusFromValidation = false;
 /* ── Helpers ──────────────────────────────────────── */
 
 function formatDuration(seconds) {
-  var h = Math.floor(seconds / 3600);
-  var m = Math.floor((seconds % 3600) / 60);
+  var normalized = Number(seconds);
+  if (!isFinite(normalized) || normalized < 0) {
+    normalized = 0;
+  }
+  var h = Math.floor(normalized / 3600);
+  var m = Math.floor((normalized % 3600) / 60);
   if (h > 0 && m > 0) return h + "시간 " + m + "분";
   if (h > 0) return h + "시간";
   return m + "분";
 }
 
+function formatDateParts(dateObj) {
+  var month = String(dateObj.getMonth() + 1).padStart(2, "0");
+  var day = String(dateObj.getDate()).padStart(2, "0");
+  var hours = String(dateObj.getHours()).padStart(2, "0");
+  var mins = String(dateObj.getMinutes()).padStart(2, "0");
+  return dateObj.getFullYear() + "-" + month + "-" + day + " " + hours + ":" + mins;
+}
+
 function formatDatetime(isoStr) {
   var d = new Date(isoStr);
-  var month = String(d.getMonth() + 1).padStart(2, "0");
-  var day = String(d.getDate()).padStart(2, "0");
-  var hours = String(d.getHours()).padStart(2, "0");
-  var mins = String(d.getMinutes()).padStart(2, "0");
-  return d.getFullYear() + "-" + month + "-" + day + " " + hours + ":" + mins;
+  if (isNaN(d.getTime())) {
+    return "-";
+  }
+  return formatDateParts(d);
+}
+
+function floorDateToMinuteStep(dateObj, stepMinutes) {
+  var floored = new Date(dateObj.getTime());
+  floored.setSeconds(0, 0);
+  var remainder = floored.getMinutes() % stepMinutes;
+  if (remainder !== 0) {
+    floored.setMinutes(floored.getMinutes() - remainder, 0, 0);
+  }
+  return floored;
+}
+
+function ceilDurationSecondsToMinuteStep(durationSeconds, stepMinutes) {
+  if (durationSeconds == null) {
+    return null;
+  }
+  var normalized = Number(durationSeconds);
+  if (!isFinite(normalized) || normalized < 0) {
+    return null;
+  }
+  if (normalized === 0) {
+    return 0;
+  }
+  var stepSeconds = Math.max(1, stepMinutes) * 60;
+  return Math.ceil(normalized / stepSeconds) * stepSeconds;
+}
+
+function formatRoundedDatetime(isoStr) {
+  if (!isoStr) {
+    return "-";
+  }
+  var d = new Date(isoStr);
+  if (isNaN(d.getTime())) {
+    return "-";
+  }
+  var rounded = floorDateToMinuteStep(d, DATETIME_MINUTE_STEP);
+  return formatDateParts(rounded);
+}
+
+function formatRoundedDuration(durationSeconds) {
+  if (durationSeconds == null) {
+    return "-";
+  }
+  var roundedSeconds = ceilDurationSecondsToMinuteStep(
+    durationSeconds,
+    DATETIME_MINUTE_STEP
+  );
+  if (roundedSeconds == null) {
+    return "-";
+  }
+  return formatDuration(roundedSeconds);
 }
 
 function formatScorePercent(score) {
@@ -183,11 +245,188 @@ function toApiDatetimeString(localDatetimeValue) {
   return localDatetimeValue + ":00" + formatUtcOffset(offsetMinutes);
 }
 
+function parseIsoDatetime(isoStr) {
+  if (!isoStr) {
+    return null;
+  }
+  var parsed = new Date(isoStr);
+  if (isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
+}
+
+function toDisplayAlignedIsoDatetime(isoStr) {
+  var parsed = parseIsoDatetime(isoStr);
+  if (!parsed) {
+    return null;
+  }
+  return floorDateToMinuteStep(parsed, DATETIME_MINUTE_STEP).toISOString();
+}
+
+function toGoogleCalendarUtcToken(isoStr) {
+  var dateObj = parseIsoDatetime(isoStr);
+  if (!dateObj) {
+    return null;
+  }
+  var year = String(dateObj.getUTCFullYear()).padStart(4, "0");
+  var month = String(dateObj.getUTCMonth() + 1).padStart(2, "0");
+  var day = String(dateObj.getUTCDate()).padStart(2, "0");
+  var hours = String(dateObj.getUTCHours()).padStart(2, "0");
+  var minutes = String(dateObj.getUTCMinutes()).padStart(2, "0");
+  var seconds = String(dateObj.getUTCSeconds()).padStart(2, "0");
+  return year + month + day + "T" + hours + minutes + seconds + "Z";
+}
+
+function resolveCalendarEventRange(startIso, endIso, durationSeconds) {
+  var startDate = parseIsoDatetime(startIso);
+  if (!startDate) {
+    return null;
+  }
+
+  var endDate = parseIsoDatetime(endIso);
+  var normalizedDuration = Number(durationSeconds);
+  if (
+    !endDate &&
+    isFinite(normalizedDuration) &&
+    normalizedDuration > 0
+  ) {
+    endDate = new Date(startDate.getTime() + normalizedDuration * 1000);
+  }
+
+  if (!endDate || endDate.getTime() <= startDate.getTime()) {
+    if (isFinite(normalizedDuration) && normalizedDuration > 0) {
+      endDate = new Date(startDate.getTime() + normalizedDuration * 1000);
+    } else {
+      endDate = new Date(startDate.getTime() + 30 * 60 * 1000);
+    }
+  }
+
+  return {
+    startIso: startDate.toISOString(),
+    endIso: endDate.toISOString(),
+  };
+}
+
+function buildGoogleCalendarTemplateUrl(eventPayload) {
+  if (!eventPayload) {
+    return null;
+  }
+  var range = resolveCalendarEventRange(
+    eventPayload.startIso,
+    eventPayload.endIso,
+    eventPayload.durationSeconds
+  );
+  if (!range) {
+    return null;
+  }
+
+  var startToken = toGoogleCalendarUtcToken(range.startIso);
+  var endToken = toGoogleCalendarUtcToken(range.endIso);
+  if (!startToken || !endToken) {
+    return null;
+  }
+
+  var queryParts = [
+    "action=TEMPLATE",
+    "text=" + encodeURIComponent(eventPayload.title || "Trip Time 일정"),
+    "dates=" + encodeURIComponent(startToken + "/" + endToken),
+  ];
+  if (eventPayload.details) {
+    queryParts.push("details=" + encodeURIComponent(eventPayload.details));
+  }
+  if (eventPayload.location) {
+    queryParts.push("location=" + encodeURIComponent(eventPayload.location));
+  }
+  return "https://calendar.google.com/calendar/render?" + queryParts.join("&");
+}
+
+function buildCalendarEventPayload(options) {
+  if (!options) {
+    return null;
+  }
+  var route = options.route || {};
+  var origin = route.origin || "-";
+  var destination = route.destination || "-";
+  var label = options.label || "이동 일정";
+  var detailLines = [
+    "Trip Time " + label,
+    "출발: " + formatRoundedDatetime(options.departureIso),
+    "도착: " + formatRoundedDatetime(options.arrivalIso),
+    "출발지: " + origin,
+    "도착지: " + destination,
+    "희망 도착: " + formatRoundedDatetime(options.desiredArrivalIso),
+    "예상 소요시간: " + formatRoundedDuration(options.durationSeconds),
+  ];
+  var alignedStartIso = toDisplayAlignedIsoDatetime(options.departureIso);
+  var alignedEndIso = toDisplayAlignedIsoDatetime(options.arrivalIso);
+  var alignedDurationSeconds = ceilDurationSecondsToMinuteStep(
+    options.durationSeconds,
+    DATETIME_MINUTE_STEP
+  );
+
+  return {
+    title: "[Trip Time] " + label + " - " + origin + " -> " + destination,
+    startIso: alignedStartIso || options.departureIso,
+    endIso: alignedEndIso || options.arrivalIso,
+    durationSeconds: alignedDurationSeconds != null
+      ? alignedDurationSeconds
+      : options.durationSeconds,
+    details: detailLines.join("\n"),
+    location: destination,
+  };
+}
+
+function buildCalendarActionLink(label, href, variantClass) {
+  var className = "calendar-action-btn " + (variantClass || "");
+  if (!href) {
+    return (
+      '<span class="' +
+      className +
+      ' is-disabled" aria-disabled="true">' +
+      escapeHtml(label) +
+      "</span>"
+    );
+  }
+  return (
+    '<a class="' +
+    className +
+    '" href="' +
+    escapeHtml(href) +
+    '" target="_blank" rel="noopener noreferrer">' +
+    escapeHtml(label) +
+    "</a>"
+  );
+}
+
+function resolveProviderName(provider) {
+  return (provider || _config.provider || "unknown").toLowerCase();
+}
+
+function isMockProvider(provider) {
+  return resolveProviderName(provider) === "mock";
+}
+
+function buildProviderNoticeCard(provider) {
+  if (!isMockProvider(provider)) {
+    return "";
+  }
+  return (
+    '<div class="result-card provider-notice-card">' +
+    '  <div class="provider-notice-title">&#9888; mock 모드 결과 안내</div>' +
+    '  <p class="provider-notice-copy">' +
+         "현재 소요시간은 실시간 교통이 아닌 테스트용 가상 데이터입니다. " +
+         "실제 교통 기준 분석이 필요하면 naver_selenium provider로 실행해 주세요." +
+    "</p>" +
+    "</div>"
+  );
+}
+
 function setProviderName(provider) {
   if (!$providerBadge && !$providerWarning) {
     return;
   }
-  var providerName = (provider || _config.provider || "unknown").toLowerCase();
+  var providerName = resolveProviderName(provider);
   if ($providerBadge) {
     $providerBadge.textContent = providerName;
     $providerBadge.classList.toggle("is-warning", providerName === "mock");
@@ -1377,6 +1616,162 @@ async function apiRecommendDeparture(origin, destination, desiredArrivalTime, oC
   return res.json();
 }
 
+async function apiStreamDepartureRecommendation(
+  origin,
+  destination,
+  desiredArrivalTime,
+  oCoords,
+  dCoords,
+  handlers
+) {
+  var body = {
+    origin: origin,
+    destination: destination,
+    desired_arrival_time: desiredArrivalTime,
+  };
+  if (oCoords) body.origin_coords = { lat: oCoords.lat, lon: oCoords.lon };
+  if (dCoords) body.dest_coords = { lat: dCoords.lat, lon: dCoords.lon };
+
+  var res = await fetch("/v1/trip/recommended-departure-time/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    var err = await res.json().catch(function () { return {}; });
+    throw new Error(err.detail || "스트림 요청 처리 중 오류가 발생했습니다 (" + res.status + ")");
+  }
+  if (!res.body) {
+    throw new Error("브라우저가 스트리밍 응답을 지원하지 않습니다.");
+  }
+
+  var reader = res.body.getReader();
+  var decoder = new TextDecoder("utf-8");
+  var buffer = "";
+  var state = {
+    recommendation: null,
+    candidates: [],
+    progress: {
+      checked: 0,
+      planned: 0,
+      remaining: 0,
+      total_candidates: 0,
+    },
+  };
+
+  function dispatchEvent(evtName, evtData) {
+    if (evtName === "plan") {
+      state.progress = evtData || state.progress;
+      if (handlers && handlers.onPlan) {
+        handlers.onPlan(state.progress);
+      }
+      return;
+    }
+    if (evtName === "candidate") {
+      var candidatePayload = evtData.candidate || evtData;
+      if (evtData.progress) {
+        state.progress = evtData.progress;
+      }
+      state.candidates.push(candidatePayload);
+      if (handlers && handlers.onCandidate) {
+        handlers.onCandidate(
+          candidatePayload,
+          state.candidates.slice(),
+          state.progress
+        );
+      }
+      return;
+    }
+    if (evtName === "recommendation") {
+      state.recommendation = evtData;
+      state.progress = {
+        checked: evtData.candidates_checked || state.progress.checked || 0,
+        planned: evtData.planned_queries || state.progress.planned || 0,
+        remaining: Math.max(
+          0,
+          (evtData.planned_queries || state.progress.planned || 0) -
+            (evtData.candidates_checked || state.progress.checked || 0)
+        ),
+        total_candidates: evtData.total_candidates || state.progress.total_candidates || 0,
+      };
+      if (handlers && handlers.onRecommendation) {
+        handlers.onRecommendation(
+          evtData,
+          state.candidates.slice(),
+          state.progress
+        );
+      }
+      return;
+    }
+    if (evtName === "error") {
+      var detail = (evtData && evtData.detail) || "추천 계산 스트림 오류";
+      throw new Error(detail);
+    }
+  }
+
+  function consumeBuffer() {
+    var normalized = buffer.replace(/\r/g, "");
+    var split = normalized.split("\n\n");
+    if (split.length <= 1) {
+      buffer = normalized;
+      return;
+    }
+    buffer = split.pop() || "";
+
+    for (var i = 0; i < split.length; i++) {
+      var block = split[i].trim();
+      if (!block) continue;
+      var lines = block.split("\n");
+      var evtName = "message";
+      var dataLines = [];
+      for (var j = 0; j < lines.length; j++) {
+        var line = lines[j];
+        if (line.indexOf("event:") === 0) {
+          evtName = line.slice(6).trim();
+        } else if (line.indexOf("data:") === 0) {
+          dataLines.push(line.slice(5).trim());
+        }
+      }
+      if (!dataLines.length) continue;
+      var payloadText = dataLines.join("\n");
+      var payload = {};
+      try {
+        payload = JSON.parse(payloadText);
+      } catch (_) {
+        payload = {};
+      }
+      dispatchEvent(evtName, payload);
+    }
+  }
+
+  while (true) {
+    var chunk = await reader.read();
+    if (chunk.done) {
+      break;
+    }
+    buffer += decoder.decode(chunk.value, { stream: true });
+    consumeBuffer();
+  }
+  if (buffer.trim()) {
+    buffer += "\n\n";
+    consumeBuffer();
+  }
+
+  if (!state.recommendation) {
+    throw new Error("추천 결과를 수신하지 못했습니다.");
+  }
+  if (
+    state.candidates.length > 0 &&
+    (
+      !state.recommendation.candidate_evaluations ||
+      state.recommendation.candidate_evaluations.length === 0
+    )
+  ) {
+    state.recommendation.candidate_evaluations = state.candidates.slice();
+  }
+  return state;
+}
+
 async function apiStreamArrivalWithRecommendation(
   origin,
   destination,
@@ -1555,18 +1950,20 @@ async function apiStreamArrivalWithRecommendation(
 function renderArrivalResult(data) {
   hideCandidateTooltip(true);
   setProviderName(data.provider);
-  var durationText = formatDuration(data.duration_seconds);
+  var durationText = formatRoundedDuration(data.duration_seconds);
+  var providerNoticeHtml = buildProviderNoticeCard(data.provider);
   var html =
+    providerNoticeHtml +
     '<div class="result-card">' +
     '  <div class="result-title">&#128663; 예상 도착 시각</div>' +
     '  <div class="result-rows">' +
     '    <div class="result-row">' +
     '      <span class="label">출발</span>' +
-    '      <span class="value">' + formatDatetime(data.departure_time) + "</span>" +
+    '      <span class="value">' + formatRoundedDatetime(data.departure_time) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">도착</span>' +
-    '      <span class="value">' + formatDatetime(data.arrival_time) + "</span>" +
+    '      <span class="value">' + formatRoundedDatetime(data.arrival_time) + "</span>" +
     "    </div>" +
     "  </div>" +
     '  <div class="result-duration">' +
@@ -1620,7 +2017,7 @@ var _RENDER_CONTEXT_BY_MODE = {
     safeLabel: "여유 출발 (&times;1.25)",
     calcBaseDurationLabel: "마지노선 기준 소요시간",
     calcFormulaText: "희망도착 - 보정소요 = 안정적 출발시각",
-    baselineDepartureLabel: "참고 출발 시간(현재 기준)",
+    baselineDepartureLabel: "타이트 출발 시간",
     arrivalDeltaLabel: "희망 도착 대비 도착 시간 차이",
     candidatePassText: "정시 도착 가능",
     candidateFailText: "정시 도착 불가",
@@ -1950,7 +2347,7 @@ function buildImmediateSafeCard(immediateSafe) {
   if (!immediateSafe || !immediateSafe.safe_departure_time) {
     return "";
   }
-  var safeDur = formatDuration(immediateSafe.safe_duration_seconds || 0);
+  var safeDur = formatRoundedDuration(immediateSafe.safe_duration_seconds || 0);
   var clampMsg = immediateSafe.clamped_to_now
     ? '<span class="result-badge badge-warn">&#9888; 현재 시각 하한 적용</span>'
     : '<span class="result-badge badge-success">&#10003; 즉시 산출</span>';
@@ -1960,7 +2357,7 @@ function buildImmediateSafeCard(immediateSafe) {
     '  <div class="result-rows">' +
     '    <div class="result-row">' +
     '      <span class="label">여유 출발</span>' +
-    '      <span class="value">' + formatDatetime(immediateSafe.safe_departure_time) + "</span>" +
+    '      <span class="value">' + formatRoundedDatetime(immediateSafe.safe_departure_time) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">적용 소요시간</span>' +
@@ -1995,26 +2392,47 @@ function buildAnalysisCard(data, context, options) {
     safeDepartureTime,
     safeDurationSeconds
   );
-  var tightDur = latestDurationSeconds != null
-    ? formatDuration(latestDurationSeconds)
+  var tightRoundedSeconds = latestDurationSeconds != null
+    ? ceilDurationSecondsToMinuteStep(
+      latestDurationSeconds,
+      DATETIME_MINUTE_STEP
+    )
+    : null;
+  var safeRoundedSeconds = safeDurationSeconds != null
+    ? ceilDurationSecondsToMinuteStep(
+      safeDurationSeconds,
+      DATETIME_MINUTE_STEP
+    )
+    : null;
+  var tightDur = tightRoundedSeconds != null
+    ? formatDuration(tightRoundedSeconds)
     : "-";
-  var safeDur = safeDurationSeconds != null
-    ? formatDuration(safeDurationSeconds)
+  var safeDur = safeRoundedSeconds != null
+    ? formatDuration(safeRoundedSeconds)
     : "-";
   var bufferSec = (
-    latestDurationSeconds != null &&
-    safeDurationSeconds != null
+    tightRoundedSeconds != null &&
+    safeRoundedSeconds != null
   )
-    ? (safeDurationSeconds - latestDurationSeconds)
+    ? (safeRoundedSeconds - tightRoundedSeconds)
     : 0;
   var bufferMin = Math.ceil(bufferSec / 60);
   var candidateCount = data.candidates_checked || 0;
+  var plannedCount = data.planned_queries || 0;
+  var totalCount = data.total_candidates || 0;
+  var candidateSummary = candidateCount + "개";
+  if (plannedCount > 0) {
+    candidateSummary += " / 계획 " + plannedCount + "개";
+  }
+  if (totalCount > 0) {
+    candidateSummary += " / 전체 " + totalCount + "개";
+  }
   var candidateRow = opts.hideCandidateSummary
     ? ""
     : (
       '<div class="calc-explain-row"><span class="label">분석 후보 수</span><span class="val">' +
-      candidateCount +
-      "개 (" +
+      candidateSummary +
+      " (" +
       ctx.analysisDirectionLabel +
       ")</span></div>"
     );
@@ -2030,11 +2448,11 @@ function buildAnalysisCard(data, context, options) {
     '        <span class="deadline-block-label">' + ctx.tightLabel + "</span>" +
     "      </div>" +
     '      <div class="deadline-time">' +
-            (latestDepartureTime ? formatDatetime(latestDepartureTime) : "-") +
+            formatRoundedDatetime(latestDepartureTime) +
     "</div>" +
     '      <div class="deadline-sub">' +
     '        <span>도착 ' +
-            (latestArrivalTime ? formatDatetime(latestArrivalTime) : "-") +
+            formatRoundedDatetime(latestArrivalTime) +
     "</span>" +
     '        <span class="deadline-dur">' + tightDur + "</span>" +
     "      </div>" +
@@ -2045,11 +2463,11 @@ function buildAnalysisCard(data, context, options) {
     '        <span class="deadline-block-label">' + ctx.safeLabel + "</span>" +
     "      </div>" +
     '      <div class="deadline-time">' +
-            (safeDepartureTime ? formatDatetime(safeDepartureTime) : "-") +
+            formatRoundedDatetime(safeDepartureTime) +
     "</div>" +
     '      <div class="deadline-sub">' +
     '        <span>도착 ' +
-            (safeArrivalTime ? formatDatetime(safeArrivalTime) : "-") +
+            formatRoundedDatetime(safeArrivalTime) +
     "</span>" +
     '        <span class="deadline-dur">' + safeDur + "</span>" +
     "      </div>" +
@@ -2118,7 +2536,7 @@ function updateLiveProgress(progress) {
 
 function buildBaselineArrivalCard(data, context) {
   var ctx = context || _renderContext("departure");
-  var durationText = formatDuration(data.duration_seconds);
+  var durationText = formatRoundedDuration(data.duration_seconds);
   var cacheBadge = data.cache_hit
     ? "&#9889; 캐시 히트"
     : "&#128268; 신규 조회";
@@ -2129,11 +2547,11 @@ function buildBaselineArrivalCard(data, context) {
     '  <div class="result-rows">' +
     '    <div class="result-row">' +
     '      <span class="label">출발</span>' +
-    '      <span class="value">' + formatDatetime(data.departure_time) + "</span>" +
+    '      <span class="value">' + formatRoundedDatetime(data.departure_time) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">도착</span>' +
-    '      <span class="value">' + formatDatetime(data.arrival_time) + "</span>" +
+    '      <span class="value">' + formatRoundedDatetime(data.arrival_time) + "</span>" +
     "    </div>" +
     "  </div>" +
     '  <div class="result-duration">' +
@@ -2160,6 +2578,9 @@ function renderDeparturePending(arrivalData, context, immediateSafe, progress) {
   if (arrivalData && arrivalData.provider) {
     setProviderName(arrivalData.provider);
   }
+  var providerNoticeHtml = buildProviderNoticeCard(
+    arrivalData && arrivalData.provider ? arrivalData.provider : _config.provider
+  );
 
   if (ctx.mode === "arrival" && arrivalData) {
     if (updateLiveProgress(prog)) {
@@ -2174,6 +2595,7 @@ function renderDeparturePending(arrivalData, context, immediateSafe, progress) {
       candidates_checked: prog.checked || 0,
     };
     var analysisHtml = (
+      providerNoticeHtml +
       buildAnalysisCard(
         pendingAnalysis,
         ctx,
@@ -2187,21 +2609,39 @@ function renderDeparturePending(arrivalData, context, immediateSafe, progress) {
     return;
   }
 
-  var html = "";
+  var html = providerNoticeHtml;
   if (arrivalData) {
     html += buildBaselineArrivalCard(arrivalData, ctx);
   }
   if (immediateSafe) {
     html += buildImmediateSafeCard(immediateSafe);
   }
-  var progressText = prog.checked > 0
-    ? "후보 " + prog.checked + "개 분석 완료"
-    : "후보를 수집하는 중입니다.";
+  var checked = prog && prog.checked ? prog.checked : 0;
+  var planned = prog && prog.planned ? prog.planned : 0;
+  var remaining = prog && typeof prog.remaining === "number"
+    ? prog.remaining
+    : Math.max(0, planned - checked);
+  var plannedText = planned > 0 ? String(planned) : "-";
+  var progressText = planned > 0
+    ? "후보 " + checked + "개 분석 / 계획 " + planned + "개"
+    : (
+      checked > 0
+        ? "후보 " + checked + "개 분석 중입니다."
+        : "후보를 수집하는 중입니다."
+    );
   html +=
     '<div class="result-card progress-card">' +
     '  <div class="result-title">&#9201; ' + ctx.pendingTitle + "</div>" +
     '  <p class="progress-copy">' + ctx.pendingCopy + "</p>" +
     '  <p class="progress-copy">' + progressText + "</p>" +
+    '  <div class="result-meta progress-meta">' +
+    '    <span class="result-badge badge-warn">' +
+    "&#128202; 분석 " + checked + "개 / " + plannedText + "개" +
+    "</span>" +
+    '    <span class="result-badge badge-success">' +
+    "&#9203; 남은 후보 " + remaining + "개" +
+    "</span>" +
+    "  </div>" +
     "</div>";
 
   $results.innerHTML = html;
@@ -2213,12 +2653,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
   hideCandidateTooltip(true);
   var ctx = context || _renderContext("departure");
   setProviderName(data.provider);
-  var durationText = formatDuration(data.duration_seconds);
-  var deadlineBadge = data.meets_deadline
-    ? ctx.statusPass
-    : ctx.statusFail;
-
-  var html = "";
+  var html = buildProviderNoticeCard(data.provider);
   if (baselineArrivalData && ctx.mode !== "arrival") {
     html += buildBaselineArrivalCard(baselineArrivalData, ctx);
   }
@@ -2254,14 +2689,44 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
   var safeDurationSeconds = data.safe_departure_duration_seconds != null
     ? data.safe_departure_duration_seconds
     : safeDurationFallback;
-  var tightDurationText = latestDurationSeconds != null
-    ? formatDuration(latestDurationSeconds)
-    : "-";
-  var safeDurationText = safeDurationSeconds != null
-    ? formatDuration(safeDurationSeconds)
-    : "-";
+  var recommendedDepartureDisplayTime = data.recommended_departure_time || null;
+  var recommendedDurationDisplaySeconds = data.duration_seconds != null
+    ? data.duration_seconds
+    : null;
+  var expectedArrivalDisplayTime = data.expected_arrival_time || null;
+  if (ctx.mode === "departure" && safeDepartureTime) {
+    recommendedDepartureDisplayTime = safeDepartureTime;
+    if (safeDurationSeconds != null) {
+      recommendedDurationDisplaySeconds = safeDurationSeconds;
+      var safeExpectedArrival = computeArrivalFromDeparture(
+        safeDepartureTime,
+        safeDurationSeconds
+      );
+      if (safeExpectedArrival) {
+        expectedArrivalDisplayTime = safeExpectedArrival;
+      }
+    }
+  }
+
+  var durationText = formatRoundedDuration(recommendedDurationDisplaySeconds);
+  var tightDurationText = formatRoundedDuration(latestDurationSeconds);
+  var safeDurationText = formatRoundedDuration(safeDurationSeconds);
+  var displayMeetsDeadline = !!data.meets_deadline;
+  if (ctx.mode === "departure") {
+    var displayArrival = new Date(expectedArrivalDisplayTime);
+    var desiredArrival = new Date(data.desired_arrival_time);
+    if (
+      !isNaN(displayArrival.getTime()) &&
+      !isNaN(desiredArrival.getTime())
+    ) {
+      displayMeetsDeadline = displayArrival.getTime() <= desiredArrival.getTime();
+    }
+  }
+  var deadlineBadge = displayMeetsDeadline
+    ? ctx.statusPass
+    : ctx.statusFail;
   var arrivalDeltaText = formatArrivalDelta(
-    data.expected_arrival_time,
+    expectedArrivalDisplayTime,
     data.desired_arrival_time
   );
 
@@ -2272,6 +2737,8 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     safe_departure_time: safeDepartureTime,
     safe_departure_duration_seconds: safeDurationSeconds,
     candidates_checked: data.candidates_checked,
+    planned_queries: data.planned_queries,
+    total_candidates: data.total_candidates,
   };
   if (analysisData.latest_departure_time || analysisData.safe_departure_time) {
     html += buildAnalysisCard(analysisData, ctx);
@@ -2279,12 +2746,14 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
 
   var candidateTooltipHtml = buildCandidateTooltip(data.candidate_evaluations || [], ctx);
   var checkedCount = data.candidates_checked || 0;
-  var plannedCount = data.planned_queries || checkedCount;
-  var remainingCount = Math.max(0, plannedCount - checkedCount);
-  var candidateBadgeText =
-    "&#128202; 후보 " + checkedCount + "/" + plannedCount + " 분석";
-  if (remainingCount > 0) {
-    candidateBadgeText += " (남은 " + remainingCount + ")";
+  var plannedCount = data.planned_queries || 0;
+  var totalCount = data.total_candidates || 0;
+  var candidateBadgeText = "&#128202; 분석 " + checkedCount + "개";
+  if (plannedCount > 0) {
+    candidateBadgeText += " / 계획 " + plannedCount + "개";
+  }
+  if (totalCount > 0) {
+    candidateBadgeText += " / 전체 " + totalCount + "개";
   }
   var candidateBadge =
     '<span class="result-badge badge-warn candidate-badge">' +
@@ -2295,12 +2764,12 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     "</span>";
   var recommendedScoreText = formatScorePercent(data.recommended_score_total);
   var baselineScoreText = formatScorePercent(data.baseline_score_total);
-  var baselineDepartureText = latestDepartureTime
-    ? formatDatetime(latestDepartureTime)
-    : "-";
+  var baselineDepartureText = formatRoundedDatetime(latestDepartureTime);
   var baselineDepartureLabel = ctx.baselineDepartureLabel || "지정 출발 시간";
   var arrivalDeltaLabel = ctx.arrivalDeltaLabel || "지정 출발 대비 도착 시간 차이";
-  var baselineScoreLabel = ctx.mode === "arrival" ? "지정 출발 점수 " : "참고 출발 점수 ";
+  var baselineScoreLabel = ctx.mode === "arrival"
+    ? "지정 출발 점수 "
+    : "타이트 출발 점수 ";
   var recommendedScoreBadge =
     '<span class="result-badge badge-success">' +
     "추천 출발 점수 " +
@@ -2314,6 +2783,56 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
       "</span>"
     )
     : "";
+  var recommendedArrivalForCalendar = expectedArrivalDisplayTime;
+  if (!recommendedArrivalForCalendar) {
+    recommendedArrivalForCalendar = computeArrivalFromDeparture(
+      recommendedDepartureDisplayTime,
+      recommendedDurationDisplaySeconds
+    );
+  }
+  var tightArrivalForCalendar = latestArrivalTime;
+  if (!tightArrivalForCalendar) {
+    tightArrivalForCalendar = computeArrivalFromDeparture(
+      latestDepartureTime,
+      latestDurationSeconds
+    );
+  }
+  var recommendedCalendarEvent = buildCalendarEventPayload({
+    label: "추천 출발",
+    route: data.route,
+    departureIso: recommendedDepartureDisplayTime,
+    arrivalIso: recommendedArrivalForCalendar,
+    desiredArrivalIso: data.desired_arrival_time,
+    durationSeconds: recommendedDurationDisplaySeconds,
+  });
+  var tightCalendarEvent = buildCalendarEventPayload({
+    label: "타이트 출발",
+    route: data.route,
+    departureIso: latestDepartureTime,
+    arrivalIso: tightArrivalForCalendar,
+    desiredArrivalIso: data.desired_arrival_time,
+    durationSeconds: latestDurationSeconds,
+  });
+  var recommendedCalendarUrl = buildGoogleCalendarTemplateUrl(
+    recommendedCalendarEvent
+  );
+  var tightCalendarUrl = buildGoogleCalendarTemplateUrl(tightCalendarEvent);
+  var calendarActionsHtml =
+    '<div class="calendar-actions">' +
+    '  <div class="calendar-actions-title">&#128197; 구글 캘린더</div>' +
+    '  <div class="calendar-actions-buttons">' +
+         buildCalendarActionLink(
+           "추천 일정 추가",
+           recommendedCalendarUrl,
+           "is-recommended"
+         ) +
+         buildCalendarActionLink(
+           "타이트 일정 추가",
+           tightCalendarUrl,
+           "is-tight"
+         ) +
+    "  </div>" +
+    "</div>";
 
   // ── 추천 출발 시각 카드 (아래 배치) ──
   html +=
@@ -2322,7 +2841,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     '  <div class="result-rows">' +
     '    <div class="result-row row-recommended-departure">' +
     '      <span class="label">추천 출발 시간</span>' +
-    '      <span class="value">' + formatDatetime(data.recommended_departure_time) + "</span>" +
+    '      <span class="value">' + formatRoundedDatetime(recommendedDepartureDisplayTime) + "</span>" +
     "    </div>" +
     '    <div class="result-row row-baseline-departure">' +
     '      <span class="label">' + baselineDepartureLabel + "</span>" +
@@ -2330,11 +2849,11 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">추천 출발시 예상 도착 시간</span>' +
-    '      <span class="value">' + formatDatetime(data.expected_arrival_time) + "</span>" +
+    '      <span class="value">' + formatRoundedDatetime(expectedArrivalDisplayTime) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">' + ctx.desiredLabel + "</span>" +
-    '      <span class="value">' + formatDatetime(data.desired_arrival_time) + "</span>" +
+    '      <span class="value">' + formatRoundedDatetime(data.desired_arrival_time) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">' + arrivalDeltaLabel + "</span>" +
@@ -2359,6 +2878,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     "    " + baselineScoreBadge +
     "    " + candidateBadge +
     "  </div>" +
+         calendarActionsHtml +
     "</div>";
 
   $results.innerHTML = html;
@@ -2762,13 +3282,12 @@ async function handleSearch() {
       }
     } else {
       var departureContext = _renderContext("departure");
-      var recommendPromise = apiRecommendDeparture(
-        origin,
-        destination,
-        isoTime,
-        oCoords,
-        dCoords
-      );
+      var progressState = {
+        checked: 0,
+        planned: 0,
+        remaining: 0,
+        total_candidates: 0,
+      };
       var baselineDepartureLocal = nowCeilTo10();
       var baselineDepartureTime = toApiDatetimeString(baselineDepartureLocal) || isoTime;
       var baselinePromise = apiEstimateArrival(
@@ -2780,29 +3299,115 @@ async function handleSearch() {
       );
 
       var baselineData = null;
+      var recommendationData = null;
+      var baselineResolved = false;
+      var streamErr = null;
+      var recommendStreamPromise = apiStreamDepartureRecommendation(
+        origin,
+        destination,
+        isoTime,
+        oCoords,
+        dCoords,
+        {
+          onPlan: function (progressPayload) {
+            progressState = progressPayload || progressState;
+            if (!baselineResolved) {
+              return;
+            }
+            renderDeparturePending(
+              baselineData,
+              departureContext,
+              null,
+              progressState
+            );
+          },
+          onCandidate: function (_candidate, allCandidates, progressPayload) {
+            if (progressPayload) {
+              progressState = progressPayload;
+            } else {
+              progressState.checked = allCandidates.length;
+              progressState.remaining = Math.max(
+                0,
+                (progressState.planned || 0) - progressState.checked
+              );
+            }
+            if (!baselineResolved) {
+              return;
+            }
+            renderDeparturePending(
+              baselineData,
+              departureContext,
+              null,
+              progressState
+            );
+          },
+          onRecommendation: function (recommendPayload, candidates, progressPayload) {
+            if (
+              candidates &&
+              candidates.length > 0 &&
+              (
+                !recommendPayload.candidate_evaluations ||
+                recommendPayload.candidate_evaluations.length === 0
+              )
+            ) {
+              recommendPayload.candidate_evaluations = candidates.slice();
+            }
+            if (progressPayload) {
+              progressState = progressPayload;
+            }
+            recommendationData = recommendPayload;
+          },
+        }
+      ).catch(function (err) {
+        streamErr = err;
+        console.warn("departure mode recommendation stream failed:", err);
+        return null;
+      });
+
       try {
         baselineData = await baselinePromise;
+        baselineResolved = true;
         renderDeparturePending(
           baselineData,
           departureContext,
           null,
-          { checked: 0, planned: 0, remaining: 0, total_candidates: 0 }
+          progressState
         );
       } catch (baselineErr) {
         console.warn("baseline arrival failed:", baselineErr);
+        baselineResolved = true;
         renderDeparturePending(
           null,
           departureContext,
           null,
-          { checked: 0, planned: 0, remaining: 0, total_candidates: 0 }
+          progressState
         );
       }
 
       hideLoading();
 
-      var departureResults = await Promise.all([recommendPromise, routePromise]);
+      var departureResults = await Promise.all([recommendStreamPromise, routePromise]);
+      if (
+        !recommendationData &&
+        departureResults[0] &&
+        departureResults[0].recommendation
+      ) {
+        recommendationData = departureResults[0].recommendation;
+      }
+      if (!recommendationData) {
+        if (streamErr) {
+          console.warn("falling back to single departure recommendation API");
+        }
+        recommendationData = await apiRecommendDeparture(
+          origin,
+          destination,
+          isoTime,
+          oCoords,
+          dCoords
+        );
+      }
       renderDepartureResult(
-        departureResults[0],
+        recommendationData,
         baselineData,
         departureContext,
         null

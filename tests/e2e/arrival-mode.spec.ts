@@ -101,12 +101,39 @@ test.describe('출발 시각 기준 모드', () => {
     await saveCapture(page, testInfo.outputPath('02-after-action.png'));
 
     await expect(page.locator('#results')).toContainText('추천 출발 시각');
+    await expect(page.locator('#results')).toContainText('mock 모드 결과 안내');
     await expect(page.locator('#results')).toContainText('출발 시각 분석');
     await expect(page.locator('#results')).toContainText('지정 출발 시간');
     await expect(page.locator('#results')).toContainText('지정 출발 대비 도착 시간 차이');
     await expect(page.locator('.candidate-tooltip-template').first()).toContainText(
       '지정 출발보다 빠름'
     );
+    const recommendedCalendarLink = page.locator(
+      '.recommendation-card .calendar-action-btn.is-recommended'
+    );
+    const tightCalendarLink = page.locator(
+      '.recommendation-card .calendar-action-btn.is-tight'
+    );
+    await expect(recommendedCalendarLink).toBeVisible();
+    await expect(tightCalendarLink).toBeVisible();
+    const recommendedHref = await recommendedCalendarLink.getAttribute('href');
+    const tightHref = await tightCalendarLink.getAttribute('href');
+    expect(recommendedHref).not.toBeNull();
+    expect(tightHref).not.toBeNull();
+    const recommendedUrl = new URL(recommendedHref!);
+    const tightUrl = new URL(tightHref!);
+    expect(recommendedUrl.origin).toBe('https://calendar.google.com');
+    expect(recommendedUrl.pathname).toBe('/calendar/render');
+    expect(recommendedUrl.searchParams.get('action')).toBe('TEMPLATE');
+    expect(recommendedUrl.searchParams.get('text')).toContain('추천 출발');
+    expect(recommendedUrl.searchParams.get('dates')).toMatch(
+      /^\d{8}T\d{6}Z\/\d{8}T\d{6}Z$/
+    );
+    expect(tightUrl.origin).toBe('https://calendar.google.com');
+    expect(tightUrl.pathname).toBe('/calendar/render');
+    expect(tightUrl.searchParams.get('action')).toBe('TEMPLATE');
+    expect(tightUrl.searchParams.get('text')).toContain('타이트 출발');
+    expect(tightUrl.searchParams.get('dates')).toMatch(/^\d{8}T\d{6}Z\/\d{8}T\d{6}Z$/);
 
     await saveCapture(page, testInfo.outputPath('03-final.png'));
   });
