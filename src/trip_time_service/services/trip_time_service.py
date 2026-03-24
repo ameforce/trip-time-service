@@ -140,6 +140,11 @@ class TripTimeService:
 
         total_candidates = len(departures)
         planned_queries = total_candidates
+        minimum_sample_target = min(
+            total_candidates,
+            self._settings.max_queries,
+            max(1, self._settings.recommend_min_samples),
+        )
         if on_search_initialized is not None:
             on_search_initialized(total_candidates, planned_queries)
 
@@ -242,6 +247,55 @@ class TripTimeService:
                 idx = max(lo + 1, min(hi - 1, idx))
                 points.add(idx)
             return sorted(points)
+
+        def _collect_supplemental_indices(
+            *,
+            best_idx: int,
+            target_count: int,
+        ) -> list[int]:
+            pending_needed = max(0, target_count - candidates_checked)
+            if pending_needed <= 0:
+                return []
+
+            selected: list[int] = []
+            selected_set: set[int] = set()
+
+            def _queue(index: int) -> None:
+                if (
+                    index < 0
+                    or index >= total_candidates
+                    or index in evaluated
+                    or index in selected_set
+                ):
+                    return
+                selected_set.add(index)
+                selected.append(index)
+
+            boundary_start = max(0, best_idx - (coarse_stride - 1))
+            for idx in range(boundary_start, best_idx):
+                _queue(idx)
+                if len(selected) >= pending_needed:
+                    return selected
+
+            radius = 1
+            while len(selected) < pending_needed and radius < total_candidates:
+                _queue(best_idx - radius)
+                if len(selected) >= pending_needed:
+                    break
+                _queue(best_idx + radius)
+                radius += 1
+
+            for idx in coarse_indices:
+                _queue(idx)
+                if len(selected) >= pending_needed:
+                    return selected
+
+            for idx in range(total_candidates):
+                _queue(idx)
+                if len(selected) >= pending_needed:
+                    break
+
+            return selected
 
         coarse_indices = list(range(0, total_candidates, coarse_stride))
         if coarse_indices[-1] != total_candidates - 1:
@@ -350,6 +404,32 @@ class TripTimeService:
         if feasible_local:
             best_index = min(feasible_local)
 
+        supplemental_indices = _collect_supplemental_indices(
+            best_idx=best_index,
+            target_count=minimum_sample_target,
+        )
+        if supplemental_indices:
+            _evaluate_indices(supplemental_indices, phase="refine")
+            feasible_supplemental = [
+                idx
+                for idx in supplemental_indices
+                if idx < best_index and evaluated[idx].meets_deadline
+            ]
+            if feasible_supplemental:
+                best_index = min(feasible_supplemental)
+                boundary_refine_start = max(0, best_index - (coarse_stride - 1))
+                boundary_refine_indices = list(
+                    range(boundary_refine_start, best_index + 1)
+                )
+                _evaluate_indices(boundary_refine_indices, phase="refine")
+                feasible_boundary = [
+                    idx
+                    for idx in boundary_refine_indices
+                    if evaluated[idx].meets_deadline
+                ]
+                if feasible_boundary:
+                    best_index = min(feasible_boundary)
+
         if best_index not in evaluated or not evaluated[best_index].meets_deadline:
             range_start = departures[-1].strftime("%Y-%m-%d %H:%M")
             range_end = departures[0].strftime("%Y-%m-%d %H:%M")
@@ -387,6 +467,37 @@ class TripTimeService:
             )
             safe_departure_time = max(computed_safe_departure, min_future_departure)
 
+        score_by_index = self._score_deadline_recommendation_candidates(
+            evaluated=evaluated,
+            tight_departure_time=latest_departure,
+            tight_duration_seconds=latest_dur.duration_seconds,
+        )
+        score_by_departure = {
+            evaluated[idx].departure_time: score_by_index[idx]
+            for idx in evaluated
+            if idx in score_by_index
+        }
+        normalized_candidates = tuple(
+            RecommendationCandidate(
+                departure_time=item.departure_time,
+                arrival_time=item.arrival_time,
+                duration_seconds=item.duration_seconds,
+                meets_deadline=item.meets_deadline,
+                phase=item.phase,
+                score_total=score_by_departure[item.departure_time][0],
+                score_duration=score_by_departure[item.departure_time][1],
+                score_time_proximity=score_by_departure[item.departure_time][2],
+                score_night_drive=score_by_departure[item.departure_time][3],
+                score_stability=score_by_departure[item.departure_time][4],
+                score_improvement_efficiency=score_by_departure[
+                    item.departure_time
+                ][5],
+            )
+            for item in candidate_evaluations
+            if item.departure_time in score_by_departure
+        )
+        tight_score_total = score_by_index.get(best_index, (None,))[0]
+
         return DepartureRecommendation(
             route=route,
             desired_arrival_time=desired_arrival_time,
@@ -397,16 +508,16 @@ class TripTimeService:
             provider_calls=provider_calls_total,
             candidates_checked=candidates_checked,
             meets_deadline=True,
-            planned_queries=candidates_checked,
+            planned_queries=planned_queries,
             total_candidates=total_candidates,
             latest_departure_time=latest_departure,
             latest_departure_arrival_time=latest_arrival,
             latest_departure_duration_seconds=latest_dur.duration_seconds,
             safe_departure_time=safe_departure_time,
             safe_departure_duration_seconds=safe_duration_secs,
-            recommended_score_total=None,
-            baseline_score_total=None,
-            candidate_evaluations=tuple(candidate_evaluations),
+            recommended_score_total=tight_score_total,
+            baseline_score_total=tight_score_total,
+            candidate_evaluations=normalized_candidates,
         )
 
     def _worker_count(self) -> int:
@@ -416,7 +527,14 @@ class TripTimeService:
         )
         logical_cpus = max(1, os.cpu_count() or 1)
         cpu_parallel_target = max(1, math.ceil(logical_cpus * 0.8))
-        return max(1, min(provider_parallelism, cpu_parallel_target))
+        configured_workers = max(
+            1,
+            int(getattr(self._settings, "recommend_workers", 1)),
+        )
+        return max(
+            1,
+            min(provider_parallelism, cpu_parallel_target, configured_workers),
+        )
 
     def _build_forward_analysis_departures(
         self,
@@ -868,6 +986,164 @@ class TripTimeService:
         if 22 <= hour < 24:
             return 0.65
         return 1.0
+
+    def _score_deadline_recommendation_candidates(
+        self,
+        *,
+        evaluated: dict[int, RecommendationCandidate],
+        tight_departure_time: datetime,
+        tight_duration_seconds: int,
+    ) -> dict[int, tuple[float, float, float, float, float, float]]:
+        if not evaluated:
+            return {}
+
+        durations = [candidate.duration_seconds for candidate in evaluated.values()]
+        min_duration = min(durations)
+        max_improvement = max(0, tight_duration_seconds - min_duration)
+        improvement_range_floor = max(
+            _ANALYSIS_SCORE_DURATION_SPAN_FLOOR_SECONDS,
+            self._settings.step_minutes * 60,
+        )
+        effective_improvement_range = max(
+            max_improvement,
+            improvement_range_floor,
+        )
+
+        offset_seconds_by_index = {
+            idx: abs(
+                (
+                    candidate.departure_time - tight_departure_time
+                ).total_seconds()
+            )
+            for idx, candidate in evaluated.items()
+        }
+        max_offset_seconds = max(
+            0.0,
+            max(offset_seconds_by_index.values(), default=0.0),
+        )
+
+        sorted_indices = sorted(
+            evaluated.keys(),
+            key=lambda idx: evaluated[idx].departure_time,
+        )
+        base_gap_seconds = float(self._settings.step_minutes * 60)
+        volatility_by_index: dict[int, float] = {}
+        max_volatility_seconds = 0.0
+        for pos, idx in enumerate(sorted_indices):
+            adjusted_diffs: list[float] = []
+            current_candidate = evaluated[idx]
+            current_duration = current_candidate.duration_seconds
+            current_departure = current_candidate.departure_time
+            if pos > 0:
+                prev_idx = sorted_indices[pos - 1]
+                prev_candidate = evaluated[prev_idx]
+                prev_gap_seconds = max(
+                    base_gap_seconds,
+                    (
+                        current_departure - prev_candidate.departure_time
+                    ).total_seconds(),
+                )
+                prev_gap_scale = min(base_gap_seconds / prev_gap_seconds, 1.0)
+                adjusted_diffs.append(
+                    abs(current_duration - prev_candidate.duration_seconds)
+                    * prev_gap_scale
+                )
+            if pos + 1 < len(sorted_indices):
+                next_idx = sorted_indices[pos + 1]
+                next_candidate = evaluated[next_idx]
+                next_gap_seconds = max(
+                    base_gap_seconds,
+                    (
+                        next_candidate.departure_time - current_departure
+                    ).total_seconds(),
+                )
+                next_gap_scale = min(base_gap_seconds / next_gap_seconds, 1.0)
+                adjusted_diffs.append(
+                    abs(current_duration - next_candidate.duration_seconds)
+                    * next_gap_scale
+                )
+            volatility = (
+                sum(adjusted_diffs) / len(adjusted_diffs)
+                if adjusted_diffs
+                else 0.0
+            )
+            volatility_by_index[idx] = volatility
+            max_volatility_seconds = max(max_volatility_seconds, volatility)
+        effective_volatility_range = max(
+            max_volatility_seconds,
+            float(improvement_range_floor),
+        )
+
+        efficiency_raw_by_index: dict[int, float] = {}
+        max_efficiency_raw = 0.0
+        min_wait_seconds = float(self._settings.step_minutes * 60)
+        for idx, candidate in evaluated.items():
+            improvement_seconds = max(
+                0,
+                tight_duration_seconds - candidate.duration_seconds,
+            )
+            wait_seconds = max(
+                offset_seconds_by_index[idx],
+                min_wait_seconds,
+            )
+            efficiency_raw = improvement_seconds / wait_seconds
+            efficiency_raw_by_index[idx] = efficiency_raw
+            max_efficiency_raw = max(max_efficiency_raw, efficiency_raw)
+
+        scored: dict[int, tuple[float, float, float, float, float, float]] = {}
+        for idx, candidate in evaluated.items():
+            improvement_seconds = max(
+                0,
+                tight_duration_seconds - candidate.duration_seconds,
+            )
+            duration_score = min(
+                improvement_seconds / effective_improvement_range,
+                1.0,
+            )
+
+            if max_offset_seconds <= 0:
+                time_proximity_score = 1.0
+            else:
+                offset_seconds = offset_seconds_by_index[idx]
+                time_proximity_score = 1.0 - min(
+                    offset_seconds / max_offset_seconds,
+                    1.0,
+                )
+
+            night_drive_score = self._night_drive_score(
+                candidate.departure_time
+            )
+            stability_score = 1.0 - min(
+                volatility_by_index[idx] / effective_volatility_range,
+                1.0,
+            )
+            if max_efficiency_raw <= 0:
+                improvement_efficiency_score = 1.0
+            else:
+                improvement_efficiency_score = min(
+                    efficiency_raw_by_index[idx] / max_efficiency_raw,
+                    1.0,
+                )
+            total_score = (
+                duration_score * _ANALYSIS_SCORE_WEIGHT_DURATION
+                + time_proximity_score
+                * _ANALYSIS_SCORE_WEIGHT_TIME_PROXIMITY
+                + night_drive_score * _ANALYSIS_SCORE_WEIGHT_NIGHT_DRIVE
+                + stability_score * _ANALYSIS_SCORE_WEIGHT_STABILITY
+                + improvement_efficiency_score
+                * _ANALYSIS_SCORE_WEIGHT_IMPROVEMENT_EFFICIENCY
+            )
+            if not candidate.meets_deadline:
+                total_score *= 0.45
+            scored[idx] = (
+                total_score,
+                duration_score,
+                time_proximity_score,
+                night_drive_score,
+                stability_score,
+                improvement_efficiency_score,
+            )
+        return scored
 
     def _score_departure_analysis_candidates(
         self,

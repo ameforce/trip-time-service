@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -248,6 +249,46 @@ class TestDepartureRecommendationEndpoint:
             },
         )
         assert resp.status_code == 422
+
+    def test_stream_endpoint_emits_progress_and_scores(self) -> None:
+        client = _build_client(_MockProvider(seconds=1800))
+        with client.stream(
+            "POST",
+            "/v1/trip/recommended-departure-time/stream",
+            json={
+                "origin": "강남역",
+                "destination": "판교역",
+                "desired_arrival_time": "2099-01-24T10:00:00+09:00",
+            },
+        ) as resp:
+            assert resp.status_code == 200
+            payload = "".join(resp.iter_text())
+
+        assert "event: plan" in payload
+        assert "event: candidate" in payload
+        assert "event: recommendation" in payload
+        assert "event: end" in payload
+
+        recommendation_payload = None
+        for block in payload.split("\n\n"):
+            if "event: recommendation" not in block:
+                continue
+            data_lines = [
+                line[len("data:") :].strip()
+                for line in block.splitlines()
+                if line.startswith("data:")
+            ]
+            if not data_lines:
+                continue
+            recommendation_payload = json.loads("\n".join(data_lines))
+            break
+
+        assert recommendation_payload is not None
+        assert recommendation_payload["recommended_score_total"] is not None
+        assert recommendation_payload["baseline_score_total"] is not None
+        candidates = recommendation_payload["candidate_evaluations"]
+        assert len(candidates) > 0
+        assert candidates[0]["score_total"] is not None
 
 
 class TestArrivalWithRecommendationEndpoint:

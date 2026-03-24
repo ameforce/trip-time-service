@@ -215,7 +215,12 @@ class _DelayedProvider:
         return
 
 
-def _settings(*, step_minutes: int = 5, lookback_hours: int = 1) -> Settings:
+def _settings(
+    *,
+    step_minutes: int = 5,
+    lookback_hours: int = 1,
+    recommend_min_samples: int = 12,
+) -> Settings:
     return Settings(
         timezone=KST,
         headless=True,
@@ -229,6 +234,7 @@ def _settings(*, step_minutes: int = 5, lookback_hours: int = 1) -> Settings:
         naver_map_client_id=None,
         recommend_workers=1,
         naver_session_pool_size=1,
+        recommend_min_samples=recommend_min_samples,
     )
 
 
@@ -322,7 +328,11 @@ class TestRecommendDeparture:
     def test_latest_feasible_coarse_short_circuits_queries(self) -> None:
         provider = _CountingProvider(seconds=120)
         service = TripTimeService(
-            settings=_settings(step_minutes=10, lookback_hours=3),
+            settings=_settings(
+                step_minutes=10,
+                lookback_hours=3,
+                recommend_min_samples=1,
+            ),
             provider=provider,
         )
 
@@ -337,6 +347,28 @@ class TestRecommendDeparture:
         assert result.candidates_checked == 1
         assert provider.call_count == 1
         assert {item.phase for item in result.candidate_evaluations} == {"coarse"}
+
+    def test_recommend_departure_respects_minimum_sample_floor(self) -> None:
+        provider = _CountingProvider(seconds=1800)
+        service = TripTimeService(
+            settings=_settings(
+                step_minutes=10,
+                lookback_hours=3,
+                recommend_min_samples=12,
+            ),
+            provider=provider,
+        )
+
+        desired = _future_time(hours_ahead=3, minute=0)
+        result = service.recommend_departure(
+            origin="A",
+            destination="B",
+            desired_arrival_time=desired,
+        )
+
+        assert result.candidates_checked >= 12
+        assert result.candidates_checked <= result.total_candidates
+        assert result.planned_queries == result.total_candidates
 
     def test_picks_latest_feasible_departure(self) -> None:
         provider = _FixedProvider(
@@ -389,6 +421,41 @@ class TestRecommendDeparture:
 
         assert result.provider_calls > 0
         assert result.candidates_checked > 0
+
+    def test_deadline_mode_populates_candidate_scores(self) -> None:
+        provider = _PatternProvider(
+            seconds_by_slot={
+                (9, 0): 3000,
+                (9, 10): 2700,
+                (9, 20): 2400,
+                (9, 30): 2100,
+            },
+            default_seconds=3300,
+        )
+        service = TripTimeService(
+            settings=_settings(step_minutes=10, lookback_hours=2),
+            provider=provider,
+        )
+
+        desired = datetime(2099, 1, 24, 10, 0, tzinfo=KST)
+        result = service.recommend_departure(
+            origin="A",
+            destination="B",
+            desired_arrival_time=desired,
+        )
+
+        assert result.recommended_score_total is not None
+        assert result.baseline_score_total is not None
+        assert len(result.candidate_evaluations) > 0
+        assert all(
+            candidate.score_total is not None
+            and candidate.score_duration is not None
+            and candidate.score_time_proximity is not None
+            and candidate.score_night_drive is not None
+            and candidate.score_stability is not None
+            and candidate.score_improvement_efficiency is not None
+            for candidate in result.candidate_evaluations
+        )
 
     def test_analysis_start_time_expands_search_window(self) -> None:
         provider = _CountingProvider(seconds=2 * 3600)
@@ -832,6 +899,27 @@ class TestRecommendDeparture:
         assert result.meets_deadline is True
         assert provider.call_count > 0
         assert elapsed < serial_cost
+
+    def test_worker_count_respects_recommend_workers_setting(self) -> None:
+        provider = _DelayedProvider(seconds=1800, delay_seconds=0.01)
+        base_settings = _settings(step_minutes=10, lookback_hours=12)
+        tuned = Settings(
+            timezone=base_settings.timezone,
+            headless=base_settings.headless,
+            cache_ttl=base_settings.cache_ttl,
+            step_minutes=base_settings.step_minutes,
+            lookback_hours=base_settings.lookback_hours,
+            max_queries=base_settings.max_queries,
+            provider=base_settings.provider,
+            chrome_binary_path=base_settings.chrome_binary_path,
+            chrome_user_data_dir=base_settings.chrome_user_data_dir,
+            naver_map_client_id=base_settings.naver_map_client_id,
+            recommend_workers=1,
+            naver_session_pool_size=1,
+        )
+        service = TripTimeService(settings=tuned, provider=provider)
+
+        assert service._worker_count() == 1
 
     def test_retryable_candidate_errors_do_not_abort_recommendation(self) -> None:
         provider = _RetryableFailOnceProvider(seconds=1800)

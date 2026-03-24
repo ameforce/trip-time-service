@@ -841,6 +841,68 @@ class NaverMapsSeleniumProvider:
             _time.sleep(0.25)
         return self._read_duration_from_panel_dialog(driver, ampm, hour, minute)
 
+    def _visible_calendar_day_buttons(self, driver: webdriver.Chrome) -> list:
+        visible_buttons = []
+        for button in driver.find_elements(
+            By.CSS_SELECTOR, "button.calendar_day_btn",
+        ):
+            try:
+                if button.is_displayed():
+                    visible_buttons.append(button)
+            except Exception:
+                continue
+        return visible_buttons
+
+    def _find_calendar_day_button(
+        self,
+        driver: webdriver.Chrome,
+        day: int,
+    ):
+        day_text = str(day)
+        for button in self._visible_calendar_day_buttons(driver):
+            if button.text.strip() == day_text:
+                return button
+        return None
+
+    def _expand_calendar_days_if_needed(self, driver: webdriver.Chrome) -> bool:
+        visible_count_before = len(self._visible_calendar_day_buttons(driver))
+        if visible_count_before >= 28:
+            return True
+
+        expand_buttons = []
+        for by, selector in (
+            (By.CSS_SELECTOR, "button.calendar_expand_btn"),
+            (
+                By.XPATH,
+                "//button[contains(@class, 'calendar_expand_btn')]",
+            ),
+            (
+                By.XPATH,
+                "//button[contains(normalize-space(.), '펼치기')]",
+            ),
+        ):
+            for button in driver.find_elements(by, selector):
+                try:
+                    if button.is_displayed():
+                        expand_buttons.append(button)
+                except Exception:
+                    continue
+            if expand_buttons:
+                break
+
+        if not expand_buttons:
+            return False
+
+        driver.execute_script("arguments[0].click();", expand_buttons[0])
+        _time.sleep(0.35)
+        visible_count_after = len(self._visible_calendar_day_buttons(driver))
+        _log.debug(
+            "캘린더 확장 클릭: visible_day_count=%d->%d",
+            visible_count_before,
+            visible_count_after,
+        )
+        return visible_count_after > visible_count_before
+
     def _set_calendar_date(
         self, driver: webdriver.Chrome, departure_time: datetime,
     ) -> None:
@@ -852,18 +914,27 @@ class NaverMapsSeleniumProvider:
         if target == today:
             return
 
-        day_str = str(target.day)
-        day_btns = driver.find_elements(
-            By.CSS_SELECTOR, "button.calendar_day_btn",
-        )
-        for btn in day_btns:
-            if btn.is_displayed() and btn.text.strip() == day_str:
-                driver.execute_script("arguments[0].click();", btn)
-                _time.sleep(0.5)
-                _log.debug("캘린더 날짜 선택: %s일", day_str)
-                return
+        day_button = self._find_calendar_day_button(driver, target.day)
+        if day_button is None:
+            if self._expand_calendar_days_if_needed(driver):
+                day_button = self._find_calendar_day_button(driver, target.day)
 
-        _log.warning("캘린더에서 %s일을 찾을 수 없음 (오늘 기준 사용)", day_str)
+        if day_button is not None:
+            driver.execute_script("arguments[0].click();", day_button)
+            _time.sleep(0.5)
+            _log.debug("캘린더 날짜 선택: %s", target.strftime("%Y-%m-%d"))
+            return
+
+        visible_days = [
+            button.text.strip().replace("\n", " ")
+            for button in self._visible_calendar_day_buttons(driver)
+        ]
+        _log.warning(
+            "캘린더에서 %s일을 찾을 수 없음 (target=%s, visible_days=%s)",
+            target.day,
+            target.strftime("%Y-%m-%d"),
+            visible_days,
+        )
 
     def _set_dropdown_value(
         self,

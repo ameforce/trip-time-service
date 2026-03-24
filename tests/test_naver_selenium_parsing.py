@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from trip_time_service.config import Settings
@@ -27,6 +27,77 @@ def _settings() -> Settings:
         recommend_workers=1,
         naver_session_pool_size=1,
     )
+
+
+class _FakeButton:
+    def __init__(
+        self,
+        text: str,
+        *,
+        displayed: bool = True,
+        css_class: str = "",
+    ) -> None:
+        self.text = text
+        self._displayed = displayed
+        self._css_class = css_class
+        self.clicks = 0
+
+    def is_displayed(self) -> bool:
+        return self._displayed
+
+    def get_attribute(self, name: str) -> str | None:
+        if name == "class":
+            return self._css_class
+        return None
+
+
+class _FakeCalendarDriver:
+    def __init__(
+        self,
+        *,
+        collapsed_days: list[str],
+        expanded_days: list[str] | None = None,
+        show_expand_button: bool = True,
+    ) -> None:
+        self._collapsed_buttons = [
+            _FakeButton(day, css_class="calendar_day_btn")
+            for day in collapsed_days
+        ]
+        expanded_values = expanded_days if expanded_days is not None else collapsed_days
+        self._expanded_buttons = [
+            _FakeButton(day, css_class="calendar_day_btn")
+            for day in expanded_values
+        ]
+        self._expand_button = _FakeButton(
+            "펼치기",
+            css_class="calendar_expand_btn",
+            displayed=show_expand_button,
+        )
+        self.is_expanded = False
+        self.clicked_elements: list[_FakeButton] = []
+
+    def _active_day_buttons(self) -> list[_FakeButton]:
+        if self.is_expanded:
+            return self._expanded_buttons
+        return self._collapsed_buttons
+
+    def find_elements(self, by: str, selector: str) -> list[_FakeButton]:
+        if selector == "button.calendar_day_btn":
+            return self._active_day_buttons()
+        if selector == "button.calendar_expand_btn":
+            return [self._expand_button]
+        if "calendar_expand_btn" in selector:
+            return [self._expand_button]
+        if "펼치기" in selector:
+            return [self._expand_button]
+        return []
+
+    def execute_script(self, script: str, element: _FakeButton) -> None:
+        del script
+        element.clicks += 1
+        self.clicked_elements.append(element)
+        if element is self._expand_button:
+            self.is_expanded = True
 
 
 def test_extract_duration_from_panel_text_matches_requested_departure() -> None:
@@ -92,3 +163,41 @@ def test_parse_duration_prefers_hour_only_before_soyo() -> None:
     duration = _parse_naver_duration(text)
 
     assert duration == 5 * 3600
+
+
+def test_set_calendar_date_clicks_visible_day_without_expand(monkeypatch) -> None:
+    provider = NaverMapsSeleniumProvider(_settings())
+    driver = _FakeCalendarDriver(
+        collapsed_days=[str(day) for day in range(8, 22)],
+        expanded_days=[str(day) for day in range(1, 32)],
+    )
+    departure_time = datetime(2099, 3, 15, 9, 0, tzinfo=KST)
+    monkeypatch.setattr(
+        "trip_time_service.providers.naver_selenium._time.sleep",
+        lambda _seconds: None,
+    )
+
+    provider._set_calendar_date(driver, departure_time)
+
+    assert driver._expand_button.clicks == 0
+    assert any(button.text == "15" for button in driver.clicked_elements)
+
+
+def test_set_calendar_date_expands_calendar_when_target_day_missing(
+    monkeypatch,
+) -> None:
+    provider = NaverMapsSeleniumProvider(_settings())
+    driver = _FakeCalendarDriver(
+        collapsed_days=[str(day) for day in range(8, 22)],
+        expanded_days=[str(day) for day in range(1, 32)],
+    )
+    departure_time = datetime(2099, 3, 27, 9, 0, tzinfo=KST)
+    monkeypatch.setattr(
+        "trip_time_service.providers.naver_selenium._time.sleep",
+        lambda _seconds: None,
+    )
+
+    provider._set_calendar_date(driver, departure_time)
+
+    assert driver._expand_button.clicks == 1
+    assert any(button.text == "27" for button in driver.clicked_elements)

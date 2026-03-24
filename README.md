@@ -81,6 +81,7 @@ uv run trip-time-service
 - `TTS_STEP_MINUTES` (기본 10)
 - `TTS_LOOKBACK_HOURS` (기본 3)
 - `TTS_MAX_QUERIES` (기본 120)
+- `TTS_RECOMMEND_MIN_SAMPLES` (기본 12, 도착 시각 기준 추천 시 최소 분석 샘플 수)
 - `TTS_NAVER_MAP_CLIENT_ID` (선택, 네이버 클라우드 플랫폼 Maps API Client ID)
 - `TTS_CORS_ALLOW_ORIGINS` (선택, CORS 허용 오리진 CSV. 예: `http://localhost:3000,https://example.com`)
 

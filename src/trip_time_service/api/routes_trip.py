@@ -190,6 +190,109 @@ def recommend_departure_time(
     return _to_departure_response(result)
 
 
+@router.post("/v1/trip/recommended-departure-time/stream")
+def stream_recommended_departure_time(
+    payload: DepartureRecommendationRequest,
+    request: Request,
+) -> StreamingResponse:
+    service, tz = _prepare_service_and_coords(payload=payload, request=request)
+    desired = ensure_future_time(payload.desired_arrival_time, tz)
+
+    done_marker = object()
+    event_queue: queue.Queue[object] = queue.Queue()
+    progress = {
+        "checked": 0,
+        "planned": 0,
+        "remaining": 0,
+        "total_candidates": 0,
+    }
+
+    def _on_initialized(total_candidates: int, planned_queries: int) -> None:
+        progress["total_candidates"] = total_candidates
+        progress["planned"] = planned_queries
+        progress["remaining"] = max(0, planned_queries - progress["checked"])
+        event_queue.put({"event": "plan", "data": progress.copy()})
+
+    def _on_candidate(candidate: object) -> None:
+        progress["checked"] += 1
+        progress["remaining"] = max(0, progress["planned"] - progress["checked"])
+        event_queue.put(
+            {
+                "event": "candidate",
+                "data": {
+                    "candidate": RecommendationCandidateModel(
+                        departure_time=candidate.departure_time,
+                        arrival_time=candidate.arrival_time,
+                        duration_seconds=candidate.duration_seconds,
+                        meets_deadline=candidate.meets_deadline,
+                        phase=candidate.phase,
+                        score_total=candidate.score_total,
+                        score_duration=candidate.score_duration,
+                        score_time_proximity=candidate.score_time_proximity,
+                        score_night_drive=candidate.score_night_drive,
+                        score_stability=candidate.score_stability,
+                        score_improvement_efficiency=(
+                            candidate.score_improvement_efficiency
+                        ),
+                    ).model_dump(mode="json"),
+                    "progress": progress.copy(),
+                },
+            }
+        )
+
+    def _worker() -> None:
+        try:
+            recommendation = service.recommend_departure(
+                origin=payload.origin,
+                destination=payload.destination,
+                desired_arrival_time=desired,
+                on_search_initialized=_on_initialized,
+                on_candidate_evaluated=_on_candidate,
+            )
+            event_queue.put(
+                {
+                    "event": "recommendation",
+                    "data": _to_departure_response(recommendation).model_dump(
+                        mode="json"
+                    ),
+                }
+            )
+        except Exception as exc:
+            _log.exception("departure recommendation stream worker failed")
+            event_queue.put(
+                {
+                    "event": "error",
+                    "data": {"detail": _public_error_detail(exc)},
+                }
+            )
+        finally:
+            event_queue.put(done_marker)
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+
+    def _stream() -> object:
+        yield sse_encode("plan", progress.copy())
+        for item in iter_stream_events(
+            event_queue=event_queue,
+            done_marker=done_marker,
+            worker=worker,
+            idle_timeout_seconds=STREAM_IDLE_TIMEOUT_SECONDS,
+        ):
+            yield sse_encode(item["event"], item["data"])
+        yield sse_encode("end", {"ok": True})
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post(
     "/v1/trip/arrival-time-with-recommendation",
     response_model=ArrivalWithRecommendationResponse,

@@ -66,6 +66,7 @@ class Settings:
     recommend_workers: int = 1
     naver_session_pool_size: int = 1
     cors_allowed_origins: tuple[str, ...] = ()
+    recommend_min_samples: int = 12
 
 
 @lru_cache(maxsize=1)
@@ -78,6 +79,7 @@ def load_settings() -> Settings:
     step_minutes = _getenv_int("TTS_STEP_MINUTES", 10)
     lookback_hours = _getenv_int("TTS_LOOKBACK_HOURS", 3)
     max_queries = _getenv_int("TTS_MAX_QUERIES", 120)
+    recommend_min_samples = _getenv_int("TTS_RECOMMEND_MIN_SAMPLES", 12)
     provider = (_getenv_stripped("TTS_PROVIDER") or "naver_selenium").lower()
     logical_cpus = max(1, os.cpu_count() or 1)
     cpu_parallel_target = _cpu_parallel_target(logical_cpus)
@@ -97,9 +99,15 @@ def load_settings() -> Settings:
     )
 
     if provider in {"naver", "naver_selenium"}:
-        # Naver Selenium은 항상 CPU 80% 병렬도를 확보한다.
-        naver_session_pool_size = cpu_parallel_target
-        recommend_workers = cpu_parallel_target
+        # 운영자가 지정한 값은 존중하되, 과도한 병렬도만 CPU 목표치로 상한 제한한다.
+        naver_session_pool_size = min(
+            naver_session_pool_size,
+            cpu_parallel_target,
+        )
+        recommend_workers = min(
+            recommend_workers,
+            cpu_parallel_target,
+        )
 
     chrome_binary_path = _getenv_stripped("TTS_CHROME_BINARY_PATH")
     chrome_user_data_dir = _getenv_stripped("TTS_CHROME_USER_DATA_DIR")
@@ -112,6 +120,8 @@ def load_settings() -> Settings:
         raise ValueError("TTS_LOOKBACK_HOURS must be positive")
     if max_queries <= 0:
         raise ValueError("TTS_MAX_QUERIES must be positive")
+    if recommend_min_samples <= 0:
+        raise ValueError("TTS_RECOMMEND_MIN_SAMPLES must be positive")
     if cache_ttl_seconds <= 0:
         raise ValueError("TTS_CACHE_TTL_SECONDS must be positive")
     if recommend_workers <= 0:
@@ -133,4 +143,5 @@ def load_settings() -> Settings:
         recommend_workers=recommend_workers,
         naver_session_pool_size=naver_session_pool_size,
         cors_allowed_origins=cors_allowed_origins,
+        recommend_min_samples=recommend_min_samples,
     )
