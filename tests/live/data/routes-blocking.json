@@ -1,0 +1,34 @@
+[
+  {
+    "origin_query": "강남역",
+    "destination_query": "판교역",
+    "mode": "arrival",
+    "future_offset_days": 1,
+    "time_hhmm": "09:00",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "서울역",
+    "destination_query": "코엑스",
+    "mode": "departure",
+    "future_offset_days": 1,
+    "time_hhmm": "18:30",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "테헤란로 152",
+    "destination_query": "수서역",
+    "mode": "arrival",
+    "future_offset_days": 1,
+    "time_hhmm": "10:00",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "네이버 1784",
+    "destination_query": "잠실역",
+    "mode": "departure",
+    "future_offset_days": 1,
+    "time_hhmm": "19:00",
+    "selection_kind": "query_token_match"
+  }
+]

@@ -6,7 +6,12 @@
   "scripts": {
     "e2e": "playwright test",
     "e2e:headed": "playwright test --headed",
-    "e2e:report": "playwright show-report .artifacts/e2e/playwright-report"
+    "e2e:report": "playwright show-report .artifacts/live/playwright-report",
+    "e2e:ci": "TTS_E2E_ARTIFACTS_DIR=.artifacts/e2e-ci TTS_PROVIDER=mock TTS_E2E_FIXTURE_MODE=1 TTS_AUTOCOMPLETE_BROWSER_ENABLE=0 TTS_PORT_STRICT=1 playwright test",
+    "e2e:live": "node tests/e2e/run-live.mjs smoke",
+    "e2e:live:smoke": "node tests/e2e/run-live.mjs smoke",
+    "e2e:live:diagnose": "node tests/e2e/run-live.mjs diagnose",
+    "e2e:live:extended": "node tests/e2e/run-live.mjs extended"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2"

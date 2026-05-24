@@ -1,21 +1,74 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
 import { defineConfig } from '@playwright/test';
 
 const e2ePort = process.env.E2E_PORT ?? '39080';
 const baseURL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${e2ePort}`;
+const e2eDebugToken =
+  process.env.TTS_E2E_DEBUG_TOKEN ?? 'playwright-e2e-debug-token';
+const e2eProvider = process.env.TTS_PROVIDER ?? 'naver_selenium';
+const strictPort = process.env.TTS_PORT_STRICT ?? '1';
+const fixtureMode = process.env.TTS_E2E_FIXTURE_MODE ?? '0';
+const autocompleteBrowserEnable =
+  process.env.TTS_AUTOCOMPLETE_BROWSER_ENABLE ?? (fixtureMode === '1' ? '0' : '1');
+const liveMode = fixtureMode !== '1' && e2eProvider !== 'mock';
+const liveArtifactsDir =
+  process.env.TTS_E2E_ARTIFACTS_DIR ?? join(process.cwd(), '.artifacts', 'live');
+mkdirSync(liveArtifactsDir, { recursive: true });
+process.env.E2E_BASE_URL = baseURL;
+process.env.TTS_E2E_ARTIFACTS_DIR = liveArtifactsDir;
+process.env.TTS_E2E_DEBUG_TOKEN = e2eDebugToken;
+process.env.TTS_PROVIDER = e2eProvider;
+process.env.TTS_PORT_STRICT = strictPort;
+process.env.TTS_E2E_FIXTURE_MODE = fixtureMode;
+process.env.TTS_AUTOCOMPLETE_BROWSER_ENABLE = autocompleteBrowserEnable;
+const chromeUserDataDir =
+  process.env.TTS_E2E_CHROME_USER_DATA_DIR ??
+  mkdtempSync(join(liveArtifactsDir, 'chrome-profile-'));
+process.env.TTS_E2E_CHROME_USER_DATA_DIR = chromeUserDataDir;
+writeFileSync(
+  resolve(liveArtifactsDir, 'chrome-user-data-dir.txt'),
+  `${chromeUserDataDir}\n`,
+  'utf-8',
+);
+writeFileSync(
+  resolve(liveArtifactsDir, 'e2e-runtime.json'),
+  `${JSON.stringify(
+    {
+      baseURL,
+      E2E_PORT: e2ePort,
+      strict: strictPort === '1',
+      fixture: fixtureMode === '1',
+      live: liveMode,
+      TTS_PROVIDER: e2eProvider,
+      TTS_E2E_FIXTURE_MODE: fixtureMode,
+      TTS_AUTOCOMPLETE_BROWSER_ENABLE: autocompleteBrowserEnable,
+      TTS_LIVE_MODE: process.env.TTS_LIVE_MODE ?? '',
+      LIVE_E2E_POLICY: process.env.LIVE_E2E_POLICY ?? '',
+    },
+    null,
+    2,
+  )}\n`,
+  'utf-8',
+);
+const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
 export default defineConfig({
   testDir: './tests/e2e',
-  timeout: 120_000,
+  timeout: 240_000,
   expect: {
-    timeout: 10_000,
+    timeout: 15_000,
   },
   fullyParallel: false,
+  workers: 1,
   retries: 0,
   reporter: [
     ['list'],
-    ['html', { outputFolder: '.artifacts/e2e/playwright-report', open: 'never' }],
+    ['html', { outputFolder: '.artifacts/live/playwright-report', open: 'never' }],
   ],
-  outputDir: '.artifacts/e2e/test-results',
+  outputDir: '.artifacts/live/test-results',
+  globalTeardown: './tests/e2e/global-teardown.ts',
   use: {
     baseURL,
     trace: 'retain-on-failure',
@@ -24,12 +77,19 @@ export default defineConfig({
   },
   webServer: {
     command:
-      `cmd /c "set TTS_PROVIDER=mock&&` +
-      `set TTS_RELOAD=false&&` +
-      `set TTS_PORT=${e2ePort}&&` +
-      'uv run trip-time-service"',
+      `TTS_PROVIDER=${shellQuote(e2eProvider)} ` +
+      `TTS_E2E_FIXTURE_MODE=${shellQuote(fixtureMode)} ` +
+      `TTS_AUTOCOMPLETE_BROWSER_ENABLE=${shellQuote(autocompleteBrowserEnable)} ` +
+      `TTS_PORT_STRICT=${shellQuote(strictPort)} ` +
+      `TTS_RELOAD=false ` +
+      `TTS_HEADLESS=true ` +
+      `TTS_ENABLE_DEBUG_ROUTES=1 ` +
+      `TTS_DEBUG_TOKEN=${shellQuote(e2eDebugToken)} ` +
+      `TTS_PORT=${shellQuote(e2ePort)} ` +
+      `TTS_CHROME_USER_DATA_DIR=${shellQuote(chromeUserDataDir)} ` +
+      'uv run trip-time-service',
     url: `${baseURL}/healthz`,
-    reuseExistingServer: true,
-    timeout: 120_000,
+    reuseExistingServer: false,
+    timeout: 240_000,
   },
 });
