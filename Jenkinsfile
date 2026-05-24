@@ -13,7 +13,7 @@ pipeline {
       choices: ["auto", "prod", "dev"],
       description: "auto는 main=prod, 그 외=dev로 자동 매핑합니다."
     )
-    string(name: "ENM_HOST", defaultValue: "", description: "enm-server SSH host")
+    string(name: "ENM_HOST", defaultValue: "enmsoftware.com", description: "enm-server SSH host")
     string(name: "ENM_PORT", defaultValue: "22", description: "enm-server SSH port")
     string(name: "ENM_SSH_CREDENTIAL_ID", defaultValue: "enm-server-ssh-key", description: "Jenkins SSH key credential ID")
     string(name: "DOCKER_REGISTRY", defaultValue: "", description: "예: ghcr.io/my-org (비우면 로컬 이미지 사용)")
@@ -155,16 +155,27 @@ pipeline {
           env.IMAGE_TAG = deployTarget == "prod"
             ? env.APP_VERSION
             : "${env.APP_VERSION}-${env.BRANCH_SLUG}-${env.SHORT_SHA}"
+          env.DEPLOY_APP_VERSION = env.IMAGE_TAG
 
           String localImageRef = "${params.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
           env.REMOTE_IMAGE_REF = params.DOCKER_REGISTRY?.trim()
             ? "${params.DOCKER_REGISTRY}/${params.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
             : localImageRef
 
+          env.EFFECTIVE_ENM_HOST = params.ENM_HOST?.trim()
+            ?: env.ENM_HOST?.trim()
+            ?: "enmsoftware.com"
+          env.EFFECTIVE_ENM_PORT = params.ENM_PORT?.trim()
+            ?: env.ENM_PORT?.trim()
+            ?: "22"
+          env.DEPLOY_KNOWN_HOSTS = "${env.WORKSPACE}/.ci-artifacts/enm-known-hosts"
+
           echo "APP_VERSION=${env.APP_VERSION}"
+          echo "DEPLOY_APP_VERSION=${env.DEPLOY_APP_VERSION}"
           echo "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}"
           echo "IMAGE_REF=${env.REMOTE_IMAGE_REF}"
           echo "TARGET_DOMAIN=${env.TARGET_DOMAIN}"
+          echo "ENM_HOST configured=${env.EFFECTIVE_ENM_HOST ? 'yes' : 'no'}"
         }
       }
     }
@@ -193,11 +204,20 @@ pipeline {
       }
       steps {
         script {
-          if (!params.ENM_HOST?.trim()) {
+          if (!env.EFFECTIVE_ENM_HOST?.trim()) {
             error("ENM_HOST 값이 필요합니다.")
+          }
+          if (!env.EFFECTIVE_ENM_PORT?.trim()) {
+            error("ENM_PORT 값이 필요합니다.")
           }
           env.DEPLOY_ATTEMPTED = "true"
         }
+        sh '''
+          set -eu
+          mkdir -p .ci-artifacts
+          ssh-keyscan -p "$EFFECTIVE_ENM_PORT" "$EFFECTIVE_ENM_HOST" > "$DEPLOY_KNOWN_HOSTS"
+          test -s "$DEPLOY_KNOWN_HOSTS"
+        '''
         withCredentials([
           sshUserPrivateKey(
             credentialsId: "${params.ENM_SSH_CREDENTIAL_ID?.trim() ?: 'enm-server-ssh-key'}",
@@ -208,10 +228,12 @@ pipeline {
           withEnv([
             "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}",
             "IMAGE_REF=${env.REMOTE_IMAGE_REF}",
-            "APP_VERSION=${env.APP_VERSION}",
+            "APP_VERSION=${env.DEPLOY_APP_VERSION}",
             "SOURCE_ARCHIVE_PATH=${env.DEPLOY_BUNDLE_PATH}",
-            "ENM_HOST=${params.ENM_HOST}",
-            "ENM_PORT=${params.ENM_PORT}",
+            "ENM_HOST=${env.EFFECTIVE_ENM_HOST}",
+            "ENM_PORT=${env.EFFECTIVE_ENM_PORT}",
+            "SSH_STRICT_HOST_KEY_CHECKING=yes",
+            "SSH_KNOWN_HOSTS_FILE=${env.DEPLOY_KNOWN_HOSTS}",
             "REMOTE_APP_ROOT=${params.REMOTE_APP_ROOT}",
             "CONTAINER_PREFIX=${env.CONTAINER_PREFIX}",
             "CONTAINER_PORT=${env.CONTAINER_PORT}",
@@ -254,7 +276,7 @@ pipeline {
           return
         }
 
-        if (!params.ENM_HOST?.trim()) {
+        if (!env.EFFECTIVE_ENM_HOST?.trim()) {
           echo "ENM_HOST is empty. Rollback skipped."
           return
         }
@@ -272,8 +294,10 @@ pipeline {
         withEnv([
           "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}",
           "IMAGE_REF=${env.REMOTE_IMAGE_REF}",
-          "ENM_HOST=${params.ENM_HOST}",
-          "ENM_PORT=${params.ENM_PORT}",
+          "ENM_HOST=${env.EFFECTIVE_ENM_HOST}",
+          "ENM_PORT=${env.EFFECTIVE_ENM_PORT}",
+          "SSH_STRICT_HOST_KEY_CHECKING=yes",
+          "SSH_KNOWN_HOSTS_FILE=${env.DEPLOY_KNOWN_HOSTS}",
           "REMOTE_APP_ROOT=${params.REMOTE_APP_ROOT}",
           "CONTAINER_PREFIX=${env.CONTAINER_PREFIX}",
           "CONTAINER_PORT=${env.CONTAINER_PORT}",
