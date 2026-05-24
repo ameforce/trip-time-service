@@ -1110,6 +1110,24 @@ body {
   color: var(--text-muted);
 }
 
+.version-badge {
+  position: fixed;
+  right: 14px;
+  bottom: 10px;
+  z-index: 2400;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(19, 33, 60, 0.18);
+  background: rgba(255, 255, 255, 0.92);
+  color: #2f446a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(2px);
+}
+
 /* ── Map ──────────────────────────────────────────── */
 .map-container {
   flex: 1;
@@ -1403,7 +1421,7 @@ body {
   position: fixed;
   top: 12px;
   left: 12px;
-  z-index: 30;
+  z-index: 1300;
   width: 44px;
   height: 44px;
   border: none;
@@ -1429,11 +1447,23 @@ body {
   .sidebar.open {
     transform: translateX(0);
   }
+  .sidebar.open .sidebar-header {
+    padding-left: 72px;
+  }
   .map-container {
     width: 100%;
   }
   .mobile-toggle {
     display: flex;
+  }
+
+  .version-badge {
+    right: 10px;
+    bottom: 12px;
+    font-size: 10px;
+  }
+  .sidebar.open ~ .version-badge {
+    display: none;
   }
 
   .datetime-panel {

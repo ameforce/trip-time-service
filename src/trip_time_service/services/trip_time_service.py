@@ -44,6 +44,18 @@ class NoFeasibleDepartureError(RuntimeError):
     """정시 도착 가능한 추천 출발 시각이 없는 경우."""
 
 
+def _provider_retry_exhausted_error(exc: ProviderError) -> ProviderError:
+    if exc.code == "provider_retry_exhausted":
+        return exc
+    return ProviderError(
+        "교통 정보 제공자 재시도가 모두 실패했습니다.",
+        is_retryable=exc.is_retryable,
+        cause=exc,
+        code="provider_retry_exhausted",
+        bucket="provider_retry_exhausted",
+    )
+
+
 class TripTimeService:
     def __init__(
         self,
@@ -135,6 +147,7 @@ class TripTimeService:
             step_minutes=step_minutes,
             now=now,
         )
+        departures = self._limit_departures_by_query_budget(departures)
         if not departures:
             raise NoFeasibleDepartureError("조회 가능한 미래 출발 후보가 없습니다")
 
@@ -582,6 +595,7 @@ class TripTimeService:
             now=now,
             horizon_hours=_ARRIVAL_COARSE_EXTENDED_HOURS,
         )
+        departures = self._limit_departures_by_query_budget(departures)
         if not departures:
             raise NoFeasibleDepartureError("조회 가능한 미래 출발 후보가 없습니다")
 
@@ -1326,6 +1340,23 @@ class TripTimeService:
 
         return departures
 
+    def _limit_departures_by_query_budget(
+        self,
+        departures: list[datetime],
+    ) -> list[datetime]:
+        max_queries = self._settings.max_queries
+        if len(departures) <= max_queries:
+            return departures
+        if max_queries <= 1:
+            return departures[:1]
+
+        last_index = len(departures) - 1
+        selected_indices = {
+            round((last_index * offset) / (max_queries - 1))
+            for offset in range(max_queries)
+        }
+        return [departures[index] for index in sorted(selected_indices)]
+
     def _get_duration_cached(
         self,
         *,
@@ -1344,19 +1375,17 @@ class TripTimeService:
         retryable_attempts = 2
         for attempt in range(1, retryable_attempts + 1):
             try:
-                one_shot = getattr(self._provider, "get_drive_duration_once", None)
-                if callable(one_shot):
-                    duration = one_shot(route, bucketed_departure)
-                else:
-                    duration = self._provider.get_drive_duration(
-                        route,
-                        bucketed_departure,
-                    )
+                duration = self._provider.get_drive_duration(
+                    route,
+                    bucketed_departure,
+                )
                 self._cache.set(key, duration)
                 return duration, False, attempt
             except ProviderError as exc:
-                if not exc.is_retryable or attempt >= retryable_attempts:
+                if not exc.is_retryable:
                     raise
+                if attempt >= retryable_attempts:
+                    raise _provider_retry_exhausted_error(exc) from exc
                 _log.warning(
                     "provider retryable 에러 (재시도 %d/%d): %s @ %s",
                     attempt,

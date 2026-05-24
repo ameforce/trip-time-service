@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 import math
 import queue
-import threading
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from trip_time_service.api.common import ensure_future_time, service_from_request
 from trip_time_service.api.geocode_services import pre_geocode_for_provider
@@ -26,7 +26,10 @@ from trip_time_service.api.schemas import (
 from trip_time_service.api.streaming import (
     STREAM_IDLE_TIMEOUT_SECONDS,
     iter_stream_events,
+    make_stream_queue,
+    put_stream_item,
     sse_encode,
+    start_bounded_stream_worker,
 )
 from trip_time_service.providers.base import ProviderError
 from trip_time_service.services.trip_time_service import (
@@ -37,18 +40,196 @@ from trip_time_service.services.trip_time_service import (
 router = APIRouter()
 _log = logging.getLogger(__name__)
 
+_SAFE_PROVIDER_ERROR_BUCKETS = {
+    "panel_parse_timeout",
+    "provider_retry_exhausted",
+    "ncaptcha_backoff",
+    "coords_unresolved",
+}
+_ROUTE_INPUT_CONTRACT_HEADER = "x-tts-route-input-contract"
+_ROUTE_INPUT_CONTRACT_MODES = {"warn", "strict"}
+_COORD_TOLERANCE = 1e-6
 
-def _extract_coords_map(
-    origin: str,
-    destination: str,
-    origin_coords: object | None,
-    dest_coords: object | None,
+
+class RouteInputContractError(Exception):
+    def __init__(
+        self,
+        *,
+        reason: str,
+        detail: str,
+        status_code: int = 422,
+    ) -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+        self.status_code = status_code
+
+
+async def route_input_contract_exception_handler(
+    request: Request,
+    exc: RouteInputContractError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "reason": exc.reason},
+    )
+
+
+def _contract_error(
+    reason: str,
+    detail: str,
+    *,
+    status_code: int = 422,
+) -> RouteInputContractError:
+    return RouteInputContractError(
+        reason=reason,
+        detail=detail,
+        status_code=status_code,
+    )
+
+
+def _resolve_route_input_contract_mode(request: Request) -> str:
+    headers = getattr(request, "headers", {}) or {}
+    header_value = headers.get(_ROUTE_INPUT_CONTRACT_HEADER)
+    if header_value is not None and header_value.strip():
+        normalized = header_value.strip().lower()
+        if normalized not in _ROUTE_INPUT_CONTRACT_MODES:
+            raise _contract_error(
+                "coords_contract_invalid",
+                "X-TTS-Route-Input-Contract must be one of: warn, strict.",
+                status_code=400,
+            )
+        return normalized
+
+    settings = request.app.state.settings
+    configured = str(getattr(settings, "route_input_contract", "warn") or "warn")
+    normalized = configured.strip().lower()
+    if normalized in _ROUTE_INPUT_CONTRACT_MODES:
+        return normalized
+
+    _log.warning(
+        "Invalid route_input_contract=%r; falling back to warn",
+        configured,
+    )
+    return "warn"
+
+
+def _finite_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed
+
+
+def _extract_legacy_coords(value: object | None) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    lat = _finite_float(getattr(value, "lat", None))
+    lon = _finite_float(getattr(value, "lon", None))
+    if lat is None or lon is None:
+        raise _contract_error(
+            "coords_invalid",
+            "Route coordinate fields must be finite lat/lon values.",
+        )
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise _contract_error(
+            "coords_invalid",
+            "Route coordinate fields are outside valid lat/lon bounds.",
+        )
+    return lat, lon
+
+
+def _coords_conflict(
+    left: tuple[float, float],
+    right: tuple[float, float],
+) -> bool:
+    return (
+        abs(left[0] - right[0]) > _COORD_TOLERANCE
+        or abs(left[1] - right[1]) > _COORD_TOLERANCE
+    )
+
+
+def _extract_route_place_coords(
+    field_name: str,
+    place: object,
+    legacy_coords: object | None,
+) -> tuple[float, float]:
+    if not isinstance(place, Mapping):
+        raise _contract_error(
+            "coords_contract_invalid",
+            f"{field_name} must be an object with coords_ready metadata.",
+        )
+    coords_ready = place.get("coords_ready")
+    if not isinstance(coords_ready, bool):
+        raise _contract_error(
+            "coords_contract_invalid",
+            f"{field_name}.coords_ready must be a boolean.",
+        )
+    if not coords_ready:
+        raise _contract_error(
+            "coords_unresolved",
+            f"{field_name} coordinates are not resolved.",
+        )
+
+    lat = _finite_float(place.get("lat"))
+    lon = _finite_float(place.get("lon"))
+    if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise _contract_error(
+            "coords_invalid",
+            f"{field_name} requires finite lat/lon when coords_ready is true.",
+        )
+
+    metadata_coords = (lat, lon)
+    legacy = _extract_legacy_coords(legacy_coords)
+    if legacy is not None and _coords_conflict(metadata_coords, legacy):
+        raise _contract_error(
+            "coords_conflict",
+            f"{field_name} route-place coordinates conflict with legacy coords.",
+        )
+    return metadata_coords
+
+
+def _build_route_coords_map(
+    *,
+    payload: ArrivalTimeRequest | DepartureRecommendationRequest,
+    request: Request,
 ) -> dict[str, tuple[float, float]]:
+    mode = _resolve_route_input_contract_mode(request)
     coords_map: dict[str, tuple[float, float]] = {}
-    if origin_coords:
-        coords_map[origin] = (origin_coords.lat, origin_coords.lon)
-    if dest_coords:
-        coords_map[destination] = (dest_coords.lat, dest_coords.lon)
+
+    if payload.origin_place is not None:
+        coords_map[payload.origin] = _extract_route_place_coords(
+            "origin_place",
+            payload.origin_place,
+            payload.origin_coords,
+        )
+    elif payload.origin_coords is not None:
+        coords_map[payload.origin] = _extract_legacy_coords(payload.origin_coords)
+
+    if payload.dest_place is not None:
+        coords_map[payload.destination] = _extract_route_place_coords(
+            "dest_place",
+            payload.dest_place,
+            payload.dest_coords,
+        )
+    elif payload.dest_coords is not None:
+        coords_map[payload.destination] = _extract_legacy_coords(payload.dest_coords)
+
+    missing_origin = payload.origin not in coords_map
+    missing_destination = payload.destination not in coords_map
+    if mode == "strict" and (missing_origin or missing_destination):
+        raise _contract_error(
+            "coords_required",
+            "Strict route input contract requires resolved origin and "
+            "destination coordinates.",
+        )
+    if mode == "warn" and missing_origin and missing_destination:
+        _log.warning("legacy_text_route_input mode=warn")
     return coords_map
 
 
@@ -114,10 +295,15 @@ def _compute_safe_preview(
     desired_arrival_time: datetime,
     base_duration_seconds: int,
     tz: ZoneInfo,
+    step_minutes: int,
 ) -> SafeDeparturePreviewResponse:
     safe_duration = math.ceil(base_duration_seconds * 1.25)
     baseline_departure = desired_arrival_time - timedelta(seconds=base_duration_seconds)
-    now_floor = ensure_future_time(datetime.now(tz=tz), tz)
+    now_floor = ensure_future_time(
+        datetime.now(tz=tz),
+        tz,
+        step_minutes=step_minutes,
+    )
     clamped = baseline_departure < now_floor
     safe_departure = now_floor if clamped else baseline_departure
     return SafeDeparturePreviewResponse(
@@ -135,6 +321,49 @@ def _public_error_detail(exc: Exception) -> str:
     return "추천 계산 중 오류가 발생했습니다."
 
 
+def _public_error_reason(exc: Exception) -> str:
+    if isinstance(exc, NoFeasibleDepartureError):
+        return "no_feasible_departure"
+    if isinstance(exc, ProviderError):
+        return "provider_degraded"
+    return "worker_failed"
+
+
+def _safe_provider_error_bucket(exc: Exception) -> str | None:
+    if not isinstance(exc, ProviderError):
+        return None
+    if exc.bucket in _SAFE_PROVIDER_ERROR_BUCKETS:
+        return exc.bucket
+    if exc.code in _SAFE_PROVIDER_ERROR_BUCKETS:
+        return exc.code
+    return None
+
+
+def _stream_error_data(exc: Exception) -> dict[str, str]:
+    data = {
+        "detail": _public_error_detail(exc),
+        "reason": _public_error_reason(exc),
+    }
+    provider_bucket = _safe_provider_error_bucket(exc)
+    if provider_bucket is not None:
+        data["provider_bucket"] = provider_bucket
+    return data
+
+
+def _log_stream_worker_failure(context: str, exc: Exception) -> None:
+    reason = _public_error_reason(exc)
+    if isinstance(exc, (NoFeasibleDepartureError, ProviderError)):
+        _log.warning(
+            "%s stream worker degraded reason=%s bucket=%s error=%s",
+            context,
+            reason,
+            _safe_provider_error_bucket(exc),
+            exc,
+        )
+        return
+    _log.exception("%s stream worker failed reason=%s", context, reason)
+
+
 def _prepare_service_and_coords(
     *,
     payload: ArrivalTimeRequest | DepartureRecommendationRequest,
@@ -142,12 +371,7 @@ def _prepare_service_and_coords(
 ) -> tuple[TripTimeService, ZoneInfo]:
     service = service_from_request(request)
     tz = request.app.state.settings.timezone
-    coords_map = _extract_coords_map(
-        payload.origin,
-        payload.destination,
-        payload.origin_coords,
-        payload.dest_coords,
-    )
+    coords_map = _build_route_coords_map(payload=payload, request=request)
     pre_geocode_for_provider(
         service,
         payload.origin,
@@ -163,7 +387,11 @@ def estimate_arrival_time(
     request: Request,
 ) -> ArrivalTimeResponse:
     service, tz = _prepare_service_and_coords(payload=payload, request=request)
-    departure = ensure_future_time(payload.departure_time, tz)
+    departure = ensure_future_time(
+        payload.departure_time,
+        tz,
+        step_minutes=request.app.state.settings.step_minutes,
+    )
     result = service.estimate_arrival(
         origin=payload.origin,
         destination=payload.destination,
@@ -181,7 +409,11 @@ def recommend_departure_time(
     request: Request,
 ) -> DepartureRecommendationResponse:
     service, tz = _prepare_service_and_coords(payload=payload, request=request)
-    desired = ensure_future_time(payload.desired_arrival_time, tz)
+    desired = ensure_future_time(
+        payload.desired_arrival_time,
+        tz,
+        step_minutes=request.app.state.settings.step_minutes,
+    )
     result = service.recommend_departure(
         origin=payload.origin,
         destination=payload.destination,
@@ -195,11 +427,19 @@ def stream_recommended_departure_time(
     payload: DepartureRecommendationRequest,
     request: Request,
 ) -> StreamingResponse:
-    service, tz = _prepare_service_and_coords(payload=payload, request=request)
-    desired = ensure_future_time(payload.desired_arrival_time, tz)
+    service = service_from_request(request)
+    settings = request.app.state.settings
+    tz = settings.timezone
+    desired = ensure_future_time(
+        payload.desired_arrival_time,
+        tz,
+        step_minutes=settings.step_minutes,
+    )
+    coords_map = _build_route_coords_map(payload=payload, request=request)
 
     done_marker = object()
-    event_queue: queue.Queue[object] = queue.Queue()
+    event_queue: queue.Queue[object] = make_stream_queue()
+    stream_status = {"ok": True}
     progress = {
         "checked": 0,
         "planned": 0,
@@ -211,12 +451,13 @@ def stream_recommended_departure_time(
         progress["total_candidates"] = total_candidates
         progress["planned"] = planned_queries
         progress["remaining"] = max(0, planned_queries - progress["checked"])
-        event_queue.put({"event": "plan", "data": progress.copy()})
+        put_stream_item(event_queue, {"event": "plan", "data": progress.copy()})
 
     def _on_candidate(candidate: object) -> None:
         progress["checked"] += 1
         progress["remaining"] = max(0, progress["planned"] - progress["checked"])
-        event_queue.put(
+        put_stream_item(
+            event_queue,
             {
                 "event": "candidate",
                 "data": {
@@ -237,11 +478,18 @@ def stream_recommended_departure_time(
                     ).model_dump(mode="json"),
                     "progress": progress.copy(),
                 },
-            }
+            },
+            preserve=False,
         )
 
     def _worker() -> None:
         try:
+            pre_geocode_for_provider(
+                service,
+                payload.origin,
+                payload.destination,
+                coords_map=coords_map,
+            )
             recommendation = service.recommend_departure(
                 origin=payload.origin,
                 destination=payload.destination,
@@ -249,7 +497,8 @@ def stream_recommended_departure_time(
                 on_search_initialized=_on_initialized,
                 on_candidate_evaluated=_on_candidate,
             )
-            event_queue.put(
+            put_stream_item(
+                event_queue,
                 {
                     "event": "recommendation",
                     "data": _to_departure_response(recommendation).model_dump(
@@ -258,18 +507,24 @@ def stream_recommended_departure_time(
                 }
             )
         except Exception as exc:
-            _log.exception("departure recommendation stream worker failed")
-            event_queue.put(
+            stream_status.update({"ok": False, "reason": _public_error_reason(exc)})
+            _log_stream_worker_failure("departure recommendation", exc)
+            put_stream_item(
+                event_queue,
                 {
                     "event": "error",
-                    "data": {"detail": _public_error_detail(exc)},
+                    "data": _stream_error_data(exc),
                 }
             )
         finally:
-            event_queue.put(done_marker)
+            put_stream_item(event_queue, done_marker)
 
-    worker = threading.Thread(target=_worker, daemon=True)
-    worker.start()
+    worker = start_bounded_stream_worker(
+        target=_worker,
+        event_queue=event_queue,
+        done_marker=done_marker,
+        thread_name="departure-recommendation-stream",
+    )
 
     def _stream() -> object:
         yield sse_encode("plan", progress.copy())
@@ -279,8 +534,11 @@ def stream_recommended_departure_time(
             worker=worker,
             idle_timeout_seconds=STREAM_IDLE_TIMEOUT_SECONDS,
         ):
+            if item["event"] in {"busy", "error"}:
+                reason = str(item.get("data", {}).get("reason") or item["event"])
+                stream_status.update({"ok": False, "reason": reason})
             yield sse_encode(item["event"], item["data"])
-        yield sse_encode("end", {"ok": True})
+        yield sse_encode("end", stream_status.copy())
 
     return StreamingResponse(
         _stream(),
@@ -302,7 +560,11 @@ def estimate_arrival_with_recommendation(
     request: Request,
 ) -> ArrivalWithRecommendationResponse:
     service, tz = _prepare_service_and_coords(payload=payload, request=request)
-    departure = ensure_future_time(payload.departure_time, tz)
+    departure = ensure_future_time(
+        payload.departure_time,
+        tz,
+        step_minutes=request.app.state.settings.step_minutes,
+    )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         recommendation_future = executor.submit(
@@ -323,6 +585,7 @@ def estimate_arrival_with_recommendation(
         desired_arrival_time=arrival.arrival_time,
         base_duration_seconds=arrival.duration.duration_seconds,
         tz=tz,
+        step_minutes=request.app.state.settings.step_minutes,
     )
     return ArrivalWithRecommendationResponse(
         arrival=_to_arrival_response(arrival),
@@ -336,11 +599,19 @@ def stream_arrival_with_recommendation(
     payload: ArrivalTimeRequest,
     request: Request,
 ) -> StreamingResponse:
-    service, tz = _prepare_service_and_coords(payload=payload, request=request)
-    departure = ensure_future_time(payload.departure_time, tz)
+    service = service_from_request(request)
+    settings = request.app.state.settings
+    tz = settings.timezone
+    departure = ensure_future_time(
+        payload.departure_time,
+        tz,
+        step_minutes=settings.step_minutes,
+    )
+    coords_map = _build_route_coords_map(payload=payload, request=request)
 
     done_marker = object()
-    event_queue: queue.Queue[object] = queue.Queue()
+    event_queue: queue.Queue[object] = make_stream_queue()
+    stream_status = {"ok": True}
     progress = {
         "checked": 0,
         "planned": 0,
@@ -352,12 +623,13 @@ def stream_arrival_with_recommendation(
         progress["total_candidates"] = total_candidates
         progress["planned"] = planned_queries
         progress["remaining"] = max(0, planned_queries - progress["checked"])
-        event_queue.put({"event": "plan", "data": progress.copy()})
+        put_stream_item(event_queue, {"event": "plan", "data": progress.copy()})
 
     def _on_candidate(candidate: object) -> None:
         progress["checked"] += 1
         progress["remaining"] = max(0, progress["planned"] - progress["checked"])
-        event_queue.put(
+        put_stream_item(
+            event_queue,
             {
                 "event": "candidate",
                 "data": {
@@ -378,11 +650,44 @@ def stream_arrival_with_recommendation(
                     ).model_dump(mode="json"),
                     "progress": progress.copy(),
                 },
-            }
+            },
+            preserve=False,
         )
 
     def _worker() -> None:
         try:
+            pre_geocode_for_provider(
+                service,
+                payload.origin,
+                payload.destination,
+                coords_map=coords_map,
+            )
+            arrival = service.estimate_arrival(
+                origin=payload.origin,
+                destination=payload.destination,
+                departure_time=departure,
+            )
+            immediate_safe = _compute_safe_preview(
+                desired_arrival_time=arrival.arrival_time,
+                base_duration_seconds=arrival.duration.duration_seconds,
+                tz=tz,
+                step_minutes=settings.step_minutes,
+            )
+            put_stream_item(
+                event_queue,
+                {
+                    "event": "arrival",
+                    "data": {
+                        "arrival": _to_arrival_response(arrival).model_dump(
+                            mode="json",
+                        ),
+                        "immediate_safe_departure": immediate_safe.model_dump(
+                            mode="json",
+                        ),
+                        "progress": progress.copy(),
+                    },
+                },
+            )
             recommendation = service.recommend_departure(
                 origin=payload.origin,
                 destination=payload.destination,
@@ -391,7 +696,8 @@ def stream_arrival_with_recommendation(
                 on_search_initialized=_on_initialized,
                 on_candidate_evaluated=_on_candidate,
             )
-            event_queue.put(
+            put_stream_item(
+                event_queue,
                 {
                     "event": "recommendation",
                     "data": _to_departure_response(recommendation).model_dump(
@@ -400,44 +706,38 @@ def stream_arrival_with_recommendation(
                 }
             )
         except Exception as exc:
-            _log.exception("arrival recommendation stream worker failed")
-            event_queue.put(
+            stream_status.update({"ok": False, "reason": _public_error_reason(exc)})
+            _log_stream_worker_failure("arrival recommendation", exc)
+            put_stream_item(
+                event_queue,
                 {
                     "event": "error",
-                    "data": {"detail": _public_error_detail(exc)},
+                    "data": _stream_error_data(exc),
                 }
             )
         finally:
-            event_queue.put(done_marker)
+            put_stream_item(event_queue, done_marker)
 
-    arrival = service.estimate_arrival(
-        origin=payload.origin,
-        destination=payload.destination,
-        departure_time=departure,
+    worker = start_bounded_stream_worker(
+        target=_worker,
+        event_queue=event_queue,
+        done_marker=done_marker,
+        thread_name="arrival-recommendation-stream",
     )
-    immediate_safe = _compute_safe_preview(
-        desired_arrival_time=arrival.arrival_time,
-        base_duration_seconds=arrival.duration.duration_seconds,
-        tz=tz,
-    )
-    worker = threading.Thread(target=_worker, daemon=True)
-    worker.start()
 
     def _stream() -> object:
-        first_payload = {
-            "arrival": _to_arrival_response(arrival).model_dump(mode="json"),
-            "immediate_safe_departure": immediate_safe.model_dump(mode="json"),
-            "progress": progress.copy(),
-        }
-        yield sse_encode("arrival", first_payload)
+        yield sse_encode("plan", progress.copy())
         for item in iter_stream_events(
             event_queue=event_queue,
             done_marker=done_marker,
             worker=worker,
             idle_timeout_seconds=STREAM_IDLE_TIMEOUT_SECONDS,
         ):
+            if item["event"] in {"busy", "error"}:
+                reason = str(item.get("data", {}).get("reason") or item["event"])
+                stream_status.update({"ok": False, "reason": reason})
             yield sse_encode(item["event"], item["data"])
-        yield sse_encode("end", {"ok": True})
+        yield sse_encode("end", stream_status.copy())
 
     return StreamingResponse(
         _stream(),

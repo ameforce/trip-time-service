@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import json
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from trip_time_service.config import Settings
-from trip_time_service.providers.naver_selenium import (
-    NaverMapsSeleniumProvider,
-    _parse_naver_duration,
-)
+from trip_time_service.providers.base import ProviderError
+from trip_time_service.providers.naver_selenium import NaverMapsSeleniumProvider
 
-KST = ZoneInfo("Asia/Seoul")
+_TZ = ZoneInfo("Asia/Seoul")
 
 
 def _settings() -> Settings:
     return Settings(
-        timezone=KST,
+        timezone=_TZ,
         headless=True,
-        cache_ttl=timedelta(seconds=300),
+        cache_ttl=timedelta(seconds=600),
         step_minutes=10,
         lookback_hours=3,
         max_queries=120,
@@ -26,178 +25,90 @@ def _settings() -> Settings:
         naver_map_client_id=None,
         recommend_workers=1,
         naver_session_pool_size=1,
+        cors_allowed_origins=(),
+        recommend_min_samples=2,
     )
 
 
-class _FakeButton:
-    def __init__(
-        self,
-        text: str,
-        *,
-        displayed: bool = True,
-        css_class: str = "",
-    ) -> None:
+class _Element:
+    def __init__(self, text: str = "", displayed: bool = True) -> None:
         self.text = text
         self._displayed = displayed
-        self._css_class = css_class
-        self.clicks = 0
 
     def is_displayed(self) -> bool:
         return self._displayed
 
-    def get_attribute(self, name: str) -> str | None:
-        if name == "class":
-            return self._css_class
-        return None
+
+class _PanelTimeoutDriver:
+    def __init__(self) -> None:
+        self.elements = {
+            "div.panel_dialog": [
+                _Element("강남역에서 판교역까지 오전 9시 00분 출발 정보 로딩 중"),
+                _Element("오전 8시 50분 출발 35분 소요"),
+            ],
+            "button.later_departure_time_btn": [_Element("출발 시간 변경")],
+            "button.later_departure_confirm_btn": [],
+            "button.dropdown_btn": [_Element("오전"), _Element("9시")],
+        }
+
+    def find_elements(self, by: object, selector: str) -> list[_Element]:
+        return list(self.elements.get(selector, []))
 
 
-class _FakeCalendarDriver:
-    def __init__(
-        self,
-        *,
-        collapsed_days: list[str],
-        expanded_days: list[str] | None = None,
-        show_expand_button: bool = True,
-    ) -> None:
-        self._collapsed_buttons = [
-            _FakeButton(day, css_class="calendar_day_btn")
-            for day in collapsed_days
-        ]
-        expanded_values = expanded_days if expanded_days is not None else collapsed_days
-        self._expanded_buttons = [
-            _FakeButton(day, css_class="calendar_day_btn")
-            for day in expanded_values
-        ]
-        self._expand_button = _FakeButton(
-            "펼치기",
-            css_class="calendar_expand_btn",
-            displayed=show_expand_button,
-        )
-        self.is_expanded = False
-        self.clicked_elements: list[_FakeButton] = []
+class _SummaryDurationDriver:
+    def __init__(self) -> None:
+        self.elements = {
+            "div.panel_dialog": [_Element("", displayed=False)],
+            "div.summary_content": [
+                _Element("내일 오전 10시 00분에 출발하면 37분 소요 예상")
+            ],
+        }
 
-    def _active_day_buttons(self) -> list[_FakeButton]:
-        if self.is_expanded:
-            return self._expanded_buttons
-        return self._collapsed_buttons
-
-    def find_elements(self, by: str, selector: str) -> list[_FakeButton]:
-        if selector == "button.calendar_day_btn":
-            return self._active_day_buttons()
-        if selector == "button.calendar_expand_btn":
-            return [self._expand_button]
-        if "calendar_expand_btn" in selector:
-            return [self._expand_button]
-        if "펼치기" in selector:
-            return [self._expand_button]
-        return []
-
-    def execute_script(self, script: str, element: _FakeButton) -> None:
-        del script
-        element.clicks += 1
-        self.clicked_elements.append(element)
-        if element is self._expand_button:
-            self.is_expanded = True
+    def find_elements(self, by: object, selector: str) -> list[_Element]:
+        return list(self.elements.get(selector, []))
 
 
-def test_extract_duration_from_panel_text_matches_requested_departure() -> None:
+def test_reads_later_departure_duration_from_summary_content() -> None:
     provider = NaverMapsSeleniumProvider(_settings())
-    text = (
-        "\ub098\uc911\uc5d0 \ucd9c\ubc1c\n"
-        "\ub0b4\uc77c \uc624\uc804 10\uc2dc 00\ubd84 \ucd9c\ubc1c\ud558\uba74\n"
-        "4\uc2dc\uac04 33\ubd84 \uc18c\uc694 \uc608\uc0c1"
+
+    duration = provider._read_duration_from_panel_dialog(
+        _SummaryDurationDriver(),
+        "오전",
+        "10시",
+        "00분",
     )
 
-    duration = provider._extract_duration_from_panel_text(
-        text,
-        "\uc624\uc804",
-        "10\uc2dc",
-        "00\ubd84",
-    )
-
-    assert duration == (4 * 60 + 33) * 60
+    assert duration == 37 * 60
 
 
-def test_extract_duration_from_panel_text_rejects_mismatched_departure() -> None:
-    provider = NaverMapsSeleniumProvider(_settings())
-    text = (
-        "\ub098\uc911\uc5d0 \ucd9c\ubc1c\n"
-        "\ub0b4\uc77c \uc624\uc804 09\uc2dc 00\ubd84 \ucd9c\ubc1c\ud558\uba74\n"
-        "4\uc2dc\uac04 33\ubd84 \uc18c\uc694 \uc608\uc0c1"
-    )
-
-    duration = provider._extract_duration_from_panel_text(
-        text,
-        "\uc624\uc804",
-        "10\uc2dc",
-        "00\ubd84",
-    )
-
-    assert duration is None
-
-
-def test_extract_duration_from_panel_text_rejects_route_summary_like_text() -> None:
-    provider = NaverMapsSeleniumProvider(_settings())
-    text = "2\uc2dc\uac04 45\ubd84231km"
-
-    duration = provider._extract_duration_from_panel_text(
-        text,
-        "\uc624\uc804",
-        "10\uc2dc",
-        "00\ubd84",
-    )
-
-    assert duration is None
-
-
-def test_parse_duration_prefers_hour_only_before_soyo() -> None:
-    text = (
-        "\ub0b4\uc77c \uc624\uc804 10\uc2dc 40\ubd84 \ucd9c\ubc1c\ud558\uba74\n"
-        "5\uc2dc\uac04 \uc18c\uc694 \uc608\uc0c1\n"
-        "+9\ubd84\n"
-        "30\ubd84 \ud6c4\n"
-        "+14\ubd84\n"
-        "2\uc2dc\uac04 \ud6c4"
-    )
-
-    duration = _parse_naver_duration(text)
-
-    assert duration == 5 * 3600
-
-
-def test_set_calendar_date_clicks_visible_day_without_expand(monkeypatch) -> None:
-    provider = NaverMapsSeleniumProvider(_settings())
-    driver = _FakeCalendarDriver(
-        collapsed_days=[str(day) for day in range(8, 22)],
-        expanded_days=[str(day) for day in range(1, 32)],
-    )
-    departure_time = datetime(2099, 3, 15, 9, 0, tzinfo=KST)
-    monkeypatch.setattr(
-        "trip_time_service.providers.naver_selenium._time.sleep",
-        lambda _seconds: None,
-    )
-
-    provider._set_calendar_date(driver, departure_time)
-
-    assert driver._expand_button.clicks == 0
-    assert any(button.text == "15" for button in driver.clicked_elements)
-
-
-def test_set_calendar_date_expands_calendar_when_target_day_missing(
+def test_panel_parse_timeout_writes_bounded_redacted_diagnostics(
+    tmp_path,
     monkeypatch,
 ) -> None:
+    monkeypatch.setenv("TTS_E2E_ARTIFACTS_DIR", str(tmp_path))
     provider = NaverMapsSeleniumProvider(_settings())
-    driver = _FakeCalendarDriver(
-        collapsed_days=[str(day) for day in range(8, 22)],
-        expanded_days=[str(day) for day in range(1, 32)],
-    )
-    departure_time = datetime(2099, 3, 27, 9, 0, tzinfo=KST)
-    monkeypatch.setattr(
-        "trip_time_service.providers.naver_selenium._time.sleep",
-        lambda _seconds: None,
-    )
+    driver = _PanelTimeoutDriver()
 
-    provider._set_calendar_date(driver, departure_time)
+    try:
+        provider._raise_panel_parse_timeout(driver, "오전", "9시", "00분")
+    except ProviderError as exc:
+        assert exc.code == "panel_parse_timeout"
+        assert exc.bucket == "panel_parse_timeout"
+    else:  # pragma: no cover
+        raise AssertionError("expected ProviderError")
 
-    assert driver._expand_button.clicks == 1
-    assert any(button.text == "27" for button in driver.clicked_elements)
+    artifacts = list(tmp_path.glob("naver-panel-diagnostics-*.json"))
+    assert len(artifacts) == 1
+    raw_artifact = artifacts[0].read_text(encoding="utf-8")
+    data = json.loads(raw_artifact)
+
+    assert data["code"] == "panel_parse_timeout"
+    assert data["requested_time"] == {"ampm": "오전", "hour": "9시", "minute": "00분"}
+    assert data["selectors"]["div.panel_dialog"] == {"count": 2, "visible": 2}
+    assert data["selectors"]["div.summary_content"] == {"count": 0, "visible": 0}
+    assert data["panel_samples"][0]["text"].startswith("len=")
+    assert "sha256=" in data["panel_samples"][0]["text"]
+    assert data["panel_samples"][0]["has_requested_time"] is True
+    assert data["panel_samples"][1]["duration_tokens"] == ["35분 소요"]
+    assert "강남역" not in raw_artifact
+    assert "판교역" not in raw_artifact

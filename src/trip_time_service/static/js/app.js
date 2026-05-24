@@ -8,17 +8,27 @@ let _config = {
   naver_map_client_id: null,
   timezone: "Asia/Seoul",
   provider: "unknown",
+  version: "v0.0.0.0",
 };
 let _currentMode = "arrival"; // "arrival" | "departure"
 
-// 자동완성에서 선택된 좌표 저장
-let _selectedOrigin = null;   // {lat, lon, display_name}
-let _selectedDest = null;     // {lat, lon, display_name}
+// 자동완성/최근/즐겨찾기에서 확정된 stable selection payload 저장
+let _selectedOrigin = null;   // {lat, lon, display_name, address, coords_ready, selection_kind, canonical_query}
+let _selectedDest = null;     // {lat, lon, display_name, address, coords_ready, selection_kind, canonical_query}
 
 // 자동완성 상태
 let _acTimerOrigin = null;
 let _acTimerDest = null;
 let _acActiveIdx = { origin: -1, dest: -1 };
+const AUTOCOMPLETE_DEBOUNCE_MS = 120;
+const AUTOCOMPLETE_FETCH_TIMEOUT_MS = 12000;
+const AUTOCOMPLETE_CACHE_TTL_MS = 5 * 60 * 1000;
+const AUTOCOMPLETE_CACHE_MAX_KEYS = 160;
+const AUTOCOMPLETE_MIN_QUERY_LENGTH = 2;
+const COORDS_UNRESOLVED_ROUTE_MESSAGE =
+  "좌표를 확인할 수 없어 경로를 조회할 수 없습니다. 다른 후보를 선택해 주세요.";
+let _autocompleteWarmupQueued = false;
+let _autocompleteCacheMap = {};
 let _searchInProgress = false; // 중복 검색 방지 플래그
 
 // geocode 결과 캐시 (address → {lat, lon})
@@ -68,8 +78,10 @@ const $datetimeHour = document.getElementById("datetime-hour");
 const $datetimeMinute = document.getElementById("datetime-minute");
 const $providerBadge = document.getElementById("provider-badge");
 const $providerWarning = document.getElementById("provider-warning");
+const $versionBadge = document.getElementById("version-badge");
 
-const DATETIME_MINUTE_STEP = 10;
+let DATETIME_MINUTE_STEP = 10;
+const MAX_AUTOCOMPLETE_WARMUP_QUERIES = 8;
 let _datetimeMinIso = "";
 let _datetimePickerState = {
   selected: null,
@@ -440,12 +452,24 @@ function setProviderName(provider) {
   }
 }
 
+function setVersionBadge(versionText) {
+  if (!$versionBadge) {
+    return;
+  }
+  var normalized = "v0.0.0.0";
+  if (typeof versionText === "string" && versionText.trim()) {
+    normalized = versionText.trim();
+  }
+  $versionBadge.textContent = normalized;
+  $versionBadge.setAttribute("title", "배포 버전: " + normalized);
+}
+
 /**
- * 현재 시각을 10분 단위로 올림(ceil).
- * 예: 18:31 → 18:40, 18:40 → 18:40, 18:41 → 18:50
+ * 현재 시각을 설정된 분 단위로 올림(ceil).
+ * 예: 10분 단위에서는 18:31 → 18:40, 18:40 → 18:40, 18:41 → 18:50
  * 네이버 지도는 과거 시간 조회 불가이므로 항상 미래 시간을 반환.
  */
-function nowCeilTo10() {
+function nowCeilToStep() {
   var d = new Date();
   var m = d.getMinutes();
   var ceil = Math.ceil(m / DATETIME_MINUTE_STEP) * DATETIME_MINUTE_STEP;
@@ -569,7 +593,7 @@ function clampNumber(value, min, max) {
 
 function getDatetimeMinDate() {
   if (!_datetimeMinIso) {
-    _datetimeMinIso = nowCeilTo10();
+    _datetimeMinIso = nowCeilToStep();
   }
   return parseLocalIsoMinutes(_datetimeMinIso);
 }
@@ -703,11 +727,11 @@ function setDatetimeFromDate(dateObj, options) {
 function syncDatetimePickerFromInput(options) {
   var fallbackDate =
     _datetimePickerState.selected ||
-    parseLocalIsoMinutes(nowCeilTo10()) ||
+    parseLocalIsoMinutes(nowCeilToStep()) ||
     new Date();
   var parsed = parseFlexibleDatetimeInput($datetimeInput.value, fallbackDate);
   if (!parsed) {
-    parsed = parseLocalIsoMinutes(nowCeilTo10());
+    parsed = parseLocalIsoMinutes(nowCeilToStep());
   }
   if (!parsed) {
     return false;
@@ -719,7 +743,7 @@ function syncDatetimePickerFromInput(options) {
 function syncDatetimeStateFromInputValue() {
   var fallbackDate =
     _datetimePickerState.selected ||
-    parseLocalIsoMinutes(nowCeilTo10()) ||
+    parseLocalIsoMinutes(nowCeilToStep()) ||
     new Date();
   var parsed = parseFlexibleDatetimeInput($datetimeInput.value, fallbackDate);
   if (!parsed) {
@@ -807,7 +831,7 @@ function showDatetimeInputTooltip(message, segment) {
 function validateDatetimeAgainstNowOnBlur() {
   var fallbackDate =
     _datetimePickerState.selected ||
-    parseLocalIsoMinutes(nowCeilTo10()) ||
+    parseLocalIsoMinutes(nowCeilToStep()) ||
     new Date();
   var selected = parseFlexibleDatetimeInput($datetimeInput.value, fallbackDate);
   if (!selected) {
@@ -1149,7 +1173,7 @@ function initDatetimePicker() {
  * 현재 시각 하한값을 내부 상태로 갱신.
  */
 function enforceMinDatetime() {
-  _datetimeMinIso = nowCeilTo10();
+  _datetimeMinIso = nowCeilToStep();
 }
 
 /**
@@ -1163,7 +1187,7 @@ function validateAndCeilDatetime() {
   }
   var fallbackDate =
     _datetimePickerState.selected ||
-    parseLocalIsoMinutes(nowCeilTo10()) ||
+    parseLocalIsoMinutes(nowCeilToStep()) ||
     new Date();
   var selected = parseFlexibleDatetimeInput(val, fallbackDate);
   if (!selected) {
@@ -1173,7 +1197,7 @@ function validateAndCeilDatetime() {
   var now = new Date();
   var correctedDate = null;
   if (selected <= now) {
-    correctedDate = parseLocalIsoMinutes(nowCeilTo10());
+    correctedDate = parseLocalIsoMinutes(nowCeilToStep());
   } else {
     var ceilSelected = ceilDateToMinuteStep(selected, DATETIME_MINUTE_STEP);
     if (ceilSelected.getTime() !== selected.getTime()) {
@@ -1341,18 +1365,67 @@ function addMarker(latlng, opts) {
  * 주소 → 좌표 변환 (캐시 우선).
  * 자동완성 선택 좌표가 있으면 즉시 반환, 캐시 히트면 네트워크 생략.
  */
-function resolveCoords(address, selectedCoords) {
-  if (selectedCoords) return Promise.resolve(selectedCoords);
-  if (_geocodeCache[address]) return Promise.resolve(_geocodeCache[address]);
-  return fetch("/api/geocode?q=" + encodeURIComponent(address))
+function geocodeQueryToCoords(query, cacheAlias) {
+  var geocodeQuery = String(query || "").trim();
+  if (!geocodeQuery) return Promise.resolve(null);
+  if (_geocodeCache[geocodeQuery]) return Promise.resolve(_geocodeCache[geocodeQuery]);
+  return fetch(
+    "/api/geocode?q=" +
+      encodeURIComponent(geocodeQuery) +
+      buildMapCenterQueryString()
+  )
     .then(function (res) { return res.json(); })
     .then(function (data) {
       if (!data || data.length === 0) return null;
       var coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
-      _geocodeCache[address] = coords;
+      _geocodeCache[geocodeQuery] = coords;
+      if (cacheAlias && cacheAlias !== geocodeQuery) _geocodeCache[cacheAlias] = coords;
+      if (data[0].source) {
+        console.info(
+          "[geocode]",
+          geocodeQuery,
+          "source=" + data[0].source,
+          "confidence=" + (data[0].confidence || "n/a")
+        );
+      }
       return coords;
     })
     .catch(function () { return null; });
+}
+
+function resolveCoords(address, selectedCoords) {
+  var normalizedSelectedCoords = normalizeCoords(selectedCoords);
+  if (normalizedSelectedCoords) {
+    return Promise.resolve(normalizedSelectedCoords);
+  }
+  if (hasStableSelection(selectedCoords) && selectedCoords.coords_ready === false) {
+    return Promise.resolve(null);
+  }
+  var geocodeQuery = String(address || "").trim();
+  return geocodeQuery ? geocodeQueryToCoords(geocodeQuery, address) : Promise.resolve(null);
+}
+
+function resolveRouteCriticalCoords(address, selectedCoords) {
+  var normalizedSelectedCoords = normalizeCoords(selectedCoords);
+  if (normalizedSelectedCoords) {
+    return Promise.resolve(normalizedSelectedCoords);
+  }
+  if (hasStableSelection(selectedCoords)) {
+    var query = getStableSearchQuery(address, selectedCoords);
+    if (!query) return Promise.resolve(null);
+    return geocodeQueryToCoords(query, address);
+  }
+  return resolveCoords(address, selectedCoords);
+}
+
+function markSelectionCoordsResolved(selection, coords) {
+  if (!hasStableSelection(selection) || !hasValidCoords(coords)) return selection;
+  return Object.assign({}, selection, {
+    lat: Number(coords.lat),
+    lon: Number(coords.lon),
+    coords_ready: true,
+    source: selection.source || "geocode",
+  });
 }
 
 function geocodeAndMark(address, color) {
@@ -1421,18 +1494,24 @@ function updateMapMarkersAsync(originText, destText) {
   var pOrigin, pDest;
 
   // 자동완성 선택 좌표가 있으면 직접 마커 배치
-  if (_selectedOrigin) {
+  if (hasValidCoords(_selectedOrigin)) {
     addMarker([_selectedOrigin.lat, _selectedOrigin.lon], { color: "#03C75A", label: "출발" });
     pOrigin = Promise.resolve({ lat: _selectedOrigin.lat, lon: _selectedOrigin.lon });
+  } else if (hasStableSelection(_selectedOrigin)) {
+    pOrigin = Promise.resolve(null);
   } else {
-    pOrigin = originText ? geocodeAndMark(originText, "#03C75A") : Promise.resolve(null);
+    var originQuery = String(originText || "").trim();
+    pOrigin = originQuery ? geocodeAndMark(originQuery, "#03C75A") : Promise.resolve(null);
   }
 
-  if (_selectedDest) {
+  if (hasValidCoords(_selectedDest)) {
     addMarker([_selectedDest.lat, _selectedDest.lon], { color: "#E53935", label: "도착" });
     pDest = Promise.resolve({ lat: _selectedDest.lat, lon: _selectedDest.lon });
+  } else if (hasStableSelection(_selectedDest)) {
+    pDest = Promise.resolve(null);
   } else {
-    pDest = destText ? geocodeAndMark(destText, "#E53935") : Promise.resolve(null);
+    var destQuery = String(destText || "").trim();
+    pDest = destQuery ? geocodeAndMark(destQuery, "#E53935") : Promise.resolve(null);
   }
 
   return Promise.all([pOrigin, pDest]).then(function (results) {
@@ -1448,14 +1527,413 @@ function updateMapMarkersAsync(originText, destText) {
 
 /* ── Autocomplete ────────────────────────────────── */
 
+function getAutocompleteTimer(timerKey) {
+  if (timerKey === "origin") return _acTimerOrigin;
+  if (timerKey === "dest") return _acTimerDest;
+  return null;
+}
+
+function setAutocompleteTimer(timerKey, timerId) {
+  if (timerKey === "origin") _acTimerOrigin = timerId;
+  if (timerKey === "dest") _acTimerDest = timerId;
+}
+
+function clearAutocompleteTimer(timerKey) {
+  var timerId = getAutocompleteTimer(timerKey);
+  if (timerId) {
+    clearTimeout(timerId);
+    setAutocompleteTimer(timerKey, null);
+  }
+}
+
+function buildMapCenterQueryString() {
+  if (!_map || typeof _map.getCenter !== "function") return "";
+  try {
+    var center = _map.getCenter();
+    if (!center) return "";
+    var centerLat = Number(center.lat);
+    var centerLon = Number(center.lng);
+    if (!isFinite(centerLat) || !isFinite(centerLon)) return "";
+    return (
+      "&center_lat=" +
+      encodeURIComponent(centerLat.toFixed(6)) +
+      "&center_lon=" +
+      encodeURIComponent(centerLon.toFixed(6))
+    );
+  } catch (_) {
+    return "";
+  }
+}
+
+function hasValidCoords(coords) {
+  if (!coords) return false;
+  if (coords.lat === null || coords.lon === null) return false;
+  if (coords.lat === undefined || coords.lon === undefined) return false;
+  if (String(coords.lat).trim() === "" || String(coords.lon).trim() === "") return false;
+  var lat = Number(coords.lat);
+  var lon = Number(coords.lon);
+  return isFinite(lat) && isFinite(lon);
+}
+
+function normalizeCoords(coords) {
+  if (!hasValidCoords(coords)) return null;
+  return {
+    lat: Number(coords.lat),
+    lon: Number(coords.lon),
+  };
+}
+
+var ROAD_ADDRESS_CORE_RE = /^(.*?(?:번길|대로|로|길)\s*\d+(?:-\d+)?)(?:\s+.*)?$/;
+var ROAD_ADDRESS_SEGMENT_RE = /([^\s,()]+(?:번길|대로|로|길))\s*(\d+(?:-\d+)?)/;
+
+function trimToCoreRoadAddress(value) {
+  var normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  var segmentMatch = normalized.match(ROAD_ADDRESS_SEGMENT_RE);
+  if (segmentMatch) {
+    return (segmentMatch[1].trim() + " " + segmentMatch[2].trim()).trim();
+  }
+  var coreMatch = normalized.match(ROAD_ADDRESS_CORE_RE);
+  if (!coreMatch) return "";
+  return coreMatch[1].replace(/\s+/g, " ").trim();
+}
+
+function buildStableSelection(selection, options) {
+  options = options || {};
+  if (!selection && !options) return null;
+
+  var displayName = String(
+    (selection && selection.display_name) ||
+      options.display_name ||
+      (selection && selection.address) ||
+      options.address ||
+      ""
+  ).trim();
+  var address = String(
+    (selection && selection.address) ||
+      options.address ||
+      displayName
+  ).trim();
+  var selectionKind = String(
+    (selection && selection.selection_kind) ||
+      options.selection_kind ||
+      ""
+  ).trim();
+  if (!selectionKind) {
+    selectionKind = address && address === displayName ? "address" : "poi";
+  }
+  var canonicalQuery = String(
+    (selection && selection.canonical_query) ||
+      options.canonical_query ||
+      (selectionKind === "address" ? address : displayName || address)
+  ).trim();
+  var lat = selection && selection.lat !== undefined && selection.lat !== null && String(selection.lat).trim() !== ""
+    ? Number(selection.lat)
+    : null;
+    var lon = selection && selection.lon !== undefined && selection.lon !== null && String(selection.lon).trim() !== ""
+      ? Number(selection.lon)
+      : null;
+    var coordsReady = lat !== null && lon !== null && isFinite(lat) && isFinite(lon);
+    if (!displayName && !address && !canonicalQuery) return null;
+
+  return {
+    lat: coordsReady ? lat : null,
+    lon: coordsReady ? lon : null,
+    display_name: displayName,
+    address: address,
+    coords_ready: coordsReady,
+    selection_kind: selectionKind,
+    canonical_query: canonicalQuery || address || displayName,
+    source: (selection && selection.source) || options.source || null,
+    confidence:
+      selection && selection.confidence !== undefined
+        ? selection.confidence
+        : options.confidence !== undefined
+          ? options.confidence
+          : null,
+  };
+}
+
+function hasStableSelection(selection) {
+  if (!selection) return false;
+  return !!String(
+    selection.canonical_query ||
+      selection.address ||
+      selection.display_name ||
+      ""
+  ).trim();
+}
+
+function getStableSearchQuery(text, selection) {
+  var fallback = String(text || "").trim();
+  if (!hasStableSelection(selection) || hasValidCoords(selection)) {
+    return fallback;
+  }
+  var canonical = String(selection.canonical_query || "").trim();
+  return canonical || fallback;
+}
+
+function buildNamedPoiDisplayLabel(selection) {
+  if (!hasStableSelection(selection)) return "";
+  if (selection.coords_ready !== false) return "";
+  if (String(selection.selection_kind || "").trim() !== "poi") return "";
+  var displayName = String(selection.display_name || "").trim();
+  var address = String(selection.address || "").trim();
+  if (!displayName || !address || displayName === address) return "";
+  if (trimToCoreRoadAddress(displayName)) return "";
+  return displayName + " (" + address + ")";
+}
+
+function getSelectionDisplayText(text, selection) {
+  var fallback = String(text || "").trim();
+  var namedPoiLabel = buildNamedPoiDisplayLabel(selection);
+  return namedPoiLabel || fallback;
+}
+
+function getSelectedState(timerKey) {
+  if (timerKey === "origin") return _selectedOrigin;
+  if (timerKey === "dest") return _selectedDest;
+  return null;
+}
+
+function selectionRetainTexts(selection) {
+  if (!hasStableSelection(selection)) return [];
+  var candidates = [
+    buildNamedPoiDisplayLabel(selection),
+    String(selection.canonical_query || "").trim(),
+    String(selection.display_name || "").trim(),
+    String(selection.address || "").trim(),
+  ];
+  var seen = {};
+  var retained = [];
+  for (var i = 0; i < candidates.length; i++) {
+    var text = candidates[i];
+    if (!text || seen[text]) continue;
+    seen[text] = true;
+    retained.push(text);
+  }
+  return retained;
+}
+
+function shouldRetainSelectionOnInput(timerKey, text) {
+  var selection = getSelectedState(timerKey);
+  if (!hasStableSelection(selection)) return false;
+  var normalized = String(text || "").trim();
+  if (!normalized) return false;
+  var retained = selectionRetainTexts(selection);
+  for (var i = 0; i < retained.length; i++) {
+    if (retained[i] === normalized) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getWarmupQuery(text, selection) {
+  var rawText = String(text || "").trim();
+  var canonical = hasStableSelection(selection)
+    ? String(selection.canonical_query || "").trim()
+    : "";
+  var preferred = canonical || rawText;
+  if (!preferred) return "";
+  return trimToCoreRoadAddress(preferred) || preferred;
+}
+
+function hasTrailingHangulJamo(value) {
+  return /[ㄱ-ㅎㅏ-ㅣ]$/.test(String(value || "").trim());
+}
+
+function buildAutocompleteCacheKey(query) {
+  var normalized = (query || "").trim().toLowerCase();
+  if (!_map || typeof _map.getCenter !== "function") return normalized + "|nomap";
+  try {
+    var center = _map.getCenter();
+    if (!center) return normalized + "|nomap";
+    var lat = Number(center.lat);
+    var lon = Number(center.lng);
+    if (!isFinite(lat) || !isFinite(lon)) return normalized + "|nomap";
+    return normalized + "|" + lat.toFixed(3) + "|" + lon.toFixed(3);
+  } catch (_) {
+    return normalized + "|nomap";
+  }
+}
+
+function getCachedAutocompleteItems(cacheKey) {
+  var cached = _autocompleteCacheMap[cacheKey];
+  if (!cached) return null;
+  if (Date.now() - cached.ts > AUTOCOMPLETE_CACHE_TTL_MS) {
+    delete _autocompleteCacheMap[cacheKey];
+    return null;
+  }
+  if (!Array.isArray(cached.items) || cached.items.length === 0) {
+    delete _autocompleteCacheMap[cacheKey];
+    return null;
+  }
+  return cached.items;
+}
+
+function setCachedAutocompleteItems(cacheKey, items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    delete _autocompleteCacheMap[cacheKey];
+    return;
+  }
+  _autocompleteCacheMap[cacheKey] = {
+    ts: Date.now(),
+    items: items,
+  };
+  var keys = Object.keys(_autocompleteCacheMap);
+  if (keys.length <= AUTOCOMPLETE_CACHE_MAX_KEYS) return;
+  keys
+    .sort(function (a, b) {
+      return (_autocompleteCacheMap[a].ts || 0) - (_autocompleteCacheMap[b].ts || 0);
+    })
+    .slice(0, Math.max(0, keys.length - AUTOCOMPLETE_CACHE_MAX_KEYS))
+    .forEach(function (key) {
+      delete _autocompleteCacheMap[key];
+    });
+}
+
+function collectWarmupQueries() {
+  var candidates = [];
+  var recents = getRecentSearches();
+  var favorites = getFavorites();
+
+  recents.forEach(function (entry) {
+    var originSelection = buildStableSelection(entry && entry.origin_coords, {
+      display_name: entry && entry.origin ? String(entry.origin) : "",
+      address: entry && entry.origin ? String(entry.origin) : "",
+      canonical_query: entry && entry.origin ? String(entry.origin) : "",
+    });
+    var destinationSelection = buildStableSelection(entry && entry.destination_coords, {
+      display_name: entry && entry.destination ? String(entry.destination) : "",
+      address: entry && entry.destination ? String(entry.destination) : "",
+      canonical_query: entry && entry.destination ? String(entry.destination) : "",
+    });
+    var originQuery = getWarmupQuery(entry && entry.origin, originSelection);
+    var destinationQuery = getWarmupQuery(entry && entry.destination, destinationSelection);
+    if (originQuery) candidates.push(originQuery);
+    if (destinationQuery) candidates.push(destinationQuery);
+  });
+  favorites.forEach(function (entry) {
+    if (entry && entry.name) candidates.push(String(entry.name));
+    var favoriteSelection = buildStableSelection(
+      entry && entry.lat !== undefined && entry.lon !== undefined
+        ? {
+            lat: entry.lat,
+            lon: entry.lon,
+            display_name: entry.name || entry.address || "",
+            address: entry.address || entry.name || "",
+            canonical_query:
+              trimToCoreRoadAddress(entry.address || "") ||
+              entry.address ||
+              entry.name ||
+              "",
+            selection_kind: "poi",
+            source: "favorite",
+          }
+        : null,
+      {
+        display_name: entry && entry.name ? String(entry.name) : "",
+        address: entry && entry.address ? String(entry.address) : "",
+        canonical_query:
+          trimToCoreRoadAddress(entry && entry.address ? String(entry.address) : "") ||
+          (entry && entry.address ? String(entry.address) : "") ||
+          (entry && entry.name ? String(entry.name) : ""),
+        selection_kind: "poi",
+        source: "favorite",
+      }
+    );
+    var favoriteQuery = getWarmupQuery(entry && entry.address, favoriteSelection);
+    if (favoriteQuery) candidates.push(favoriteQuery);
+  });
+
+  var deduped = [];
+  var seen = {};
+  for (var i = 0; i < candidates.length; i++) {
+    var query = (candidates[i] || "").trim();
+    if (!query) continue;
+    var compact = query.replace(/\s+/g, "").toLowerCase();
+    if (compact.length < 2) continue;
+    if (seen[compact]) continue;
+    seen[compact] = true;
+    deduped.push(query);
+    if (deduped.length >= MAX_AUTOCOMPLETE_WARMUP_QUERIES) break;
+  }
+  return deduped;
+}
+
+function queueAutocompleteWarmup() {
+  if (_autocompleteWarmupQueued) return;
+  var warmupQueries = collectWarmupQueries();
+  _autocompleteWarmupQueued = true;
+
+  var requestBody = {
+    queries: warmupQueries,
+  };
+  if (_map && typeof _map.getCenter === "function") {
+    try {
+      var center = _map.getCenter();
+      if (center) {
+        requestBody.center_lat = Number(center.lat);
+        requestBody.center_lon = Number(center.lng);
+      }
+    } catch (_) {
+      // center unavailable; warmup without center bias
+    }
+  }
+
+  var runWarmup = function () {
+    fetch("/api/autocomplete/warmup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    }).catch(function () {
+      // warmup 실패는 사용자 흐름에 영향 주지 않음
+    });
+  };
+
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(runWarmup, { timeout: 2500 });
+  } else {
+    setTimeout(runWarmup, 1200);
+  }
+}
+
 function fetchAutocomplete(query, abortState) {
+  var cacheKey = buildAutocompleteCacheKey(query);
+  var cachedItems = getCachedAutocompleteItems(cacheKey);
+  if (Array.isArray(cachedItems) && cachedItems.length > 0) {
+    return Promise.resolve(cachedItems);
+  }
+
   if (abortState.ctrl) abortState.ctrl.abort();
   abortState.ctrl = new AbortController();
-  return fetch("/api/autocomplete?q=" + encodeURIComponent(query), {
-    signal: abortState.ctrl.signal,
-  })
-    .then(function (res) { return res.json(); })
-    .catch(function () { return []; });
+  var timeoutId = setTimeout(function () {
+    if (abortState.ctrl) abortState.ctrl.abort();
+  }, AUTOCOMPLETE_FETCH_TIMEOUT_MS);
+  return fetch(
+    "/api/autocomplete?q=" +
+      encodeURIComponent(query) +
+      buildMapCenterQueryString(),
+    {
+      signal: abortState.ctrl.signal,
+    }
+  )
+    .then(function (res) {
+      if (!res.ok) {
+        throw new Error("autocomplete request failed");
+      }
+      return res.json();
+    })
+    .then(function (items) {
+      if (!Array.isArray(items)) {
+        return [];
+      }
+      setCachedAutocompleteItems(cacheKey, items);
+      return items;
+    })
+    .catch(function () { return []; })
+    .finally(function () { clearTimeout(timeoutId); });
 }
 
 function renderACDropdown($dropdown, items, onSelect) {
@@ -1495,36 +1973,102 @@ function closeACDropdown($dropdown) {
   $dropdown.innerHTML = "";
 }
 
-function setupAutocomplete($input, $dropdown, setSelected, color) {
+function applyAutocompleteSelection($input, $dropdown, setSelected, item) {
+  var selection = buildStableSelection(item, {
+    display_name: item.display_name || item.address || "",
+    address: item.address || item.display_name || "",
+    selection_kind: item.selection_kind || "",
+    canonical_query: item.canonical_query || "",
+    source: item.source || null,
+    confidence: item.confidence,
+  });
+  var namedPoiLabel = buildNamedPoiDisplayLabel(selection);
+  $input.value =
+    selection && selection.coords_ready === false
+      ? namedPoiLabel || selection.canonical_query || item.canonical_query || item.address || item.display_name || ""
+      : item.display_name || item.address || "";
+  setSelected(selection);
+  closeACDropdown($dropdown);
+  refreshMapMarkersLive();
+}
+
+function withDisplayRoute(payload, origin, destination) {
+  if (!payload || !payload.route) return payload;
+  var nextOrigin = String(origin || "").trim();
+  var nextDestination = String(destination || "").trim();
+  return Object.assign({}, payload, {
+    route: Object.assign({}, payload.route, {
+      origin: nextOrigin || payload.route.origin,
+      destination: nextDestination || payload.route.destination,
+    }),
+  });
+}
+
+function setupAutocomplete($input, $dropdown, setSelected, timerKey) {
   var currentItems = [];
   var activeIdx = -1;
   var abortState = { ctrl: null };
+  var requestSeq = 0;
+  var isComposing = false;
 
   $input.addEventListener("input", function () {
-    setSelected(null);
+    clearAutocompleteTimer(timerKey);
     var q = $input.value.trim();
-    if (q.length < 1) {
+    if (shouldRetainSelectionOnInput(timerKey, q)) {
+      closeACDropdown($dropdown);
+      return;
+    }
+    setSelected(null);
+    // Keep suppressing noisy trailing-jamo states, but do not block
+    // already-stable syllables while a Korean IME composition is active.
+    if (hasTrailingHangulJamo(q)) return;
+    if (abortState.ctrl) {
+      abortState.ctrl.abort();
+      abortState.ctrl = null;
+    }
+    if (q.length < AUTOCOMPLETE_MIN_QUERY_LENGTH) {
       closeACDropdown($dropdown);
       currentItems = [];
       activeIdx = -1;
+      _acActiveIdx[timerKey] = -1;
       return;
     }
-    fetchAutocomplete(q, abortState).then(function (items) {
-      if (!items || !items.length) { closeACDropdown($dropdown); return; }
-      currentItems = items;
-      activeIdx = -1;
-      renderACDropdown($dropdown, items, function (item) {
-        $input.value = item.display_name || item.address;
-        setSelected({
-          lat: parseFloat(item.lat),
-          lon: parseFloat(item.lon),
-          display_name: item.display_name,
+
+    var timerId = setTimeout(function () {
+      requestSeq += 1;
+      var seq = requestSeq;
+      var queryAtRequest = q;
+      fetchAutocomplete(queryAtRequest, abortState).then(function (items) {
+        if (seq !== requestSeq) return;
+        if ($input.value.trim() !== queryAtRequest) return;
+        if (!items || !items.length) {
+          currentItems = [];
+          activeIdx = -1;
+          _acActiveIdx[timerKey] = -1;
+          closeACDropdown($dropdown);
+          return;
+        }
+        currentItems = items;
+        activeIdx = -1;
+        _acActiveIdx[timerKey] = -1;
+        renderACDropdown($dropdown, items, function (item) {
+          applyAutocompleteSelection($input, $dropdown, setSelected, item);
         });
-        closeACDropdown($dropdown);
-        // 선택 즉시 마커 업데이트
-        refreshMapMarkersLive();
       });
-    });
+    }, AUTOCOMPLETE_DEBOUNCE_MS);
+    setAutocompleteTimer(timerKey, timerId);
+  });
+
+  $input.addEventListener("compositionstart", function () {
+    isComposing = true;
+  });
+
+  $input.addEventListener("compositionend", function () {
+    isComposing = false;
+    // Some IMEs commit the finalized value after compositionend returns.
+    setTimeout(function () {
+      $input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, 0);
   });
 
   $input.addEventListener("keydown", function (e) {
@@ -1534,34 +2078,30 @@ function setupAutocomplete($input, $dropdown, setSelected, color) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
       activeIdx = Math.min(activeIdx + 1, items.length - 1);
+      _acActiveIdx[timerKey] = activeIdx;
       items.forEach(function (el, i) {
         el.classList.toggle("ac-active", i === activeIdx);
       });
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       activeIdx = Math.max(activeIdx - 1, 0);
+      _acActiveIdx[timerKey] = activeIdx;
       items.forEach(function (el, i) {
         el.classList.toggle("ac-active", i === activeIdx);
       });
     } else if (e.key === "Enter" && activeIdx >= 0 && currentItems[activeIdx]) {
       e.preventDefault();
       e.stopImmediatePropagation(); // 일반 Enter 핸들러의 handleSearch() 중복 호출 방지
-      var sel = currentItems[activeIdx];
-      $input.value = sel.display_name || sel.address;
-      setSelected({
-        lat: parseFloat(sel.lat),
-        lon: parseFloat(sel.lon),
-        display_name: sel.display_name,
-      });
-      closeACDropdown($dropdown);
-      refreshMapMarkersLive();
+      applyAutocompleteSelection($input, $dropdown, setSelected, currentItems[activeIdx]);
     } else if (e.key === "Escape") {
       closeACDropdown($dropdown);
       activeIdx = -1;
+      _acActiveIdx[timerKey] = -1;
     }
   });
 
   $input.addEventListener("blur", function () {
+    clearAutocompleteTimer(timerKey);
     setTimeout(function () { closeACDropdown($dropdown); }, 150);
   });
 }
@@ -1574,18 +2114,90 @@ async function fetchConfig() {
   return res.json();
 }
 
-async function apiEstimateArrival(origin, destination, departureTime, oCoords, dCoords) {
+function buildRoutePlaceMetadata(text, selection, coords) {
+  var stable = hasStableSelection(selection) ? selection : null;
+  var normalizedCoords = normalizeCoords(coords) || normalizeCoords(selection);
+  var label = String(
+    (stable && (stable.display_name || stable.address || stable.canonical_query)) ||
+      text ||
+      ""
+  ).trim();
+  var canonicalQuery = String(
+    (stable && stable.canonical_query) ||
+      (stable && stable.address) ||
+      label
+  ).trim();
+  if (!stable && !normalizedCoords && !canonicalQuery) {
+    return null;
+  }
+  var coordsReady = hasValidCoords(normalizedCoords);
+  return {
+    query: String(text || "").trim(),
+    display_name: label || canonicalQuery,
+    canonical_query: canonicalQuery || label,
+    selection_kind: String(
+      (stable && stable.selection_kind) || (stable ? "poi" : "address")
+    ).trim(),
+    coords_ready: coordsReady,
+    lat: coordsReady ? Number(normalizedCoords.lat) : null,
+    lon: coordsReady ? Number(normalizedCoords.lon) : null,
+    degraded_reason: coordsReady
+      ? null
+      : String((stable && stable.degraded_reason) || "coords_unresolved"),
+  };
+}
+
+function attachRouteContractFields(
+  body,
+  origin,
+  destination,
+  oCoords,
+  dCoords,
+  originSelection,
+  destSelection
+) {
+  if (oCoords) body.origin_coords = { lat: oCoords.lat, lon: oCoords.lon };
+  if (dCoords) body.dest_coords = { lat: dCoords.lat, lon: dCoords.lon };
+  var originPlace = buildRoutePlaceMetadata(origin, originSelection, oCoords);
+  var destPlace = buildRoutePlaceMetadata(destination, destSelection, dCoords);
+  if (originPlace) body.origin_place = originPlace;
+  if (destPlace) body.dest_place = destPlace;
+}
+
+function strictRouteContractHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "X-TTS-Route-Input-Contract": "strict",
+  };
+}
+
+async function apiEstimateArrival(
+  origin,
+  destination,
+  departureTime,
+  oCoords,
+  dCoords,
+  originSelection,
+  destSelection
+) {
   var body = {
     origin: origin,
     destination: destination,
     departure_time: departureTime,
   };
-  if (oCoords) body.origin_coords = { lat: oCoords.lat, lon: oCoords.lon };
-  if (dCoords) body.dest_coords = { lat: dCoords.lat, lon: dCoords.lon };
+  attachRouteContractFields(
+    body,
+    origin,
+    destination,
+    oCoords,
+    dCoords,
+    originSelection,
+    destSelection
+  );
 
   var res = await fetch("/v1/trip/arrival-time", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: strictRouteContractHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -1595,18 +2207,33 @@ async function apiEstimateArrival(origin, destination, departureTime, oCoords, d
   return res.json();
 }
 
-async function apiRecommendDeparture(origin, destination, desiredArrivalTime, oCoords, dCoords) {
+async function apiRecommendDeparture(
+  origin,
+  destination,
+  desiredArrivalTime,
+  oCoords,
+  dCoords,
+  originSelection,
+  destSelection
+) {
   var body = {
     origin: origin,
     destination: destination,
     desired_arrival_time: desiredArrivalTime,
   };
-  if (oCoords) body.origin_coords = { lat: oCoords.lat, lon: oCoords.lon };
-  if (dCoords) body.dest_coords = { lat: dCoords.lat, lon: dCoords.lon };
+  attachRouteContractFields(
+    body,
+    origin,
+    destination,
+    oCoords,
+    dCoords,
+    originSelection,
+    destSelection
+  );
 
   var res = await fetch("/v1/trip/recommended-departure-time", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: strictRouteContractHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -1622,6 +2249,8 @@ async function apiStreamDepartureRecommendation(
   desiredArrivalTime,
   oCoords,
   dCoords,
+  originSelection,
+  destSelection,
   handlers
 ) {
   var body = {
@@ -1629,12 +2258,19 @@ async function apiStreamDepartureRecommendation(
     destination: destination,
     desired_arrival_time: desiredArrivalTime,
   };
-  if (oCoords) body.origin_coords = { lat: oCoords.lat, lon: oCoords.lon };
-  if (dCoords) body.dest_coords = { lat: dCoords.lat, lon: dCoords.lon };
+  attachRouteContractFields(
+    body,
+    origin,
+    destination,
+    oCoords,
+    dCoords,
+    originSelection,
+    destSelection
+  );
 
   var res = await fetch("/v1/trip/recommended-departure-time/stream", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: strictRouteContractHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -1703,9 +2339,12 @@ async function apiStreamDepartureRecommendation(
       }
       return;
     }
-    if (evtName === "error") {
+    if (evtName === "error" || evtName === "busy") {
       var detail = (evtData && evtData.detail) || "추천 계산 스트림 오류";
       throw new Error(detail);
+    }
+    if (evtName === "end" && evtData && evtData.ok === false) {
+      throw new Error(evtData.detail || "추천 계산 스트림 오류");
     }
   }
 
@@ -1778,6 +2417,8 @@ async function apiStreamArrivalWithRecommendation(
   departureTime,
   oCoords,
   dCoords,
+  originSelection,
+  destSelection,
   handlers
 ) {
   var body = {
@@ -1785,12 +2426,19 @@ async function apiStreamArrivalWithRecommendation(
     destination: destination,
     departure_time: departureTime,
   };
-  if (oCoords) body.origin_coords = { lat: oCoords.lat, lon: oCoords.lon };
-  if (dCoords) body.dest_coords = { lat: dCoords.lat, lon: dCoords.lon };
+  attachRouteContractFields(
+    body,
+    origin,
+    destination,
+    oCoords,
+    dCoords,
+    originSelection,
+    destSelection
+  );
 
   var res = await fetch("/v1/trip/arrival-time-with-recommendation/stream", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: strictRouteContractHeaders(),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -1876,9 +2524,12 @@ async function apiStreamArrivalWithRecommendation(
       }
       return;
     }
-    if (evtName === "error") {
+    if (evtName === "error" || evtName === "busy") {
       var detail = (evtData && evtData.detail) || "추천 계산 스트림 오류";
       throw new Error(detail);
+    }
+    if (evtName === "end" && evtData && evtData.ok === false) {
+      throw new Error(evtData.detail || "추천 계산 스트림 오류");
     }
   }
 
@@ -2923,12 +3574,16 @@ function renderRecentSearches() {
       var r = items[idx];
       $origin.value = r.origin;
       $destination.value = r.destination;
-      if (r.origin_coords) {
-        _selectedOrigin = r.origin_coords;
-      }
-      if (r.destination_coords) {
-        _selectedDest = r.destination_coords;
-      }
+      _selectedOrigin = buildStableSelection(r.origin_coords, {
+        display_name: r.origin,
+        address: r.origin,
+        canonical_query: r.origin,
+      });
+      _selectedDest = buildStableSelection(r.destination_coords, {
+        display_name: r.destination,
+        address: r.destination,
+        canonical_query: r.destination,
+      });
       refreshMapMarkersLive();
     });
   });
@@ -2968,20 +3623,37 @@ function renderFavorites() {
       var f = items[idx];
       // 현재 포커스된 필드 또는 비어있는 필드에 입력
       var target = document.activeElement;
+      var coords = buildStableSelection(
+        {
+          lat: parseFloat(f.lat),
+          lon: parseFloat(f.lon),
+          display_name: f.name,
+          address: f.address,
+          selection_kind: "poi",
+          canonical_query: f.address,
+          source: "favorite",
+        },
+        {
+          display_name: f.name,
+          address: f.address,
+          selection_kind: "poi",
+          canonical_query: f.address,
+          source: "favorite",
+        }
+      );
       if (target === $origin || target === $destination) {
         target.value = f.address;
-        var coords = { lat: parseFloat(f.lat), lon: parseFloat(f.lon), display_name: f.name };
         if (target === $origin) _selectedOrigin = coords;
         else _selectedDest = coords;
       } else if (!$origin.value) {
         $origin.value = f.address;
-        _selectedOrigin = { lat: parseFloat(f.lat), lon: parseFloat(f.lon), display_name: f.name };
+        _selectedOrigin = coords;
       } else if (!$destination.value) {
         $destination.value = f.address;
-        _selectedDest = { lat: parseFloat(f.lat), lon: parseFloat(f.lon), display_name: f.name };
+        _selectedDest = coords;
       } else {
         $origin.value = f.address;
-        _selectedOrigin = { lat: parseFloat(f.lat), lon: parseFloat(f.lon), display_name: f.name };
+        _selectedOrigin = coords;
       }
       refreshMapMarkersLive();
     });
@@ -3040,17 +3712,23 @@ function refreshMapMarkersLive() {
   var dest = $destination.value.trim();
 
   var pO, pD;
-  if (_selectedOrigin && orig) {
+  if (hasValidCoords(_selectedOrigin) && orig) {
     addMarker([_selectedOrigin.lat, _selectedOrigin.lon], { color: "#03C75A", label: "출발" });
     pO = Promise.resolve({ lat: _selectedOrigin.lat, lon: _selectedOrigin.lon });
+  } else if (hasStableSelection(_selectedOrigin)) {
+    pO = Promise.resolve(null);
   } else {
-    pO = orig ? geocodeAndMark(orig, "#03C75A") : Promise.resolve(null);
+    var originQuery = String(orig || "").trim();
+    pO = originQuery ? geocodeAndMark(originQuery, "#03C75A") : Promise.resolve(null);
   }
-  if (_selectedDest && dest) {
+  if (hasValidCoords(_selectedDest) && dest) {
     addMarker([_selectedDest.lat, _selectedDest.lon], { color: "#E53935", label: "도착" });
     pD = Promise.resolve({ lat: _selectedDest.lat, lon: _selectedDest.lon });
+  } else if (hasStableSelection(_selectedDest)) {
+    pD = Promise.resolve(null);
   } else {
-    pD = dest ? geocodeAndMark(dest, "#E53935") : Promise.resolve(null);
+    var destQuery = String(dest || "").trim();
+    pD = destQuery ? geocodeAndMark(destQuery, "#E53935") : Promise.resolve(null);
   }
 
   Promise.all([pO, pD]).then(function (results) {
@@ -3065,10 +3743,18 @@ function refreshMapMarkersLive() {
 }
 
 $origin.addEventListener("change", function () {
-  if (!_selectedOrigin) refreshMapMarkersLive();
+  var orig = $origin.value.trim();
+  var dest = $destination.value.trim();
+  if (!hasValidCoords(_selectedOrigin) && orig.length >= 2 && dest.length >= 2) {
+    refreshMapMarkersLive();
+  }
 });
 $destination.addEventListener("change", function () {
-  if (!_selectedDest) refreshMapMarkersLive();
+  var orig = $origin.value.trim();
+  var dest = $destination.value.trim();
+  if (!hasValidCoords(_selectedDest) && orig.length >= 2 && dest.length >= 2) {
+    refreshMapMarkersLive();
+  }
 });
 
 $mobileToggle.addEventListener("click", function () {
@@ -3121,29 +3807,58 @@ async function handleSearch() {
   try {
     // ── Step 1: 출발/도착 좌표를 병렬 resolve ──
     var coordResults = await Promise.all([
-      resolveCoords(origin, _selectedOrigin),
-      resolveCoords(destination, _selectedDest),
+      resolveRouteCriticalCoords(origin, _selectedOrigin),
+      resolveRouteCriticalCoords(destination, _selectedDest),
     ]);
     var oCoords = coordResults[0];
     var dCoords = coordResults[1];
+    if (oCoords && hasStableSelection(_selectedOrigin) && !hasValidCoords(_selectedOrigin)) {
+      _selectedOrigin = markSelectionCoordsResolved(_selectedOrigin, oCoords);
+    }
+    if (dCoords && hasStableSelection(_selectedDest) && !hasValidCoords(_selectedDest)) {
+      _selectedDest = markSelectionCoordsResolved(_selectedDest, dCoords);
+    }
+    var originSelectedWithoutCoords =
+      hasStableSelection(_selectedOrigin) && !hasValidCoords(_selectedOrigin);
+    var destSelectedWithoutCoords =
+      hasStableSelection(_selectedDest) && !hasValidCoords(_selectedDest);
+    var requestOrigin = getStableSearchQuery(origin, _selectedOrigin);
+    var requestDestination = getStableSearchQuery(destination, _selectedDest);
+    var displayOrigin = getSelectionDisplayText(origin, _selectedOrigin);
+    var displayDestination = getSelectionDisplayText(destination, _selectedDest);
 
-    if (!oCoords) {
+    if (!oCoords && !originSelectedWithoutCoords) {
       showError('"' + origin + '" 위치를 찾을 수 없습니다. 도로명주소 또는 역/지하철명으로 입력해 주세요.');
       return;
     }
-    if (!dCoords) {
+    if (!dCoords && !destSelectedWithoutCoords) {
       showError('"' + destination + '" 위치를 찾을 수 없습니다. 도로명주소 또는 역/지하철명으로 입력해 주세요.');
+      return;
+    }
+    if (!oCoords || !dCoords) {
+      if (originSelectedWithoutCoords || destSelectedWithoutCoords) {
+        console.warn("coords_unresolved: route-critical autocomplete selection blocked");
+        showError(COORDS_UNRESOLVED_ROUTE_MESSAGE);
+      } else {
+        showError("출발지 또는 도착지 좌표를 확인할 수 없습니다. 다시 입력해 주세요.");
+      }
       return;
     }
 
     // ── Step 2: 좌표 확보됨 → 지도 그리기 시작 ──
     clearMarkers();
     if (_map) {
-      addMarker([oCoords.lat, oCoords.lon], { color: "#03C75A", label: "출발" });
-      addMarker([dCoords.lat, dCoords.lon], { color: "#E53935", label: "도착" });
+      if (oCoords) {
+        addMarker([oCoords.lat, oCoords.lon], { color: "#03C75A", label: "출발" });
+      }
+      if (dCoords) {
+        addMarker([dCoords.lat, dCoords.lon], { color: "#E53935", label: "도착" });
+      }
       fitBounds();
     }
-    var routePromise = fetchAndDrawRoute(oCoords.lat, oCoords.lon, dCoords.lat, dCoords.lon);
+    var routePromise = oCoords && dCoords
+      ? fetchAndDrawRoute(oCoords.lat, oCoords.lon, dCoords.lat, dCoords.lon)
+      : Promise.resolve();
 
     if (_currentMode === "arrival") {
       var arrivalContext = _renderContext("arrival");
@@ -3162,14 +3877,20 @@ async function handleSearch() {
       try {
         var streamResults = await Promise.all([
           apiStreamArrivalWithRecommendation(
-            origin,
-            destination,
+            requestOrigin,
+            requestDestination,
             isoTime,
             oCoords,
             dCoords,
+            _selectedOrigin,
+            _selectedDest,
             {
               onArrival: function (arrivalPayload, safePayload, progressPayload) {
-                baselineData = arrivalPayload;
+                baselineData = withDisplayRoute(
+                  arrivalPayload,
+                  displayOrigin,
+                  displayDestination
+                );
                 immediateSafe = safePayload;
                 if (progressPayload) {
                   progressState = progressPayload;
@@ -3214,6 +3935,11 @@ async function handleSearch() {
                 );
               },
               onRecommendation: function (recommendPayload, candidates, progressPayload) {
+                recommendPayload = withDisplayRoute(
+                  recommendPayload,
+                  displayOrigin,
+                  displayDestination
+                );
                 if (
                   candidates &&
                   candidates.length > 0 &&
@@ -3266,8 +3992,16 @@ async function handleSearch() {
           streamResults[0].recommendation
         ) {
           renderDepartureResult(
-            streamResults[0].recommendation,
-            streamResults[0].arrival || baselineData,
+            withDisplayRoute(
+              streamResults[0].recommendation,
+              displayOrigin,
+              displayDestination
+            ),
+            withDisplayRoute(
+              streamResults[0].arrival || baselineData,
+              displayOrigin,
+              displayDestination
+            ),
             arrivalContext,
             streamResults[0].immediate_safe_departure || immediateSafe
           );
@@ -3288,14 +4022,16 @@ async function handleSearch() {
         remaining: 0,
         total_candidates: 0,
       };
-      var baselineDepartureLocal = nowCeilTo10();
+      var baselineDepartureLocal = nowCeilToStep();
       var baselineDepartureTime = toApiDatetimeString(baselineDepartureLocal) || isoTime;
       var baselinePromise = apiEstimateArrival(
-        origin,
-        destination,
+        requestOrigin,
+        requestDestination,
         baselineDepartureTime,
         oCoords,
-        dCoords
+        dCoords,
+        _selectedOrigin,
+        _selectedDest
       );
 
       var baselineData = null;
@@ -3303,11 +4039,13 @@ async function handleSearch() {
       var baselineResolved = false;
       var streamErr = null;
       var recommendStreamPromise = apiStreamDepartureRecommendation(
-        origin,
-        destination,
+        requestOrigin,
+        requestDestination,
         isoTime,
         oCoords,
         dCoords,
+        _selectedOrigin,
+        _selectedDest,
         {
           onPlan: function (progressPayload) {
             progressState = progressPayload || progressState;
@@ -3342,6 +4080,11 @@ async function handleSearch() {
             );
           },
           onRecommendation: function (recommendPayload, candidates, progressPayload) {
+            recommendPayload = withDisplayRoute(
+              recommendPayload,
+              displayOrigin,
+              displayDestination
+            );
             if (
               candidates &&
               candidates.length > 0 &&
@@ -3366,6 +4109,11 @@ async function handleSearch() {
 
       try {
         baselineData = await baselinePromise;
+        baselineData = withDisplayRoute(
+          baselineData,
+          displayOrigin,
+          displayDestination
+        );
         baselineResolved = true;
         renderDeparturePending(
           baselineData,
@@ -3392,18 +4140,29 @@ async function handleSearch() {
         departureResults[0] &&
         departureResults[0].recommendation
       ) {
-        recommendationData = departureResults[0].recommendation;
+        recommendationData = withDisplayRoute(
+          departureResults[0].recommendation,
+          displayOrigin,
+          displayDestination
+        );
       }
       if (!recommendationData) {
         if (streamErr) {
           console.warn("falling back to single departure recommendation API");
         }
         recommendationData = await apiRecommendDeparture(
-          origin,
-          destination,
+          requestOrigin,
+          requestDestination,
           isoTime,
           oCoords,
-          dCoords
+          dCoords,
+          _selectedOrigin,
+          _selectedDest
+        );
+        recommendationData = withDisplayRoute(
+          recommendationData,
+          displayOrigin,
+          displayDestination
         );
       }
       renderDepartureResult(
@@ -3415,8 +4174,58 @@ async function handleSearch() {
     }
 
     // ── Step 3: 최근 검색 저장 ──
-    addRecentSearch(origin, destination,
-      _selectedOrigin || oCoords, _selectedDest || dCoords);
+    addRecentSearch(
+      displayOrigin,
+      displayDestination,
+      hasStableSelection(_selectedOrigin)
+        ? buildStableSelection(_selectedOrigin, {
+            display_name: requestOrigin,
+            address: requestOrigin,
+            canonical_query: requestOrigin,
+          })
+        : oCoords ? buildStableSelection(
+            {
+              lat: oCoords.lat,
+              lon: oCoords.lon,
+              display_name: requestOrigin,
+              address: requestOrigin,
+              canonical_query: requestOrigin,
+              selection_kind: "poi",
+              source: "geocode",
+            },
+            {
+              display_name: requestOrigin,
+              address: requestOrigin,
+              canonical_query: requestOrigin,
+              selection_kind: "poi",
+              source: "geocode",
+            }
+          ) : null,
+      hasStableSelection(_selectedDest)
+        ? buildStableSelection(_selectedDest, {
+            display_name: requestDestination,
+            address: requestDestination,
+            canonical_query: requestDestination,
+          })
+        : dCoords ? buildStableSelection(
+            {
+              lat: dCoords.lat,
+              lon: dCoords.lon,
+              display_name: requestDestination,
+              address: requestDestination,
+              canonical_query: requestDestination,
+              selection_kind: "poi",
+              source: "geocode",
+            },
+            {
+              display_name: requestDestination,
+              address: requestDestination,
+              canonical_query: requestDestination,
+              selection_kind: "poi",
+              source: "geocode",
+            }
+          ) : null
+    );
 
     // On mobile, close sidebar after search
     $sidebar.classList.remove("open");
@@ -3476,7 +4285,7 @@ $datetimeInput.addEventListener("change", function () {
     var addr = $favAddr.value.trim();
     if (!name || !addr) return;
     // 주소를 지오코딩해서 좌표 저장
-    fetch("/api/geocode?q=" + encodeURIComponent(addr))
+    fetch("/api/geocode?q=" + encodeURIComponent(addr) + buildMapCenterQueryString())
       .then(function (res) { return res.json(); })
       .then(function (data) {
         if (data && data.length > 0) {
@@ -3496,27 +4305,33 @@ document.getElementById("recent-clear").addEventListener("click", function () {
 });
 
 /* ── Autocomplete Setup ──────────────────────────── */
-setupAutocomplete($origin, $originAC, function (v) { _selectedOrigin = v; }, "#03C75A");
-setupAutocomplete($destination, $destAC, function (v) { _selectedDest = v; }, "#E53935");
+setupAutocomplete($origin, $originAC, function (v) { _selectedOrigin = v; }, "origin");
+setupAutocomplete($destination, $destAC, function (v) { _selectedDest = v; }, "dest");
 
 /* ── Bootstrap ────────────────────────────────────── */
 
 async function bootstrap() {
-  $datetimeInput.value = nowCeilTo10();
+  try {
+    _config = await fetchConfig();
+    if (Number.isFinite(Number(_config.step_minutes)) && Number(_config.step_minutes) > 0) {
+      DATETIME_MINUTE_STEP = Number(_config.step_minutes);
+    }
+    setProviderName(_config.provider);
+    setVersionBadge(_config.version);
+  } catch (_) {
+    // config endpoint failed; continue with the compiled default step.
+    setProviderName("unknown");
+    setVersionBadge("v0.0.0.0");
+  }
+
+  $datetimeInput.value = nowCeilToStep();
   initDatetimePicker();
   enforceMinDatetime();
   // 매 30초마다 min 속성 갱신 (시간 경과에 따른 과거 시간 차단)
   setInterval(enforceMinDatetime, 30000);
 
-  try {
-    _config = await fetchConfig();
-    setProviderName(_config.provider);
-  } catch (_) {
-    // config endpoint failed; continue
-    setProviderName("unknown");
-  }
-
   initMap();
+  queueAutocompleteWarmup();
   renderRecentSearches();
   renderFavorites();
 
