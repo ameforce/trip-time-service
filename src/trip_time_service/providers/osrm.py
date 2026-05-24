@@ -8,6 +8,7 @@ from datetime import datetime
 from threading import Lock
 
 from trip_time_service.core.models import DriveDuration, Route
+from trip_time_service.privacy import redact_route, redact_text
 
 _log = logging.getLogger(__name__)
 
@@ -66,7 +67,11 @@ def _geocode_place(query: str) -> tuple[float, float] | None:
         if data:
             return float(data[0]["lat"]), float(data[0]["lon"])
     except Exception:
-        _log.debug("OSRM geocode Nominatim failed: %r", query, exc_info=True)
+        _log.debug(
+            "OSRM geocode Nominatim failed query=%s",
+            redact_text(query),
+            exc_info=True,
+        )
 
     # 2) Photon
     qs = urllib.parse.urlencode({
@@ -84,7 +89,11 @@ def _geocode_place(query: str) -> tuple[float, float] | None:
             coords = features[0]["geometry"]["coordinates"]
             return float(coords[1]), float(coords[0])
     except Exception:
-        _log.debug("OSRM geocode Photon failed: %r", query, exc_info=True)
+        _log.debug(
+            "OSRM geocode Photon failed query=%s",
+            redact_text(query),
+            exc_info=True,
+        )
 
     return None
 
@@ -151,7 +160,8 @@ class OsrmTravelTimeProvider:
         d = self._geocode(route.destination)
         if o is None or d is None:
             _log.warning(
-                "OSRM: geocode failed, origin=%r dest=%r", route.origin, route.destination,
+                "OSRM: geocode failed route=%s",
+                redact_route(route.origin, route.destination),
             )
             return 1800.0
 
@@ -163,8 +173,10 @@ class OsrmTravelTimeProvider:
         with self._lock:
             self._base_cache[route] = dur
         _log.info(
-            "OSRM: %s → %s = %.0f초 (%.1f분)",
-            route.origin, route.destination, dur, dur / 60,
+            "OSRM: route=%s = %.0f초 (%.1f분)",
+            redact_route(route.origin, route.destination),
+            dur,
+            dur / 60,
         )
         return dur
 
