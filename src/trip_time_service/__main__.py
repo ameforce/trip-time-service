@@ -17,6 +17,7 @@ _FALLBACK_RANGE = range(8500, 8600)
 def _is_port_available(host: str, port: int) -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
         return True
     except OSError:
@@ -37,6 +38,14 @@ def _reserve_ephemeral_port(host: str) -> int:
 def _find_available_port(host: str, preferred: int) -> int:
     if _is_port_available(host, preferred):
         return preferred
+
+    if _getenv_bool("TTS_PORT_STRICT", False):
+        message = (
+            f"Port {preferred} is unavailable on {host}; "
+            "TTS_PORT_STRICT=1 forbids fallback."
+        )
+        logger.error(message)
+        raise RuntimeError(message)
 
     logger.warning(
         "포트 %d 사용 불가 (OS 예약 또는 점유). 대체 포트 탐색 중...",

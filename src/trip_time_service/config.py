@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import math
 import os
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import lru_cache
 from zoneinfo import ZoneInfo
+
+_log = logging.getLogger(__name__)
 
 
 def _getenv_stripped(name: str) -> str | None:
@@ -45,6 +48,26 @@ def _getenv_csv(name: str) -> tuple[str, ...]:
     return tuple(part for part in parts if part)
 
 
+def _getenv_choice(
+    name: str,
+    default: str,
+    choices: set[str],
+) -> str:
+    value = _getenv_stripped(name)
+    if value is None:
+        return default
+    normalized = value.lower()
+    if normalized in choices:
+        return normalized
+    _log.warning(
+        "Invalid %s=%r; falling back to %s",
+        name,
+        value,
+        default,
+    )
+    return default
+
+
 def _cpu_parallel_target(logical_cpus: int) -> int:
     # CPU logical thread의 80%를 기본 병렬도 목표치로 사용
     return max(1, math.ceil(logical_cpus * 0.8))
@@ -63,10 +86,13 @@ class Settings:
     chrome_binary_path: str | None
     chrome_user_data_dir: str | None
     naver_map_client_id: str | None
+    chrome_no_sandbox: bool = False
     recommend_workers: int = 1
     naver_session_pool_size: int = 1
     cors_allowed_origins: tuple[str, ...] = ()
     recommend_min_samples: int = 12
+    route_input_contract: str = "warn"
+    enable_docs: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -111,8 +137,15 @@ def load_settings() -> Settings:
 
     chrome_binary_path = _getenv_stripped("TTS_CHROME_BINARY_PATH")
     chrome_user_data_dir = _getenv_stripped("TTS_CHROME_USER_DATA_DIR")
+    chrome_no_sandbox = _getenv_bool("TTS_CHROME_NO_SANDBOX", False)
     naver_map_client_id = _getenv_stripped("TTS_NAVER_MAP_CLIENT_ID")
     cors_allowed_origins = _getenv_csv("TTS_CORS_ALLOW_ORIGINS")
+    enable_docs = _getenv_bool("TTS_ENABLE_DOCS", False)
+    route_input_contract = _getenv_choice(
+        "TTS_ROUTE_INPUT_CONTRACT",
+        "warn",
+        {"warn", "strict"},
+    )
 
     if step_minutes <= 0:
         raise ValueError("TTS_STEP_MINUTES must be positive")
@@ -139,9 +172,12 @@ def load_settings() -> Settings:
         provider=provider,
         chrome_binary_path=chrome_binary_path,
         chrome_user_data_dir=chrome_user_data_dir,
+        chrome_no_sandbox=chrome_no_sandbox,
         naver_map_client_id=naver_map_client_id,
         recommend_workers=recommend_workers,
         naver_session_pool_size=naver_session_pool_size,
         cors_allowed_origins=cors_allowed_origins,
         recommend_min_samples=recommend_min_samples,
+        route_input_contract=route_input_contract,
+        enable_docs=enable_docs,
     )
