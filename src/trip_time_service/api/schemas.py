@@ -27,6 +27,8 @@ class ArrivalTimeRequest(BaseModel):
     departure_time: datetime
     origin_coords: CoordsInput | None = None
     dest_coords: CoordsInput | None = None
+    origin_place: object | None = None
+    dest_place: object | None = None
 
 
 class ArrivalTimeResponse(BaseModel):
@@ -48,6 +50,8 @@ class DepartureRecommendationRequest(BaseModel):
     desired_arrival_time: datetime
     origin_coords: CoordsInput | None = None
     dest_coords: CoordsInput | None = None
+    origin_place: object | None = None
+    dest_place: object | None = None
 
 
 class RecommendationCandidateModel(BaseModel):
@@ -114,3 +118,5 @@ class FrontendConfig(BaseModel):
     naver_map_client_id: str | None = None
     timezone: str = "Asia/Seoul"
     provider: str = "unknown"
+    version: str = "v0.0.0.0"
+    step_minutes: int = 10

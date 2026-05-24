@@ -1,0 +1,90 @@
+[
+  {
+    "origin_query": "강남역",
+    "destination_query": "판교역",
+    "mode": "arrival",
+    "future_offset_days": 1,
+    "time_hhmm": "09:00",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "서울역",
+    "destination_query": "코엑스",
+    "mode": "departure",
+    "future_offset_days": 1,
+    "time_hhmm": "18:30",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "테헤란로 152",
+    "destination_query": "수서역",
+    "mode": "arrival",
+    "future_offset_days": 1,
+    "time_hhmm": "10:00",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "네이버 1784",
+    "destination_query": "잠실역",
+    "mode": "departure",
+    "future_offset_days": 1,
+    "time_hhmm": "19:00",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "광화문역",
+    "destination_query": "서울대병원",
+    "mode": "arrival",
+    "future_offset_days": 1,
+    "time_hhmm": "11:00",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "판교역",
+    "destination_query": "강남역",
+    "mode": "departure",
+    "future_offset_days": 1,
+    "time_hhmm": "08:30",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "선릉역",
+    "destination_query": "코엑스",
+    "mode": "arrival",
+    "future_offset_days": 1,
+    "time_hhmm": "14:00",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "카카오 판교아지트",
+    "destination_query": "수서역",
+    "mode": "departure",
+    "future_offset_days": 1,
+    "time_hhmm": "20:00",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "세종대로 110",
+    "destination_query": "서울대병원",
+    "mode": "arrival",
+    "future_offset_days": 1,
+    "time_hhmm": "09:30",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "성균관대학교 자연과학캠퍼스",
+    "destination_query": "판교역",
+    "mode": "departure",
+    "future_offset_days": 1,
+    "time_hhmm": "17:40",
+    "selection_kind": "query_token_match"
+  },
+  {
+    "origin_query": "서울대병원",
+    "destination_query": "한강대로 405",
+    "mode": "arrival",
+    "future_offset_days": 1,
+    "time_hhmm": "13:20",
+    "selection_kind": "query_token_match"
+  }
+]

@@ -1,0 +1,194 @@
+[
+  {
+    "query": "강남역",
+    "expected_any": ["강남역", "강남"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "서울역",
+    "expected_any": ["서울역", "서울"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "판교역",
+    "expected_any": ["판교역", "판교"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "수서역",
+    "expected_any": ["수서역", "수서"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "테헤란로 152",
+    "expected_any": ["테헤란로", "152"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "road-address"
+  },
+  {
+    "query": "한강대로 405",
+    "expected_any": ["한강대로", "405"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "road-address"
+  },
+  {
+    "query": "스타벅스 강남",
+    "expected_any": ["스타벅스", "강남"],
+    "min_results": 1,
+    "require_coords": false,
+    "retry_once_on_empty": true,
+    "category": "franchise"
+  },
+  {
+    "query": "코엑스",
+    "expected_any": ["코엑스", "coex"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "poi"
+  },
+  {
+    "query": "잠실역",
+    "expected_any": ["잠실역", "잠실"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "사당역",
+    "expected_any": ["사당역", "사당"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "선릉역",
+    "expected_any": ["선릉역", "선릉"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "광화문역",
+    "expected_any": ["광화문역", "광화문"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "경수대로 680",
+    "expected_any": ["경수대로", "680"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "road-address"
+  },
+  {
+    "query": "세종대로 110",
+    "expected_any": ["세종대로", "110"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "road-address"
+  },
+  {
+    "query": "판교역로 235",
+    "expected_any": ["판교역로", "235"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "road-address"
+  },
+  {
+    "query": "파리바게뜨 판교",
+    "expected_any": ["파리바게뜨", "판교"],
+    "min_results": 1,
+    "require_coords": false,
+    "retry_once_on_empty": true,
+    "category": "franchise"
+  },
+  {
+    "query": "올리브영 강남",
+    "expected_any": ["올리브영", "강남"],
+    "min_results": 1,
+    "require_coords": false,
+    "retry_once_on_empty": true,
+    "category": "franchise"
+  },
+  {
+    "query": "다이소 잠실",
+    "expected_any": ["다이소", "잠실"],
+    "min_results": 1,
+    "require_coords": false,
+    "retry_once_on_empty": true,
+    "category": "franchise"
+  },
+  {
+    "query": "서울대병원",
+    "expected_any": ["서울대병원", "서울대"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "hospital"
+  },
+  {
+    "query": "성균관대학교 자연과학캠퍼스",
+    "expected_any": ["성균관대학교", "자연과학캠퍼스"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "campus"
+  },
+  {
+    "query": "네이버 1784",
+    "expected_any": ["네이버", "1784"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "office"
+  },
+  {
+    "query": "카카오 판교아지트",
+    "expected_any": ["카카오", "판교아지트"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "office"
+  },
+  {
+    "query": "강남",
+    "expected_any": ["강남", "강남역"],
+    "min_results": 1,
+    "require_coords": false,
+    "retry_once_on_empty": true,
+    "category": "broad-query"
+  },
+  {
+    "query": "판교",
+    "expected_any": ["판교", "판교역"],
+    "min_results": 1,
+    "require_coords": false,
+    "retry_once_on_empty": true,
+    "category": "broad-query"
+  }
+]

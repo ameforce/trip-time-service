@@ -1,0 +1,66 @@
+[
+  {
+    "query": "강남역",
+    "expected_any": ["강남역", "강남"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "서울역",
+    "expected_any": ["서울역", "서울"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "판교역",
+    "expected_any": ["판교역", "판교"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "수서역",
+    "expected_any": ["수서역", "수서"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "station"
+  },
+  {
+    "query": "테헤란로 152",
+    "expected_any": ["테헤란로", "152"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "road-address"
+  },
+  {
+    "query": "한강대로 405",
+    "expected_any": ["한강대로", "405"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "road-address"
+  },
+  {
+    "query": "스타벅스 강남",
+    "expected_any": ["스타벅스", "강남"],
+    "min_results": 1,
+    "require_coords": false,
+    "retry_once_on_empty": true,
+    "category": "franchise"
+  },
+  {
+    "query": "코엑스",
+    "expected_any": ["코엑스", "coex"],
+    "min_results": 1,
+    "require_coords": true,
+    "retry_once_on_empty": true,
+    "category": "poi"
+  }
+]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -10,11 +11,16 @@ import urllib.parse
 from collections.abc import Callable
 
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+
+from trip_time_service.chrome_driver import (
+    build_chrome_options,
+    close_webdriver_with_timeout,
+)
+from trip_time_service.privacy import redact_text
 
 _log = logging.getLogger(__name__)
 
@@ -28,26 +34,56 @@ _NAVER_ADDRESS_PATH_RE = re.compile(
 _NAVER_C_RE = re.compile(r"[?&]c=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _ensure_naver_driver() -> webdriver.Chrome:
     global _naver_driver
     if _naver_driver is not None:
         return _naver_driver
 
-    opts = Options()
-    opts.add_argument("--headless=new")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--lang=ko-KR")
-    opts.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    opts = build_chrome_options(
+        headless=_env_bool("TTS_HEADLESS", True),
+        window_size="1280,960",
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        chrome_binary_path=os.getenv("TTS_CHROME_BINARY_PATH"),
+        chrome_user_data_dir=os.getenv("TTS_CHROME_USER_DATA_DIR"),
+        no_sandbox=_env_bool("TTS_CHROME_NO_SANDBOX", False),
     )
     driver = webdriver.Chrome(options=opts)
     driver.set_page_load_timeout(20)
     driver.set_script_timeout(10)
     _naver_driver = driver
     return driver
+
+
+def shutdown_naver_driver() -> None:
+    global _naver_driver
+    with _naver_lock:
+        driver = _naver_driver
+        _naver_driver = None
+    if driver is None:
+        return
+    result = close_webdriver_with_timeout(
+        driver,
+        quit_timeout_seconds=3.0,
+        quit_thread_name="naver-geo-driver-quit",
+    )
+    if result.timed_out:
+        _log.warning("Naver geo driver quit timed out and was force-killed")
+    elif result.quit_error is not None:
+        _log.warning(
+            "Naver geo driver quit failed: %s",
+            result.quit_error,
+        )
 
 
 def _extract_road_addr_from_body(body: str) -> str | None:
@@ -199,7 +235,10 @@ def geocode_naver(
                 if not road_addr:
                     road_addr = extract_addr_from_naver_url(driver.current_url)
                 display_name = f"{query} ({road_addr})" if road_addr else query
-                _log.info("Naver q=%r → URL coords (%s, %s)", query, lat, lon)
+                _log.info(
+                    "Naver geocode query=%s source=url_coords",
+                    redact_text(query),
+                )
                 return {
                     "lat": str(lat),
                     "lon": str(lon),
@@ -210,14 +249,24 @@ def geocode_naver(
             if entry_coords:
                 display_name = f"{query} ({road_addr})" if road_addr else query
                 entry_coords["display_name"] = display_name
-                _log.info("Naver q=%r → entry coords", query)
+                _log.info(
+                    "Naver geocode query=%s source=entry_coords",
+                    redact_text(query),
+                )
                 return entry_coords
 
             if not road_addr:
-                _log.info("Naver: no road address for q=%r", query)
+                _log.info(
+                    "Naver geocode query=%s road_address=false",
+                    redact_text(query),
+                )
                 return None
 
-            _log.info("Naver q=%r → road_addr=%r (fallback geocode)", query, road_addr)
+            _log.info(
+                "Naver geocode query=%s road_address=%s fallback=true",
+                redact_text(query),
+                redact_text(road_addr),
+            )
             if fallback_geocode is None:
                 return None
 
@@ -225,9 +274,16 @@ def geocode_naver(
             if result:
                 result["display_name"] = f"{query} ({road_addr})"
                 return result
-            _log.info("Naver: geocoding failed for addr=%r", road_addr)
+            _log.info(
+                "Naver geocode failed address=%s",
+                redact_text(road_addr),
+            )
         except Exception:
-            _log.debug("Naver geocode failed for q=%r", query, exc_info=True)
+            _log.debug(
+                "Naver geocode failed query=%s",
+                redact_text(query),
+                exc_info=True,
+            )
             try:
                 driver.switch_to.default_content()
             except Exception:
