@@ -183,6 +183,7 @@ _RUNTIME_METRICS_LOCK = threading.Lock()
 _EXTERNAL_PROVIDER_CALL_COUNTS: dict[str, int] = {}
 _AUTOCOMPLETE_SOURCE_COUNTS: dict[str, int] = {}
 _AUTOCOMPLETE_DEGRADED_COUNTS: dict[str, int] = {}
+_AUTOCOMPLETE_STAGE_METRICS: dict[str, dict[str, object]] = {}
 _GEOCODE_SOURCE_COUNTS: dict[str, int] = {}
 
 
@@ -196,11 +197,74 @@ def _runtime_counter_snapshot(target: dict[str, int]) -> dict[str, int]:
         return dict(sorted(target.items()))
 
 
+def _record_autocomplete_stage_metric(
+    stage: str,
+    *,
+    duration_ms: float,
+    outcome: str,
+) -> None:
+    with _RUNTIME_METRICS_LOCK:
+        current = _AUTOCOMPLETE_STAGE_METRICS.setdefault(
+            stage,
+            {
+                "count": 0,
+                "total_ms": 0.0,
+                "max_ms": 0.0,
+                "outcomes": {},
+            },
+        )
+        current["count"] = int(current.get("count", 0)) + 1
+        total_ms = float(current.get("total_ms", 0.0)) + duration_ms
+        current["total_ms"] = total_ms
+        current["max_ms"] = max(float(current.get("max_ms", 0.0)), duration_ms)
+        outcomes = current.setdefault("outcomes", {})
+        if isinstance(outcomes, dict):
+            outcomes[outcome] = int(outcomes.get(outcome, 0)) + 1
+
+
+def _autocomplete_stage_metrics_snapshot() -> dict[str, dict[str, object]]:
+    with _RUNTIME_METRICS_LOCK:
+        snapshot: dict[str, dict[str, object]] = {}
+        for stage, values in sorted(_AUTOCOMPLETE_STAGE_METRICS.items()):
+            count = int(values.get("count", 0))
+            total_ms = float(values.get("total_ms", 0.0))
+            max_ms = float(values.get("max_ms", 0.0))
+            snapshot[stage] = {
+                "count": count,
+                "avg_ms": round(total_ms / count, 2) if count else 0.0,
+                "max_ms": round(max_ms, 2),
+                "outcomes": dict(values.get("outcomes", {})),
+            }
+        return snapshot
+
+
+def _time_autocomplete_stage(
+    stage: str,
+    call: Callable[[], tuple[dict, ...]],
+) -> tuple[dict, ...]:
+    start = time.perf_counter()
+    outcome = "empty"
+    try:
+        result = call()
+        outcome = "hit" if result else "empty"
+        return result
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        _record_autocomplete_stage_metric(
+            stage,
+            duration_ms=(time.perf_counter() - start) * 1000,
+            outcome=outcome,
+        )
+
+
 def _reset_runtime_counters() -> None:
     with _RUNTIME_METRICS_LOCK:
         _EXTERNAL_PROVIDER_CALL_COUNTS.clear()
         _AUTOCOMPLETE_SOURCE_COUNTS.clear()
         _AUTOCOMPLETE_DEGRADED_COUNTS.clear()
+        _AUTOCOMPLETE_STAGE_METRICS.clear()
         _GEOCODE_SOURCE_COUNTS.clear()
 
 
@@ -1077,17 +1141,23 @@ def _autocomplete_naver_map_uncached(
     if len(_compact_text(query)) < _AUTOCOMPLETE_MIN_QUERY_LEN:
         return ()
 
-    naver_results = autocomplete_naver_map_raw(
-        query,
-        limit,
-        search_coord=search_coord,
-        record_ncaptcha_backoff=record_ncaptcha_backoff,
+    naver_results = _time_autocomplete_stage(
+        "naver_all_search",
+        lambda: autocomplete_naver_map_raw(
+            query,
+            limit,
+            search_coord=search_coord,
+            record_ncaptcha_backoff=record_ncaptcha_backoff,
+        ),
     )
     if naver_results:
         _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "naver_all_search")
         return naver_results
 
-    local_hints = _search_local_hints(query, limit=limit)
+    local_hints = _time_autocomplete_stage(
+        "local_hint",
+        lambda: _search_local_hints(query, limit=limit),
+    )
     if local_hints:
         _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "local_hint")
         _log.info(
@@ -1098,7 +1168,10 @@ def _autocomplete_naver_map_uncached(
         return local_hints
 
     _increment_runtime_counter(_EXTERNAL_PROVIDER_CALL_COUNTS, "browser_autocomplete")
-    browser_results = autocomplete_naver_browser_pool(query, limit=limit)
+    browser_results = _time_autocomplete_stage(
+        "browser_autocomplete",
+        lambda: autocomplete_naver_browser_pool(query, limit=limit),
+    )
     if browser_results:
         browser_fast_path = len(browser_results) == 1 and bool(
             _ROAD_ADDRESS_RE.search(query) or re.search(r"\d", query)
@@ -1108,11 +1181,14 @@ def _autocomplete_naver_map_uncached(
             browser_results,
         )
         if browser_fast_path or browser_poi_fast_path:
-            promoted_browser_results = _promote_browser_autocomplete_results(
-                query,
-                browser_results,
-                limit=limit,
-                search_coord=search_coord,
+            promoted_browser_results = _time_autocomplete_stage(
+                "browser_geocode_promotion",
+                lambda: _promote_browser_autocomplete_results(
+                    query,
+                    browser_results,
+                    limit=limit,
+                    search_coord=search_coord,
+                ),
             )
             if promoted_browser_results:
                 _increment_runtime_counter(
@@ -1159,11 +1235,14 @@ def _autocomplete_naver_map_uncached(
                 len(browser_results),
             )
             return browser_results
-        promoted_browser_results = _promote_browser_autocomplete_results(
-            query,
-            browser_results,
-            limit=limit,
-            search_coord=search_coord,
+        promoted_browser_results = _time_autocomplete_stage(
+            "browser_geocode_promotion",
+            lambda: _promote_browser_autocomplete_results(
+                query,
+                browser_results,
+                limit=limit,
+                search_coord=search_coord,
+            ),
         )
         if promoted_browser_results:
             _increment_runtime_counter(
@@ -1194,7 +1273,10 @@ def _autocomplete_naver_map_uncached(
         )
         return browser_results
 
-    nominatim_results = autocomplete_nominatim(query, limit=limit)
+    nominatim_results = _time_autocomplete_stage(
+        "nominatim",
+        lambda: autocomplete_nominatim(query, limit=limit),
+    )
     if nominatim_results:
         _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "nominatim")
         _log.info(
@@ -1205,10 +1287,13 @@ def _autocomplete_naver_map_uncached(
         return nominatim_results
 
     if not _contains_hangul(query):
-        photon_results = autocomplete_photon(
-            query,
-            limit=limit,
-            search_coord=search_coord,
+        photon_results = _time_autocomplete_stage(
+            "photon",
+            lambda: autocomplete_photon(
+                query,
+                limit=limit,
+                search_coord=search_coord,
+            ),
         )
         if photon_results:
             _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "photon")
@@ -1459,6 +1544,7 @@ def get_autocomplete_runtime_metrics() -> dict:
     metrics["autocomplete_degraded_counts"] = _runtime_counter_snapshot(
         _AUTOCOMPLETE_DEGRADED_COUNTS
     )
+    metrics["autocomplete_stage_metrics"] = _autocomplete_stage_metrics_snapshot()
     metrics["provider_degraded_counts"] = _runtime_counter_snapshot(
         _AUTOCOMPLETE_DEGRADED_COUNTS
     )

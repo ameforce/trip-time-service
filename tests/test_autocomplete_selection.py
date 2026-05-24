@@ -310,3 +310,36 @@ def test_autocomplete_address_like_query_still_uses_browser_promotion(
     )
 
     assert results == promoted_results
+
+
+def test_autocomplete_stage_metrics_record_provider_buckets(monkeypatch) -> None:
+    geocode_services._reset_runtime_counters()
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "_search_local_hints",
+        lambda *args, **kwargs: (
+            {
+                "display_name": "강남역",
+                "address": "서울 강남구 강남대로 396",
+                "type": "역",
+                "lat": 37.4979,
+                "lon": 127.0276,
+                "source": "local_hint",
+                "confidence": 0.99,
+            },
+        ),
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("강남역", limit=5)
+
+    assert results
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert stage_metrics["naver_all_search"]["outcomes"]["empty"] >= 1
+    assert stage_metrics["local_hint"]["outcomes"]["hit"] >= 1
+    assert stage_metrics["local_hint"]["avg_ms"] >= 0
