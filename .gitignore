@@ -143,6 +143,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+!deploy/enm/env/
+!deploy/enm/env/*.example
 
 # Spyder project settings
 .spyderproject
@@ -208,6 +210,11 @@ __marimo__/
 
 # E2E artifacts
 .artifacts/e2e/
+.artifacts/e2e-ci/
+.artifacts/live/
+.artifacts/live-list/
+.artifacts/ralph/
+.artifacts/tmp/
 playwright-report/
 test-results/
 node_modules/
