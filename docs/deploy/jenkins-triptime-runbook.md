@@ -14,12 +14,12 @@
 
 | 용도 | 파라미터 / 기본값 | 필수 여부 |
 |------|-------------------|-----------|
-| enm-server SSH | `ENM_SSH_CREDENTIAL_ID` 기본 `enm-server-ssh` | 배포 단계 필수 |
+| enm-server SSH | `ENM_SSH_CREDENTIAL_ID` 기본 `enm-server-ssh-key` | 배포 단계 필수 |
 | Docker Registry | `DOCKER_CREDENTIALS_ID` 기본 빈 문자열 | `DOCKER_REGISTRY`를 쓸 때만 필수 |
 
 Jenkins에서 **Manage Jenkins → Credentials** 로 이동한 뒤:
 
-- [ ] ID `enm-server-ssh` 존재(SSH Username with private key 권장)
+- [ ] ID `enm-server-ssh-key` 존재(SSH Username with private key 권장)
 - [ ] 레지스트리를 쓰는 경우: 파이프라인에 넣을 `DOCKER_CREDENTIALS_ID`와 동일 ID의 Username/Password 자격 증명 존재
 
 ## 2. 멀티브랜치 파이프라인 잡 생성/갱신
@@ -56,13 +56,16 @@ Jenkins에서 **Manage Jenkins → Credentials** 로 이동한 뒤:
 
 ## 5. 필수 파이프라인 파라미터 기본값(배포 성공 조건)
 
-`Jenkinsfile`에서 `ENM_HOST` 기본값이 비어 있어, **잡 또는 폴더 수준에서 기본값을 주거나** 매 빌드 시 입력해야 합니다.
+`Jenkinsfile`은 ENM dev/prod 공통 SSH 호스트 기본값을 포함합니다. 조직별 호스트가 다르면 잡/폴더
+파라미터 기본값 또는 빌드 파라미터로 override합니다.
 
-- [ ] `ENM_HOST`: enm-server SSH 호스트(운영에서 사용하는 FQDN/IP)
+- [ ] `ENM_HOST`: enm-server SSH 호스트(기본 `enmsoftware.com`)
 - [ ] `ENM_PORT`: SSH 포트(기본 `22`)
 - [ ] `DEPLOY_TARGET`: `auto` 권장(브랜치별 prod/dev 자동)
 - [ ] 레지스트리 미사용 시: `DOCKER_REGISTRY` 빈 값 유지 → 푸시 단계 스킵, 로컬 태그로 배포 스크립트 동작
 
+파이프라인은 배포 직전에 `ssh-keyscan`으로 빌드 워크스페이스의 known_hosts 파일을 준비하고
+`StrictHostKeyChecking=yes`로 `deploy/enm/deploy.sh`와 `rollback.sh`를 호출합니다.
 (Optional) **Folder properties** 또는 **Parameterized Defaults** 플러그인 등으로 조직 표준과 맞게 기본 파라미터를 고정합니다.
 
 ## 6. 첫 성공 빌드 검증
