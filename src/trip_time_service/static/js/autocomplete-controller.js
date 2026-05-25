@@ -23,6 +23,18 @@
     return /[\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uD7B0-\uD7FF]$/.test(normalized);
   }
 
+  function isHangulJamoChar(value) {
+    return /^[\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uD7B0-\uD7FF]$/.test(value || "");
+  }
+
+  function stripTrailingHangulJamoCluster(value) {
+    var chars = Array.from(normalizeAutocompleteQuery(value));
+    while (chars.length && isHangulJamoChar(chars[chars.length - 1])) {
+      chars.pop();
+    }
+    return normalizeAutocompleteQuery(chars.join(""));
+  }
+
   function queryClass(query) {
     var text = String(query || "");
     var hasHangulSyllable = /[\uAC00-\uD7A3]/.test(text);
@@ -226,6 +238,7 @@
       composing: false,
       lastScheduledQuery: "",
       lastRenderedQuery: "",
+      lastStableQuery: "",
     };
 
     function resetActiveIndex() {
@@ -242,9 +255,34 @@
       );
     }
 
+    function deriveEffectiveQuery(value) {
+      var displayQuery = normalizeAutocompleteQuery(value);
+      var trailingJamo = hasTrailingHangulJamoNfc(displayQuery);
+      if (!trailingJamo) {
+        return {
+          displayQuery: displayQuery,
+          effectiveQuery: displayQuery,
+          trailingJamo: false,
+          source: "display",
+        };
+      }
+      var stablePrefix = stripTrailingHangulJamoCluster(displayQuery);
+      if (!stablePrefix && state.lastStableQuery) {
+        stablePrefix = state.lastStableQuery;
+      }
+      return {
+        displayQuery: displayQuery,
+        effectiveQuery: stablePrefix,
+        trailingJamo: true,
+        source: stablePrefix ? "stable-prefix" : "none",
+      };
+    }
+
     function handleInput(event, reason) {
       clearAutocompleteTimer(timerKey);
-      var q = normalizeAutocompleteQuery($input.value);
+      var derived = deriveEffectiveQuery($input.value);
+      var displayQuery = derived.displayQuery;
+      var q = derived.effectiveQuery;
       var eventIsComposing = !!(
         event &&
         (event.isComposing ||
@@ -257,16 +295,24 @@
           reason: reason || "input",
           composing: state.composing || eventIsComposing,
           input_type: event && event.inputType ? String(event.inputType) : "",
+          effective_query_source: derived.source,
+          display_trailing_jamo: derived.trailingJamo,
         })
       );
-      if (shouldRetainSelectionOnInput(timerKey, q)) {
+      if (shouldRetainSelectionOnInput(timerKey, displayQuery)) {
         closeACDropdown($dropdown);
-        transition("selected", q, { reason: "retain-selection" });
+        transition("selected", displayQuery, { reason: "retain-selection" });
         return;
       }
       setSelected(null);
-      if (hasTrailingHangulJamoNfc(q)) {
-        transition("composing", q, { reason: "trailing-jamo" });
+      if (!derived.trailingJamo && q.length >= AUTOCOMPLETE_MIN_QUERY_LENGTH) {
+        state.lastStableQuery = q;
+      }
+      if (derived.trailingJamo && q.length < AUTOCOMPLETE_MIN_QUERY_LENGTH) {
+        transition("composing", displayQuery, {
+          reason: "trailing-jamo-no-stable-prefix",
+          effective_query_source: derived.source,
+        });
         return;
       }
       if (abortState.ctrl) {
@@ -287,18 +333,35 @@
         var seq = requestSeq;
         var queryAtRequest = q;
         state.lastScheduledQuery = queryAtRequest;
-        transition("loading", queryAtRequest, { seq: seq });
+        transition("loading", queryAtRequest, {
+          seq: seq,
+          effective_query_source: derived.source,
+          display_trailing_jamo: derived.trailingJamo,
+        });
         fetchAutocompleteInstrumented(queryAtRequest, abortState, timerKey, { seq: seq }).then(
           function (items) {
             if (seq !== requestSeq) {
               record(timerKey, "stale_drop", metricPayload(queryAtRequest, { seq: seq, reason: "seq" }));
               return;
             }
-            if (normalizeAutocompleteQuery($input.value) !== queryAtRequest) {
+            var currentDerived = deriveEffectiveQuery($input.value);
+            if (currentDerived.effectiveQuery !== queryAtRequest) {
               record(timerKey, "stale_drop", metricPayload(queryAtRequest, { seq: seq, reason: "query" }));
               return;
             }
             if (!items || !items.length) {
+              if (
+                currentDerived.trailingJamo &&
+                currentItems.length > 0 &&
+                state.lastRenderedQuery === queryAtRequest
+              ) {
+                transition("rendered", queryAtRequest, {
+                  seq: seq,
+                  reason: "retain-last-good-empty",
+                  count: currentItems.length,
+                });
+                return;
+              }
               currentItems = [];
               resetActiveIndex();
               closeACDropdown($dropdown);
@@ -324,6 +387,8 @@
       transition("scheduled", q, {
         reason: reason || "input",
         debounce_ms: AUTOCOMPLETE_DEBOUNCE_MS,
+        effective_query_source: derived.source,
+        display_trailing_jamo: derived.trailingJamo,
       });
       setAutocompleteTimer(timerKey, timerId);
     }
@@ -395,9 +460,30 @@
       },
       true
     );
+
+    $input.addEventListener(
+      "blur",
+      function (event) {
+        event.stopImmediatePropagation();
+        clearAutocompleteTimer(timerKey);
+        record(
+          timerKey,
+          "blur_close",
+          metricPayload($input.value, {
+            delay_ms: 150,
+          })
+        );
+        setTimeout(function () {
+          closeACDropdown($dropdown);
+          resetActiveIndex();
+        }, 150);
+      },
+      true
+    );
   }
 
   publishMetricsForDebug();
+  window.__ttsAutocompleteControllerVersion = "v2-single-owner";
   setupImeAutocompleteController($origin, $originAC, function (v) {
     _selectedOrigin = v;
   }, "origin");

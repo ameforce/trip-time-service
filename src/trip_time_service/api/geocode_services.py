@@ -46,6 +46,7 @@ _NAVER_SEARCH_TIMEOUT_SECONDS = 1.5
 _NOMINATIM_TIMEOUT_SECONDS = 1.5
 _PHOTON_TIMEOUT_SECONDS = 0.8
 _NAVER_NCAPTCHA_BACKOFF_SECONDS = 300
+_AUTOCOMPLETE_EXPENSIVE_PROVIDER_BUDGET_SECONDS = 3.0
 _WS_RE = re.compile(r"\s+")
 _HANGUL_RE = re.compile(r"[가-힣]")
 _ROAD_ADDRESS_RE = re.compile(r"(로|길|대로|번길|번지)")
@@ -1065,6 +1066,23 @@ def _should_use_browser_poi_fast_path(
     )
 
 
+def _mark_progressive_browser_autocomplete_results(
+    candidates: tuple[dict, ...],
+    *,
+    reason: str,
+    deadline_hit: bool = False,
+) -> tuple[dict, ...]:
+    progressive: list[dict] = []
+    for candidate in candidates:
+        item = dict(candidate)
+        item.setdefault("coords_status", "unresolved")
+        item.setdefault("degraded_reason", reason)
+        item["deadline_hit"] = bool(deadline_hit)
+        item["autocomplete_mode"] = "progressive"
+        progressive.append(item)
+    return tuple(progressive)
+
+
 def _promote_browser_autocomplete_results(
     query: str,
     candidates: tuple[dict, ...],
@@ -1138,8 +1156,25 @@ def _autocomplete_naver_map_uncached(
     search_coord: tuple[float, float] | None = None,
     record_ncaptcha_backoff: bool | None = None,
 ) -> tuple[dict, ...]:
+    started_at = time.perf_counter()
     if len(_compact_text(query)) < _AUTOCOMPLETE_MIN_QUERY_LEN:
         return ()
+
+    # Exact/high-confidence local hints are deterministic and route-ready; using
+    # them before external providers prevents typing UX from depending on a
+    # captcha/backoff-prone live request for known smoke and public anchors.
+    local_hints = _time_autocomplete_stage(
+        "local_hint",
+        lambda: _search_local_hints(query, limit=limit),
+    )
+    if local_hints:
+        _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "local_hint")
+        _log.info(
+            "autocomplete query=%s source=local_hint fallback_count=%d",
+            _redact_query(query),
+            len(local_hints),
+        )
+        return local_hints
 
     naver_results = _time_autocomplete_stage(
         "naver_all_search",
@@ -1154,19 +1189,6 @@ def _autocomplete_naver_map_uncached(
         _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "naver_all_search")
         return naver_results
 
-    local_hints = _time_autocomplete_stage(
-        "local_hint",
-        lambda: _search_local_hints(query, limit=limit),
-    )
-    if local_hints:
-        _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "local_hint")
-        _log.info(
-            "autocomplete query=%s source=local_hint fallback_count=%d",
-            _redact_query(query),
-            len(local_hints),
-        )
-        return local_hints
-
     _increment_runtime_counter(_EXTERNAL_PROVIDER_CALL_COUNTS, "browser_autocomplete")
     browser_results = _time_autocomplete_stage(
         "browser_autocomplete",
@@ -1180,7 +1202,7 @@ def _autocomplete_naver_map_uncached(
             query,
             browser_results,
         )
-        if browser_fast_path or browser_poi_fast_path:
+        if browser_fast_path:
             promoted_browser_results = _time_autocomplete_stage(
                 "browser_geocode_promotion",
                 lambda: _promote_browser_autocomplete_results(
@@ -1220,21 +1242,63 @@ def _autocomplete_naver_map_uncached(
             )
             return browser_results
         if browser_poi_fast_path:
+            progressive_results = _mark_progressive_browser_autocomplete_results(
+                browser_results,
+                reason="progressive_browser_suggest",
+            )
             _increment_runtime_counter(
                 _AUTOCOMPLETE_SOURCE_COUNTS,
-                "naver_browser_suggest_fast_poi",
+                "naver_browser_suggest_progressive_poi",
             )
             _increment_runtime_counter(
                 _AUTOCOMPLETE_DEGRADED_COUNTS,
                 "coords_unresolved",
             )
             _log.info(
-                "autocomplete query=%s source=naver_browser_suggest_fast_poi "
+                "autocomplete query=%s source=naver_browser_suggest_progressive_poi "
                 "fallback_count=%d",
                 _redact_query(query),
-                len(browser_results),
+                len(progressive_results),
             )
-            return browser_results
+            return progressive_results
+        if (
+            _contains_hangul(query)
+            and not (_ROAD_ADDRESS_RE.search(query) or re.search(r"\d", query))
+        ):
+            deadline_hit = (
+                time.perf_counter() - started_at
+                >= _AUTOCOMPLETE_EXPENSIVE_PROVIDER_BUDGET_SECONDS
+            )
+            progressive_results = _mark_progressive_browser_autocomplete_results(
+                browser_results,
+                reason=(
+                    "autocomplete_provider_budget"
+                    if deadline_hit
+                    else "progressive_browser_suggest"
+                ),
+                deadline_hit=deadline_hit,
+            )
+            _increment_runtime_counter(
+                _AUTOCOMPLETE_SOURCE_COUNTS,
+                "naver_browser_suggest_progressive",
+            )
+            _increment_runtime_counter(
+                _AUTOCOMPLETE_DEGRADED_COUNTS,
+                "coords_unresolved",
+            )
+            if deadline_hit:
+                _increment_runtime_counter(
+                    _AUTOCOMPLETE_DEGRADED_COUNTS,
+                    "autocomplete_provider_budget",
+                )
+            _log.info(
+                "autocomplete query=%s source=naver_browser_suggest_progressive "
+                "fallback_count=%d deadline_hit=%s",
+                _redact_query(query),
+                len(progressive_results),
+                deadline_hit,
+            )
+            return progressive_results
         promoted_browser_results = _time_autocomplete_stage(
             "browser_geocode_promotion",
             lambda: _promote_browser_autocomplete_results(

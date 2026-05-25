@@ -133,7 +133,7 @@ def test_curated_local_hint_returns_route_ready_coordinates(monkeypatch) -> None
     assert results[0]["source"] == "local_hint"
 
 
-def test_autocomplete_browser_poi_fallback_prefers_geocoded_promotion(
+def test_autocomplete_browser_poi_fallback_returns_progressive_suggestion(
     monkeypatch,
 ) -> None:
     browser_results = (
@@ -147,18 +147,6 @@ def test_autocomplete_browser_poi_fallback_prefers_geocoded_promotion(
             "confidence": 0.82,
         },
     )
-    promoted_results = (
-        {
-            "display_name": "센트럴시티터미널",
-            "address": "서울 서초구 신반포로 194",
-            "type": "버스터미널",
-            "lat": "37.5030",
-            "lon": "127.0048",
-            "source": "naver_browser_suggest_geocoded",
-            "confidence": 0.82,
-        },
-    )
-
     monkeypatch.setattr(
         geocode_services,
         "autocomplete_naver_map_raw",
@@ -177,9 +165,9 @@ def test_autocomplete_browser_poi_fallback_prefers_geocoded_promotion(
 
     promotion_calls: list[str] = []
 
-    def _promote(query: str, *args, **kwargs):
+    def _promote(query: str, *args, **kwargs):  # pragma: no cover - must not run
         promotion_calls.append(query)
-        return promoted_results
+        raise AssertionError("POI autocomplete should return progressive suggestions")
 
     monkeypatch.setattr(
         geocode_services,
@@ -189,8 +177,12 @@ def test_autocomplete_browser_poi_fallback_prefers_geocoded_promotion(
 
     results = geocode_services._autocomplete_naver_map_uncached("센트럴", limit=12)
 
-    assert results == promoted_results
-    assert promotion_calls == ["센트럴"]
+    assert len(results) == 1
+    assert results[0]["source"] == "naver_browser_suggest"
+    assert results[0]["autocomplete_mode"] == "progressive"
+    assert results[0]["degraded_reason"] == "progressive_browser_suggest"
+    assert results[0]["deadline_hit"] is False
+    assert promotion_calls == []
 
 
 def test_autocomplete_single_address_like_browser_result_uses_promotion(
@@ -312,12 +304,16 @@ def test_autocomplete_address_like_query_still_uses_browser_promotion(
     assert results == promoted_results
 
 
-def test_autocomplete_stage_metrics_record_provider_buckets(monkeypatch) -> None:
+def test_autocomplete_stage_metrics_record_local_hint_short_circuit(
+    monkeypatch,
+) -> None:
     geocode_services._reset_runtime_counters()
     monkeypatch.setattr(
         geocode_services,
         "autocomplete_naver_map_raw",
-        lambda *args, **kwargs: (),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("local hints should short-circuit external providers")
+        ),
     )
     monkeypatch.setattr(
         geocode_services,
@@ -340,6 +336,6 @@ def test_autocomplete_stage_metrics_record_provider_buckets(monkeypatch) -> None
     assert results
     metrics = geocode_services.get_autocomplete_runtime_metrics()
     stage_metrics = metrics["autocomplete_stage_metrics"]
-    assert stage_metrics["naver_all_search"]["outcomes"]["empty"] >= 1
     assert stage_metrics["local_hint"]["outcomes"]["hit"] >= 1
     assert stage_metrics["local_hint"]["avg_ms"] >= 0
+    assert "naver_all_search" not in stage_metrics

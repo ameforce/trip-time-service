@@ -120,6 +120,32 @@ def _serialize_autocomplete_items(
     return serialized
 
 
+def _autocomplete_response_headers(
+    *,
+    duration_ms: float,
+    mode: str,
+    serialized: list[dict[str, object]],
+) -> dict[str, str]:
+    headers = {
+        "Server-Timing": f'autocomplete;dur={duration_ms:.1f};desc="{mode}"',
+        "X-TTS-Autocomplete-Count": str(len(serialized)),
+    }
+    degraded_reasons = sorted(
+        {
+            str(item.get("degraded_reason") or "").strip()
+            for item in serialized
+            if str(item.get("degraded_reason") or "").strip()
+        }
+    )
+    if degraded_reasons:
+        headers["X-TTS-Autocomplete-Degraded"] = ",".join(degraded_reasons)
+    if any(bool(item.get("deadline_hit")) for item in serialized):
+        headers["X-TTS-Autocomplete-Deadline-Hit"] = "1"
+    if any(item.get("autocomplete_mode") == "progressive" for item in serialized):
+        headers["X-TTS-Autocomplete-Mode"] = "progressive"
+    return headers
+
+
 def _debug_route_allowed(
     request: Request,
     *,
@@ -248,10 +274,11 @@ def autocomplete(
         )
         return JSONResponse(
             content=serialized,
-            headers={
-                "Server-Timing": f'autocomplete;dur={duration_ms:.1f};desc="fixture"',
-                "X-TTS-Autocomplete-Count": str(len(serialized)),
-            },
+            headers=_autocomplete_response_headers(
+                duration_ms=duration_ms,
+                mode="fixture",
+                serialized=serialized,
+            ),
         )
 
     results = autocomplete_naver_map(q, 12, search_coord=search_coord)
@@ -271,10 +298,11 @@ def autocomplete(
     )
     return JSONResponse(
         content=serialized,
-        headers={
-            "Server-Timing": f'autocomplete;dur={duration_ms:.1f};desc="live"',
-            "X-TTS-Autocomplete-Count": str(len(serialized)),
-        },
+        headers=_autocomplete_response_headers(
+            duration_ms=duration_ms,
+            mode="live",
+            serialized=serialized,
+        ),
     )
 
 

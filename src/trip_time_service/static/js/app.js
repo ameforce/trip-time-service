@@ -1744,7 +1744,13 @@ function hasTrailingHangulJamo(value) {
 }
 
 function buildAutocompleteCacheKey(query) {
-  var normalized = (query || "").trim().toLowerCase();
+  var normalized = (query || "").trim();
+  try {
+    normalized = normalized.normalize("NFC");
+  } catch (_) {
+    // Keep the raw trimmed value when the browser lacks normalize().
+  }
+  normalized = normalized.toLowerCase();
   if (!_map || typeof _map.getCenter !== "function") return normalized + "|nomap";
   try {
     var center = _map.getCenter();
@@ -1752,7 +1758,7 @@ function buildAutocompleteCacheKey(query) {
     var lat = Number(center.lat);
     var lon = Number(center.lng);
     if (!isFinite(lat) || !isFinite(lon)) return normalized + "|nomap";
-    return normalized + "|" + lat.toFixed(3) + "|" + lon.toFixed(3);
+    return normalized + "|" + lat.toFixed(6) + "|" + lon.toFixed(6);
   } catch (_) {
     return normalized + "|nomap";
   }
@@ -4305,8 +4311,10 @@ document.getElementById("recent-clear").addEventListener("click", function () {
 });
 
 /* ── Autocomplete Setup ──────────────────────────── */
-setupAutocomplete($origin, $originAC, function (v) { _selectedOrigin = v; }, "origin");
-setupAutocomplete($destination, $destAC, function (v) { _selectedDest = v; }, "dest");
+// Autocomplete v2 is the single owner for input/composition/debounce/dropdown
+// state.  The legacy setupAutocomplete implementation remains above as shared
+// historical code and helper context, but it must not mount listeners because
+// doing so creates dual controller races (especially blur/timer/dropdown).
 
 /* ── Bootstrap ────────────────────────────────────── */
 
