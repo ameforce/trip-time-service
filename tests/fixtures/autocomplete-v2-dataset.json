@@ -1,0 +1,2646 @@
+{
+  "version": 1,
+  "case_count": 360,
+  "cases": [
+    {
+      "id": "trailing-000",
+      "category": "trailing_jamo",
+      "display_value": "강남역000ㄱ",
+      "expected_query": "강남역000",
+      "response_name": "강남역000 후보"
+    },
+    {
+      "id": "trailing-001",
+      "category": "trailing_jamo",
+      "display_value": "서울역001ㄴ",
+      "expected_query": "서울역001",
+      "response_name": "서울역001 후보"
+    },
+    {
+      "id": "trailing-002",
+      "category": "trailing_jamo",
+      "display_value": "판교역002ㄷ",
+      "expected_query": "판교역002",
+      "response_name": "판교역002 후보"
+    },
+    {
+      "id": "trailing-003",
+      "category": "trailing_jamo",
+      "display_value": "수서역003ㄹ",
+      "expected_query": "수서역003",
+      "response_name": "수서역003 후보"
+    },
+    {
+      "id": "trailing-004",
+      "category": "trailing_jamo",
+      "display_value": "잠실역004ㅁ",
+      "expected_query": "잠실역004",
+      "response_name": "잠실역004 후보"
+    },
+    {
+      "id": "trailing-005",
+      "category": "trailing_jamo",
+      "display_value": "사당역005ㅂ",
+      "expected_query": "사당역005",
+      "response_name": "사당역005 후보"
+    },
+    {
+      "id": "trailing-006",
+      "category": "trailing_jamo",
+      "display_value": "신촌역006ㅅ",
+      "expected_query": "신촌역006",
+      "response_name": "신촌역006 후보"
+    },
+    {
+      "id": "trailing-007",
+      "category": "trailing_jamo",
+      "display_value": "홍대입구007ㅇ",
+      "expected_query": "홍대입구007",
+      "response_name": "홍대입구007 후보"
+    },
+    {
+      "id": "trailing-008",
+      "category": "trailing_jamo",
+      "display_value": "센트럴시티008ㅈ",
+      "expected_query": "센트럴시티008",
+      "response_name": "센트럴시티008 후보"
+    },
+    {
+      "id": "trailing-009",
+      "category": "trailing_jamo",
+      "display_value": "카카오판교009ㅊ",
+      "expected_query": "카카오판교009",
+      "response_name": "카카오판교009 후보"
+    },
+    {
+      "id": "trailing-010",
+      "category": "trailing_jamo",
+      "display_value": "네이버1784010ㅋ",
+      "expected_query": "네이버1784010",
+      "response_name": "네이버1784010 후보"
+    },
+    {
+      "id": "trailing-011",
+      "category": "trailing_jamo",
+      "display_value": "코엑스011ㅌ",
+      "expected_query": "코엑스011",
+      "response_name": "코엑스011 후보"
+    },
+    {
+      "id": "trailing-012",
+      "category": "trailing_jamo",
+      "display_value": "스타필드012ㅍ",
+      "expected_query": "스타필드012",
+      "response_name": "스타필드012 후보"
+    },
+    {
+      "id": "trailing-013",
+      "category": "trailing_jamo",
+      "display_value": "롯데월드013ㅎ",
+      "expected_query": "롯데월드013",
+      "response_name": "롯데월드013 후보"
+    },
+    {
+      "id": "trailing-014",
+      "category": "trailing_jamo",
+      "display_value": "서울시청014ㅏ",
+      "expected_query": "서울시청014",
+      "response_name": "서울시청014 후보"
+    },
+    {
+      "id": "trailing-015",
+      "category": "trailing_jamo",
+      "display_value": "광화문015ㅣ",
+      "expected_query": "광화문015",
+      "response_name": "광화문015 후보"
+    },
+    {
+      "id": "trailing-016",
+      "category": "trailing_jamo",
+      "display_value": "여의도공원016ᄀ",
+      "expected_query": "여의도공원016",
+      "response_name": "여의도공원016 후보"
+    },
+    {
+      "id": "trailing-017",
+      "category": "trailing_jamo",
+      "display_value": "분당서울대017ᄂ",
+      "expected_query": "분당서울대017",
+      "response_name": "분당서울대017 후보"
+    },
+    {
+      "id": "trailing-018",
+      "category": "trailing_jamo",
+      "display_value": "삼성서울018ᄃ",
+      "expected_query": "삼성서울018",
+      "response_name": "삼성서울018 후보"
+    },
+    {
+      "id": "trailing-019",
+      "category": "trailing_jamo",
+      "display_value": "고속터미널019ᄅ",
+      "expected_query": "고속터미널019",
+      "response_name": "고속터미널019 후보"
+    },
+    {
+      "id": "trailing-020",
+      "category": "trailing_jamo",
+      "display_value": "교대역020ㄱ",
+      "expected_query": "교대역020",
+      "response_name": "교대역020 후보"
+    },
+    {
+      "id": "trailing-021",
+      "category": "trailing_jamo",
+      "display_value": "역삼역021ㄴ",
+      "expected_query": "역삼역021",
+      "response_name": "역삼역021 후보"
+    },
+    {
+      "id": "trailing-022",
+      "category": "trailing_jamo",
+      "display_value": "을지로입구022ㄷ",
+      "expected_query": "을지로입구022",
+      "response_name": "을지로입구022 후보"
+    },
+    {
+      "id": "trailing-023",
+      "category": "trailing_jamo",
+      "display_value": "종각역023ㄹ",
+      "expected_query": "종각역023",
+      "response_name": "종각역023 후보"
+    },
+    {
+      "id": "trailing-024",
+      "category": "trailing_jamo",
+      "display_value": "강남역024ㅁ",
+      "expected_query": "강남역024",
+      "response_name": "강남역024 후보"
+    },
+    {
+      "id": "trailing-025",
+      "category": "trailing_jamo",
+      "display_value": "서울역025ㅂ",
+      "expected_query": "서울역025",
+      "response_name": "서울역025 후보"
+    },
+    {
+      "id": "trailing-026",
+      "category": "trailing_jamo",
+      "display_value": "판교역026ㅅ",
+      "expected_query": "판교역026",
+      "response_name": "판교역026 후보"
+    },
+    {
+      "id": "trailing-027",
+      "category": "trailing_jamo",
+      "display_value": "수서역027ㅇ",
+      "expected_query": "수서역027",
+      "response_name": "수서역027 후보"
+    },
+    {
+      "id": "trailing-028",
+      "category": "trailing_jamo",
+      "display_value": "잠실역028ㅈ",
+      "expected_query": "잠실역028",
+      "response_name": "잠실역028 후보"
+    },
+    {
+      "id": "trailing-029",
+      "category": "trailing_jamo",
+      "display_value": "사당역029ㅊ",
+      "expected_query": "사당역029",
+      "response_name": "사당역029 후보"
+    },
+    {
+      "id": "trailing-030",
+      "category": "trailing_jamo",
+      "display_value": "신촌역030ㅋ",
+      "expected_query": "신촌역030",
+      "response_name": "신촌역030 후보"
+    },
+    {
+      "id": "trailing-031",
+      "category": "trailing_jamo",
+      "display_value": "홍대입구031ㅌ",
+      "expected_query": "홍대입구031",
+      "response_name": "홍대입구031 후보"
+    },
+    {
+      "id": "trailing-032",
+      "category": "trailing_jamo",
+      "display_value": "센트럴시티032ㅍ",
+      "expected_query": "센트럴시티032",
+      "response_name": "센트럴시티032 후보"
+    },
+    {
+      "id": "trailing-033",
+      "category": "trailing_jamo",
+      "display_value": "카카오판교033ㅎ",
+      "expected_query": "카카오판교033",
+      "response_name": "카카오판교033 후보"
+    },
+    {
+      "id": "trailing-034",
+      "category": "trailing_jamo",
+      "display_value": "네이버1784034ㅏ",
+      "expected_query": "네이버1784034",
+      "response_name": "네이버1784034 후보"
+    },
+    {
+      "id": "trailing-035",
+      "category": "trailing_jamo",
+      "display_value": "코엑스035ㅣ",
+      "expected_query": "코엑스035",
+      "response_name": "코엑스035 후보"
+    },
+    {
+      "id": "trailing-036",
+      "category": "trailing_jamo",
+      "display_value": "스타필드036ᄀ",
+      "expected_query": "스타필드036",
+      "response_name": "스타필드036 후보"
+    },
+    {
+      "id": "trailing-037",
+      "category": "trailing_jamo",
+      "display_value": "롯데월드037ᄂ",
+      "expected_query": "롯데월드037",
+      "response_name": "롯데월드037 후보"
+    },
+    {
+      "id": "trailing-038",
+      "category": "trailing_jamo",
+      "display_value": "서울시청038ᄃ",
+      "expected_query": "서울시청038",
+      "response_name": "서울시청038 후보"
+    },
+    {
+      "id": "trailing-039",
+      "category": "trailing_jamo",
+      "display_value": "광화문039ᄅ",
+      "expected_query": "광화문039",
+      "response_name": "광화문039 후보"
+    },
+    {
+      "id": "trailing-040",
+      "category": "trailing_jamo",
+      "display_value": "여의도공원040ㄱ",
+      "expected_query": "여의도공원040",
+      "response_name": "여의도공원040 후보"
+    },
+    {
+      "id": "trailing-041",
+      "category": "trailing_jamo",
+      "display_value": "분당서울대041ㄴ",
+      "expected_query": "분당서울대041",
+      "response_name": "분당서울대041 후보"
+    },
+    {
+      "id": "trailing-042",
+      "category": "trailing_jamo",
+      "display_value": "삼성서울042ㄷ",
+      "expected_query": "삼성서울042",
+      "response_name": "삼성서울042 후보"
+    },
+    {
+      "id": "trailing-043",
+      "category": "trailing_jamo",
+      "display_value": "고속터미널043ㄹ",
+      "expected_query": "고속터미널043",
+      "response_name": "고속터미널043 후보"
+    },
+    {
+      "id": "trailing-044",
+      "category": "trailing_jamo",
+      "display_value": "교대역044ㅁ",
+      "expected_query": "교대역044",
+      "response_name": "교대역044 후보"
+    },
+    {
+      "id": "trailing-045",
+      "category": "trailing_jamo",
+      "display_value": "역삼역045ㅂ",
+      "expected_query": "역삼역045",
+      "response_name": "역삼역045 후보"
+    },
+    {
+      "id": "trailing-046",
+      "category": "trailing_jamo",
+      "display_value": "을지로입구046ㅅ",
+      "expected_query": "을지로입구046",
+      "response_name": "을지로입구046 후보"
+    },
+    {
+      "id": "trailing-047",
+      "category": "trailing_jamo",
+      "display_value": "종각역047ㅇ",
+      "expected_query": "종각역047",
+      "response_name": "종각역047 후보"
+    },
+    {
+      "id": "trailing-048",
+      "category": "trailing_jamo",
+      "display_value": "강남역048ㅈ",
+      "expected_query": "강남역048",
+      "response_name": "강남역048 후보"
+    },
+    {
+      "id": "trailing-049",
+      "category": "trailing_jamo",
+      "display_value": "서울역049ㅊ",
+      "expected_query": "서울역049",
+      "response_name": "서울역049 후보"
+    },
+    {
+      "id": "trailing-050",
+      "category": "trailing_jamo",
+      "display_value": "판교역050ㅋ",
+      "expected_query": "판교역050",
+      "response_name": "판교역050 후보"
+    },
+    {
+      "id": "trailing-051",
+      "category": "trailing_jamo",
+      "display_value": "수서역051ㅌ",
+      "expected_query": "수서역051",
+      "response_name": "수서역051 후보"
+    },
+    {
+      "id": "trailing-052",
+      "category": "trailing_jamo",
+      "display_value": "잠실역052ㅍ",
+      "expected_query": "잠실역052",
+      "response_name": "잠실역052 후보"
+    },
+    {
+      "id": "trailing-053",
+      "category": "trailing_jamo",
+      "display_value": "사당역053ㅎ",
+      "expected_query": "사당역053",
+      "response_name": "사당역053 후보"
+    },
+    {
+      "id": "trailing-054",
+      "category": "trailing_jamo",
+      "display_value": "신촌역054ㅏ",
+      "expected_query": "신촌역054",
+      "response_name": "신촌역054 후보"
+    },
+    {
+      "id": "trailing-055",
+      "category": "trailing_jamo",
+      "display_value": "홍대입구055ㅣ",
+      "expected_query": "홍대입구055",
+      "response_name": "홍대입구055 후보"
+    },
+    {
+      "id": "trailing-056",
+      "category": "trailing_jamo",
+      "display_value": "센트럴시티056ᄀ",
+      "expected_query": "센트럴시티056",
+      "response_name": "센트럴시티056 후보"
+    },
+    {
+      "id": "trailing-057",
+      "category": "trailing_jamo",
+      "display_value": "카카오판교057ᄂ",
+      "expected_query": "카카오판교057",
+      "response_name": "카카오판교057 후보"
+    },
+    {
+      "id": "trailing-058",
+      "category": "trailing_jamo",
+      "display_value": "네이버1784058ᄃ",
+      "expected_query": "네이버1784058",
+      "response_name": "네이버1784058 후보"
+    },
+    {
+      "id": "trailing-059",
+      "category": "trailing_jamo",
+      "display_value": "코엑스059ᄅ",
+      "expected_query": "코엑스059",
+      "response_name": "코엑스059 후보"
+    },
+    {
+      "id": "trailing-060",
+      "category": "trailing_jamo",
+      "display_value": "스타필드060ㄱ",
+      "expected_query": "스타필드060",
+      "response_name": "스타필드060 후보"
+    },
+    {
+      "id": "trailing-061",
+      "category": "trailing_jamo",
+      "display_value": "롯데월드061ㄴ",
+      "expected_query": "롯데월드061",
+      "response_name": "롯데월드061 후보"
+    },
+    {
+      "id": "trailing-062",
+      "category": "trailing_jamo",
+      "display_value": "서울시청062ㄷ",
+      "expected_query": "서울시청062",
+      "response_name": "서울시청062 후보"
+    },
+    {
+      "id": "trailing-063",
+      "category": "trailing_jamo",
+      "display_value": "광화문063ㄹ",
+      "expected_query": "광화문063",
+      "response_name": "광화문063 후보"
+    },
+    {
+      "id": "trailing-064",
+      "category": "trailing_jamo",
+      "display_value": "여의도공원064ㅁ",
+      "expected_query": "여의도공원064",
+      "response_name": "여의도공원064 후보"
+    },
+    {
+      "id": "trailing-065",
+      "category": "trailing_jamo",
+      "display_value": "분당서울대065ㅂ",
+      "expected_query": "분당서울대065",
+      "response_name": "분당서울대065 후보"
+    },
+    {
+      "id": "trailing-066",
+      "category": "trailing_jamo",
+      "display_value": "삼성서울066ㅅ",
+      "expected_query": "삼성서울066",
+      "response_name": "삼성서울066 후보"
+    },
+    {
+      "id": "trailing-067",
+      "category": "trailing_jamo",
+      "display_value": "고속터미널067ㅇ",
+      "expected_query": "고속터미널067",
+      "response_name": "고속터미널067 후보"
+    },
+    {
+      "id": "trailing-068",
+      "category": "trailing_jamo",
+      "display_value": "교대역068ㅈ",
+      "expected_query": "교대역068",
+      "response_name": "교대역068 후보"
+    },
+    {
+      "id": "trailing-069",
+      "category": "trailing_jamo",
+      "display_value": "역삼역069ㅊ",
+      "expected_query": "역삼역069",
+      "response_name": "역삼역069 후보"
+    },
+    {
+      "id": "trailing-070",
+      "category": "trailing_jamo",
+      "display_value": "을지로입구070ㅋ",
+      "expected_query": "을지로입구070",
+      "response_name": "을지로입구070 후보"
+    },
+    {
+      "id": "trailing-071",
+      "category": "trailing_jamo",
+      "display_value": "종각역071ㅌ",
+      "expected_query": "종각역071",
+      "response_name": "종각역071 후보"
+    },
+    {
+      "id": "trailing-072",
+      "category": "trailing_jamo",
+      "display_value": "강남역072ㅍ",
+      "expected_query": "강남역072",
+      "response_name": "강남역072 후보"
+    },
+    {
+      "id": "trailing-073",
+      "category": "trailing_jamo",
+      "display_value": "서울역073ㅎ",
+      "expected_query": "서울역073",
+      "response_name": "서울역073 후보"
+    },
+    {
+      "id": "trailing-074",
+      "category": "trailing_jamo",
+      "display_value": "판교역074ㅏ",
+      "expected_query": "판교역074",
+      "response_name": "판교역074 후보"
+    },
+    {
+      "id": "trailing-075",
+      "category": "trailing_jamo",
+      "display_value": "수서역075ㅣ",
+      "expected_query": "수서역075",
+      "response_name": "수서역075 후보"
+    },
+    {
+      "id": "trailing-076",
+      "category": "trailing_jamo",
+      "display_value": "잠실역076ᄀ",
+      "expected_query": "잠실역076",
+      "response_name": "잠실역076 후보"
+    },
+    {
+      "id": "trailing-077",
+      "category": "trailing_jamo",
+      "display_value": "사당역077ᄂ",
+      "expected_query": "사당역077",
+      "response_name": "사당역077 후보"
+    },
+    {
+      "id": "trailing-078",
+      "category": "trailing_jamo",
+      "display_value": "신촌역078ᄃ",
+      "expected_query": "신촌역078",
+      "response_name": "신촌역078 후보"
+    },
+    {
+      "id": "trailing-079",
+      "category": "trailing_jamo",
+      "display_value": "홍대입구079ᄅ",
+      "expected_query": "홍대입구079",
+      "response_name": "홍대입구079 후보"
+    },
+    {
+      "id": "trailing-080",
+      "category": "trailing_jamo",
+      "display_value": "센트럴시티080ㄱ",
+      "expected_query": "센트럴시티080",
+      "response_name": "센트럴시티080 후보"
+    },
+    {
+      "id": "trailing-081",
+      "category": "trailing_jamo",
+      "display_value": "카카오판교081ㄴ",
+      "expected_query": "카카오판교081",
+      "response_name": "카카오판교081 후보"
+    },
+    {
+      "id": "trailing-082",
+      "category": "trailing_jamo",
+      "display_value": "네이버1784082ㄷ",
+      "expected_query": "네이버1784082",
+      "response_name": "네이버1784082 후보"
+    },
+    {
+      "id": "trailing-083",
+      "category": "trailing_jamo",
+      "display_value": "코엑스083ㄹ",
+      "expected_query": "코엑스083",
+      "response_name": "코엑스083 후보"
+    },
+    {
+      "id": "trailing-084",
+      "category": "trailing_jamo",
+      "display_value": "스타필드084ㅁ",
+      "expected_query": "스타필드084",
+      "response_name": "스타필드084 후보"
+    },
+    {
+      "id": "trailing-085",
+      "category": "trailing_jamo",
+      "display_value": "롯데월드085ㅂ",
+      "expected_query": "롯데월드085",
+      "response_name": "롯데월드085 후보"
+    },
+    {
+      "id": "trailing-086",
+      "category": "trailing_jamo",
+      "display_value": "서울시청086ㅅ",
+      "expected_query": "서울시청086",
+      "response_name": "서울시청086 후보"
+    },
+    {
+      "id": "trailing-087",
+      "category": "trailing_jamo",
+      "display_value": "광화문087ㅇ",
+      "expected_query": "광화문087",
+      "response_name": "광화문087 후보"
+    },
+    {
+      "id": "trailing-088",
+      "category": "trailing_jamo",
+      "display_value": "여의도공원088ㅈ",
+      "expected_query": "여의도공원088",
+      "response_name": "여의도공원088 후보"
+    },
+    {
+      "id": "trailing-089",
+      "category": "trailing_jamo",
+      "display_value": "분당서울대089ㅊ",
+      "expected_query": "분당서울대089",
+      "response_name": "분당서울대089 후보"
+    },
+    {
+      "id": "trailing-090",
+      "category": "trailing_jamo",
+      "display_value": "삼성서울090ㅋ",
+      "expected_query": "삼성서울090",
+      "response_name": "삼성서울090 후보"
+    },
+    {
+      "id": "trailing-091",
+      "category": "trailing_jamo",
+      "display_value": "고속터미널091ㅌ",
+      "expected_query": "고속터미널091",
+      "response_name": "고속터미널091 후보"
+    },
+    {
+      "id": "trailing-092",
+      "category": "trailing_jamo",
+      "display_value": "교대역092ㅍ",
+      "expected_query": "교대역092",
+      "response_name": "교대역092 후보"
+    },
+    {
+      "id": "trailing-093",
+      "category": "trailing_jamo",
+      "display_value": "역삼역093ㅎ",
+      "expected_query": "역삼역093",
+      "response_name": "역삼역093 후보"
+    },
+    {
+      "id": "trailing-094",
+      "category": "trailing_jamo",
+      "display_value": "을지로입구094ㅏ",
+      "expected_query": "을지로입구094",
+      "response_name": "을지로입구094 후보"
+    },
+    {
+      "id": "trailing-095",
+      "category": "trailing_jamo",
+      "display_value": "종각역095ㅣ",
+      "expected_query": "종각역095",
+      "response_name": "종각역095 후보"
+    },
+    {
+      "id": "trailing-096",
+      "category": "trailing_jamo",
+      "display_value": "강남역096ᄀ",
+      "expected_query": "강남역096",
+      "response_name": "강남역096 후보"
+    },
+    {
+      "id": "trailing-097",
+      "category": "trailing_jamo",
+      "display_value": "서울역097ᄂ",
+      "expected_query": "서울역097",
+      "response_name": "서울역097 후보"
+    },
+    {
+      "id": "trailing-098",
+      "category": "trailing_jamo",
+      "display_value": "판교역098ᄃ",
+      "expected_query": "판교역098",
+      "response_name": "판교역098 후보"
+    },
+    {
+      "id": "trailing-099",
+      "category": "trailing_jamo",
+      "display_value": "수서역099ᄅ",
+      "expected_query": "수서역099",
+      "response_name": "수서역099 후보"
+    },
+    {
+      "id": "trailing-100",
+      "category": "trailing_jamo",
+      "display_value": "잠실역100ㄱ",
+      "expected_query": "잠실역100",
+      "response_name": "잠실역100 후보"
+    },
+    {
+      "id": "trailing-101",
+      "category": "trailing_jamo",
+      "display_value": "사당역101ㄴ",
+      "expected_query": "사당역101",
+      "response_name": "사당역101 후보"
+    },
+    {
+      "id": "trailing-102",
+      "category": "trailing_jamo",
+      "display_value": "신촌역102ㄷ",
+      "expected_query": "신촌역102",
+      "response_name": "신촌역102 후보"
+    },
+    {
+      "id": "trailing-103",
+      "category": "trailing_jamo",
+      "display_value": "홍대입구103ㄹ",
+      "expected_query": "홍대입구103",
+      "response_name": "홍대입구103 후보"
+    },
+    {
+      "id": "trailing-104",
+      "category": "trailing_jamo",
+      "display_value": "센트럴시티104ㅁ",
+      "expected_query": "센트럴시티104",
+      "response_name": "센트럴시티104 후보"
+    },
+    {
+      "id": "trailing-105",
+      "category": "trailing_jamo",
+      "display_value": "카카오판교105ㅂ",
+      "expected_query": "카카오판교105",
+      "response_name": "카카오판교105 후보"
+    },
+    {
+      "id": "trailing-106",
+      "category": "trailing_jamo",
+      "display_value": "네이버1784106ㅅ",
+      "expected_query": "네이버1784106",
+      "response_name": "네이버1784106 후보"
+    },
+    {
+      "id": "trailing-107",
+      "category": "trailing_jamo",
+      "display_value": "코엑스107ㅇ",
+      "expected_query": "코엑스107",
+      "response_name": "코엑스107 후보"
+    },
+    {
+      "id": "trailing-108",
+      "category": "trailing_jamo",
+      "display_value": "스타필드108ㅈ",
+      "expected_query": "스타필드108",
+      "response_name": "스타필드108 후보"
+    },
+    {
+      "id": "trailing-109",
+      "category": "trailing_jamo",
+      "display_value": "롯데월드109ㅊ",
+      "expected_query": "롯데월드109",
+      "response_name": "롯데월드109 후보"
+    },
+    {
+      "id": "trailing-110",
+      "category": "trailing_jamo",
+      "display_value": "서울시청110ㅋ",
+      "expected_query": "서울시청110",
+      "response_name": "서울시청110 후보"
+    },
+    {
+      "id": "trailing-111",
+      "category": "trailing_jamo",
+      "display_value": "광화문111ㅌ",
+      "expected_query": "광화문111",
+      "response_name": "광화문111 후보"
+    },
+    {
+      "id": "trailing-112",
+      "category": "trailing_jamo",
+      "display_value": "여의도공원112ㅍ",
+      "expected_query": "여의도공원112",
+      "response_name": "여의도공원112 후보"
+    },
+    {
+      "id": "trailing-113",
+      "category": "trailing_jamo",
+      "display_value": "분당서울대113ㅎ",
+      "expected_query": "분당서울대113",
+      "response_name": "분당서울대113 후보"
+    },
+    {
+      "id": "trailing-114",
+      "category": "trailing_jamo",
+      "display_value": "삼성서울114ㅏ",
+      "expected_query": "삼성서울114",
+      "response_name": "삼성서울114 후보"
+    },
+    {
+      "id": "trailing-115",
+      "category": "trailing_jamo",
+      "display_value": "고속터미널115ㅣ",
+      "expected_query": "고속터미널115",
+      "response_name": "고속터미널115 후보"
+    },
+    {
+      "id": "trailing-116",
+      "category": "trailing_jamo",
+      "display_value": "교대역116ᄀ",
+      "expected_query": "교대역116",
+      "response_name": "교대역116 후보"
+    },
+    {
+      "id": "trailing-117",
+      "category": "trailing_jamo",
+      "display_value": "역삼역117ᄂ",
+      "expected_query": "역삼역117",
+      "response_name": "역삼역117 후보"
+    },
+    {
+      "id": "trailing-118",
+      "category": "trailing_jamo",
+      "display_value": "을지로입구118ᄃ",
+      "expected_query": "을지로입구118",
+      "response_name": "을지로입구118 후보"
+    },
+    {
+      "id": "trailing-119",
+      "category": "trailing_jamo",
+      "display_value": "종각역119ᄅ",
+      "expected_query": "종각역119",
+      "response_name": "종각역119 후보"
+    },
+    {
+      "id": "compositionend-000",
+      "category": "compositionend",
+      "composition_value": "사당역완성00ㄹ",
+      "display_value": "사당역완성000",
+      "expected_query": "사당역완성000",
+      "response_name": "사당역완성000 후보"
+    },
+    {
+      "id": "compositionend-001",
+      "category": "compositionend",
+      "composition_value": "신촌역완성00ㅁ",
+      "display_value": "신촌역완성001",
+      "expected_query": "신촌역완성001",
+      "response_name": "신촌역완성001 후보"
+    },
+    {
+      "id": "compositionend-002",
+      "category": "compositionend",
+      "composition_value": "홍대입구완성00ㅂ",
+      "display_value": "홍대입구완성002",
+      "expected_query": "홍대입구완성002",
+      "response_name": "홍대입구완성002 후보"
+    },
+    {
+      "id": "compositionend-003",
+      "category": "compositionend",
+      "composition_value": "센트럴시티완성00ㅅ",
+      "display_value": "센트럴시티완성003",
+      "expected_query": "센트럴시티완성003",
+      "response_name": "센트럴시티완성003 후보"
+    },
+    {
+      "id": "compositionend-004",
+      "category": "compositionend",
+      "composition_value": "카카오판교완성00ㅇ",
+      "display_value": "카카오판교완성004",
+      "expected_query": "카카오판교완성004",
+      "response_name": "카카오판교완성004 후보"
+    },
+    {
+      "id": "compositionend-005",
+      "category": "compositionend",
+      "composition_value": "네이버1784완성00ㅈ",
+      "display_value": "네이버1784완성005",
+      "expected_query": "네이버1784완성005",
+      "response_name": "네이버1784완성005 후보"
+    },
+    {
+      "id": "compositionend-006",
+      "category": "compositionend",
+      "composition_value": "코엑스완성00ㅊ",
+      "display_value": "코엑스완성006",
+      "expected_query": "코엑스완성006",
+      "response_name": "코엑스완성006 후보"
+    },
+    {
+      "id": "compositionend-007",
+      "category": "compositionend",
+      "composition_value": "스타필드완성00ㅋ",
+      "display_value": "스타필드완성007",
+      "expected_query": "스타필드완성007",
+      "response_name": "스타필드완성007 후보"
+    },
+    {
+      "id": "compositionend-008",
+      "category": "compositionend",
+      "composition_value": "롯데월드완성00ㅌ",
+      "display_value": "롯데월드완성008",
+      "expected_query": "롯데월드완성008",
+      "response_name": "롯데월드완성008 후보"
+    },
+    {
+      "id": "compositionend-009",
+      "category": "compositionend",
+      "composition_value": "서울시청완성00ㅍ",
+      "display_value": "서울시청완성009",
+      "expected_query": "서울시청완성009",
+      "response_name": "서울시청완성009 후보"
+    },
+    {
+      "id": "compositionend-010",
+      "category": "compositionend",
+      "composition_value": "광화문완성01ㅎ",
+      "display_value": "광화문완성010",
+      "expected_query": "광화문완성010",
+      "response_name": "광화문완성010 후보"
+    },
+    {
+      "id": "compositionend-011",
+      "category": "compositionend",
+      "composition_value": "여의도공원완성01ㅏ",
+      "display_value": "여의도공원완성011",
+      "expected_query": "여의도공원완성011",
+      "response_name": "여의도공원완성011 후보"
+    },
+    {
+      "id": "compositionend-012",
+      "category": "compositionend",
+      "composition_value": "분당서울대완성01ㅣ",
+      "display_value": "분당서울대완성012",
+      "expected_query": "분당서울대완성012",
+      "response_name": "분당서울대완성012 후보"
+    },
+    {
+      "id": "compositionend-013",
+      "category": "compositionend",
+      "composition_value": "삼성서울완성01ᄀ",
+      "display_value": "삼성서울완성013",
+      "expected_query": "삼성서울완성013",
+      "response_name": "삼성서울완성013 후보"
+    },
+    {
+      "id": "compositionend-014",
+      "category": "compositionend",
+      "composition_value": "고속터미널완성01ᄂ",
+      "display_value": "고속터미널완성014",
+      "expected_query": "고속터미널완성014",
+      "response_name": "고속터미널완성014 후보"
+    },
+    {
+      "id": "compositionend-015",
+      "category": "compositionend",
+      "composition_value": "교대역완성01ᄃ",
+      "display_value": "교대역완성015",
+      "expected_query": "교대역완성015",
+      "response_name": "교대역완성015 후보"
+    },
+    {
+      "id": "compositionend-016",
+      "category": "compositionend",
+      "composition_value": "역삼역완성01ᄅ",
+      "display_value": "역삼역완성016",
+      "expected_query": "역삼역완성016",
+      "response_name": "역삼역완성016 후보"
+    },
+    {
+      "id": "compositionend-017",
+      "category": "compositionend",
+      "composition_value": "을지로입구완성01ㄱ",
+      "display_value": "을지로입구완성017",
+      "expected_query": "을지로입구완성017",
+      "response_name": "을지로입구완성017 후보"
+    },
+    {
+      "id": "compositionend-018",
+      "category": "compositionend",
+      "composition_value": "종각역완성01ㄴ",
+      "display_value": "종각역완성018",
+      "expected_query": "종각역완성018",
+      "response_name": "종각역완성018 후보"
+    },
+    {
+      "id": "compositionend-019",
+      "category": "compositionend",
+      "composition_value": "강남역완성01ㄷ",
+      "display_value": "강남역완성019",
+      "expected_query": "강남역완성019",
+      "response_name": "강남역완성019 후보"
+    },
+    {
+      "id": "compositionend-020",
+      "category": "compositionend",
+      "composition_value": "서울역완성02ㄹ",
+      "display_value": "서울역완성020",
+      "expected_query": "서울역완성020",
+      "response_name": "서울역완성020 후보"
+    },
+    {
+      "id": "compositionend-021",
+      "category": "compositionend",
+      "composition_value": "판교역완성02ㅁ",
+      "display_value": "판교역완성021",
+      "expected_query": "판교역완성021",
+      "response_name": "판교역완성021 후보"
+    },
+    {
+      "id": "compositionend-022",
+      "category": "compositionend",
+      "composition_value": "수서역완성02ㅂ",
+      "display_value": "수서역완성022",
+      "expected_query": "수서역완성022",
+      "response_name": "수서역완성022 후보"
+    },
+    {
+      "id": "compositionend-023",
+      "category": "compositionend",
+      "composition_value": "잠실역완성02ㅅ",
+      "display_value": "잠실역완성023",
+      "expected_query": "잠실역완성023",
+      "response_name": "잠실역완성023 후보"
+    },
+    {
+      "id": "compositionend-024",
+      "category": "compositionend",
+      "composition_value": "사당역완성02ㅇ",
+      "display_value": "사당역완성024",
+      "expected_query": "사당역완성024",
+      "response_name": "사당역완성024 후보"
+    },
+    {
+      "id": "compositionend-025",
+      "category": "compositionend",
+      "composition_value": "신촌역완성02ㅈ",
+      "display_value": "신촌역완성025",
+      "expected_query": "신촌역완성025",
+      "response_name": "신촌역완성025 후보"
+    },
+    {
+      "id": "compositionend-026",
+      "category": "compositionend",
+      "composition_value": "홍대입구완성02ㅊ",
+      "display_value": "홍대입구완성026",
+      "expected_query": "홍대입구완성026",
+      "response_name": "홍대입구완성026 후보"
+    },
+    {
+      "id": "compositionend-027",
+      "category": "compositionend",
+      "composition_value": "센트럴시티완성02ㅋ",
+      "display_value": "센트럴시티완성027",
+      "expected_query": "센트럴시티완성027",
+      "response_name": "센트럴시티완성027 후보"
+    },
+    {
+      "id": "compositionend-028",
+      "category": "compositionend",
+      "composition_value": "카카오판교완성02ㅌ",
+      "display_value": "카카오판교완성028",
+      "expected_query": "카카오판교완성028",
+      "response_name": "카카오판교완성028 후보"
+    },
+    {
+      "id": "compositionend-029",
+      "category": "compositionend",
+      "composition_value": "네이버1784완성02ㅍ",
+      "display_value": "네이버1784완성029",
+      "expected_query": "네이버1784완성029",
+      "response_name": "네이버1784완성029 후보"
+    },
+    {
+      "id": "compositionend-030",
+      "category": "compositionend",
+      "composition_value": "코엑스완성03ㅎ",
+      "display_value": "코엑스완성030",
+      "expected_query": "코엑스완성030",
+      "response_name": "코엑스완성030 후보"
+    },
+    {
+      "id": "compositionend-031",
+      "category": "compositionend",
+      "composition_value": "스타필드완성03ㅏ",
+      "display_value": "스타필드완성031",
+      "expected_query": "스타필드완성031",
+      "response_name": "스타필드완성031 후보"
+    },
+    {
+      "id": "compositionend-032",
+      "category": "compositionend",
+      "composition_value": "롯데월드완성03ㅣ",
+      "display_value": "롯데월드완성032",
+      "expected_query": "롯데월드완성032",
+      "response_name": "롯데월드완성032 후보"
+    },
+    {
+      "id": "compositionend-033",
+      "category": "compositionend",
+      "composition_value": "서울시청완성03ᄀ",
+      "display_value": "서울시청완성033",
+      "expected_query": "서울시청완성033",
+      "response_name": "서울시청완성033 후보"
+    },
+    {
+      "id": "compositionend-034",
+      "category": "compositionend",
+      "composition_value": "광화문완성03ᄂ",
+      "display_value": "광화문완성034",
+      "expected_query": "광화문완성034",
+      "response_name": "광화문완성034 후보"
+    },
+    {
+      "id": "compositionend-035",
+      "category": "compositionend",
+      "composition_value": "여의도공원완성03ᄃ",
+      "display_value": "여의도공원완성035",
+      "expected_query": "여의도공원완성035",
+      "response_name": "여의도공원완성035 후보"
+    },
+    {
+      "id": "compositionend-036",
+      "category": "compositionend",
+      "composition_value": "분당서울대완성03ᄅ",
+      "display_value": "분당서울대완성036",
+      "expected_query": "분당서울대완성036",
+      "response_name": "분당서울대완성036 후보"
+    },
+    {
+      "id": "compositionend-037",
+      "category": "compositionend",
+      "composition_value": "삼성서울완성03ㄱ",
+      "display_value": "삼성서울완성037",
+      "expected_query": "삼성서울완성037",
+      "response_name": "삼성서울완성037 후보"
+    },
+    {
+      "id": "compositionend-038",
+      "category": "compositionend",
+      "composition_value": "고속터미널완성03ㄴ",
+      "display_value": "고속터미널완성038",
+      "expected_query": "고속터미널완성038",
+      "response_name": "고속터미널완성038 후보"
+    },
+    {
+      "id": "compositionend-039",
+      "category": "compositionend",
+      "composition_value": "교대역완성03ㄷ",
+      "display_value": "교대역완성039",
+      "expected_query": "교대역완성039",
+      "response_name": "교대역완성039 후보"
+    },
+    {
+      "id": "compositionend-040",
+      "category": "compositionend",
+      "composition_value": "역삼역완성04ㄹ",
+      "display_value": "역삼역완성040",
+      "expected_query": "역삼역완성040",
+      "response_name": "역삼역완성040 후보"
+    },
+    {
+      "id": "compositionend-041",
+      "category": "compositionend",
+      "composition_value": "을지로입구완성04ㅁ",
+      "display_value": "을지로입구완성041",
+      "expected_query": "을지로입구완성041",
+      "response_name": "을지로입구완성041 후보"
+    },
+    {
+      "id": "compositionend-042",
+      "category": "compositionend",
+      "composition_value": "종각역완성04ㅂ",
+      "display_value": "종각역완성042",
+      "expected_query": "종각역완성042",
+      "response_name": "종각역완성042 후보"
+    },
+    {
+      "id": "compositionend-043",
+      "category": "compositionend",
+      "composition_value": "강남역완성04ㅅ",
+      "display_value": "강남역완성043",
+      "expected_query": "강남역완성043",
+      "response_name": "강남역완성043 후보"
+    },
+    {
+      "id": "compositionend-044",
+      "category": "compositionend",
+      "composition_value": "서울역완성04ㅇ",
+      "display_value": "서울역완성044",
+      "expected_query": "서울역완성044",
+      "response_name": "서울역완성044 후보"
+    },
+    {
+      "id": "compositionend-045",
+      "category": "compositionend",
+      "composition_value": "판교역완성04ㅈ",
+      "display_value": "판교역완성045",
+      "expected_query": "판교역완성045",
+      "response_name": "판교역완성045 후보"
+    },
+    {
+      "id": "compositionend-046",
+      "category": "compositionend",
+      "composition_value": "수서역완성04ㅊ",
+      "display_value": "수서역완성046",
+      "expected_query": "수서역완성046",
+      "response_name": "수서역완성046 후보"
+    },
+    {
+      "id": "compositionend-047",
+      "category": "compositionend",
+      "composition_value": "잠실역완성04ㅋ",
+      "display_value": "잠실역완성047",
+      "expected_query": "잠실역완성047",
+      "response_name": "잠실역완성047 후보"
+    },
+    {
+      "id": "compositionend-048",
+      "category": "compositionend",
+      "composition_value": "사당역완성04ㅌ",
+      "display_value": "사당역완성048",
+      "expected_query": "사당역완성048",
+      "response_name": "사당역완성048 후보"
+    },
+    {
+      "id": "compositionend-049",
+      "category": "compositionend",
+      "composition_value": "신촌역완성04ㅍ",
+      "display_value": "신촌역완성049",
+      "expected_query": "신촌역완성049",
+      "response_name": "신촌역완성049 후보"
+    },
+    {
+      "id": "compositionend-050",
+      "category": "compositionend",
+      "composition_value": "홍대입구완성05ㅎ",
+      "display_value": "홍대입구완성050",
+      "expected_query": "홍대입구완성050",
+      "response_name": "홍대입구완성050 후보"
+    },
+    {
+      "id": "compositionend-051",
+      "category": "compositionend",
+      "composition_value": "센트럴시티완성05ㅏ",
+      "display_value": "센트럴시티완성051",
+      "expected_query": "센트럴시티완성051",
+      "response_name": "센트럴시티완성051 후보"
+    },
+    {
+      "id": "compositionend-052",
+      "category": "compositionend",
+      "composition_value": "카카오판교완성05ㅣ",
+      "display_value": "카카오판교완성052",
+      "expected_query": "카카오판교완성052",
+      "response_name": "카카오판교완성052 후보"
+    },
+    {
+      "id": "compositionend-053",
+      "category": "compositionend",
+      "composition_value": "네이버1784완성05ᄀ",
+      "display_value": "네이버1784완성053",
+      "expected_query": "네이버1784완성053",
+      "response_name": "네이버1784완성053 후보"
+    },
+    {
+      "id": "compositionend-054",
+      "category": "compositionend",
+      "composition_value": "코엑스완성05ᄂ",
+      "display_value": "코엑스완성054",
+      "expected_query": "코엑스완성054",
+      "response_name": "코엑스완성054 후보"
+    },
+    {
+      "id": "compositionend-055",
+      "category": "compositionend",
+      "composition_value": "스타필드완성05ᄃ",
+      "display_value": "스타필드완성055",
+      "expected_query": "스타필드완성055",
+      "response_name": "스타필드완성055 후보"
+    },
+    {
+      "id": "compositionend-056",
+      "category": "compositionend",
+      "composition_value": "롯데월드완성05ᄅ",
+      "display_value": "롯데월드완성056",
+      "expected_query": "롯데월드완성056",
+      "response_name": "롯데월드완성056 후보"
+    },
+    {
+      "id": "compositionend-057",
+      "category": "compositionend",
+      "composition_value": "서울시청완성05ㄱ",
+      "display_value": "서울시청완성057",
+      "expected_query": "서울시청완성057",
+      "response_name": "서울시청완성057 후보"
+    },
+    {
+      "id": "compositionend-058",
+      "category": "compositionend",
+      "composition_value": "광화문완성05ㄴ",
+      "display_value": "광화문완성058",
+      "expected_query": "광화문완성058",
+      "response_name": "광화문완성058 후보"
+    },
+    {
+      "id": "compositionend-059",
+      "category": "compositionend",
+      "composition_value": "여의도공원완성05ㄷ",
+      "display_value": "여의도공원완성059",
+      "expected_query": "여의도공원완성059",
+      "response_name": "여의도공원완성059 후보"
+    },
+    {
+      "id": "compositionend-060",
+      "category": "compositionend",
+      "composition_value": "분당서울대완성06ㄹ",
+      "display_value": "분당서울대완성060",
+      "expected_query": "분당서울대완성060",
+      "response_name": "분당서울대완성060 후보"
+    },
+    {
+      "id": "compositionend-061",
+      "category": "compositionend",
+      "composition_value": "삼성서울완성06ㅁ",
+      "display_value": "삼성서울완성061",
+      "expected_query": "삼성서울완성061",
+      "response_name": "삼성서울완성061 후보"
+    },
+    {
+      "id": "compositionend-062",
+      "category": "compositionend",
+      "composition_value": "고속터미널완성06ㅂ",
+      "display_value": "고속터미널완성062",
+      "expected_query": "고속터미널완성062",
+      "response_name": "고속터미널완성062 후보"
+    },
+    {
+      "id": "compositionend-063",
+      "category": "compositionend",
+      "composition_value": "교대역완성06ㅅ",
+      "display_value": "교대역완성063",
+      "expected_query": "교대역완성063",
+      "response_name": "교대역완성063 후보"
+    },
+    {
+      "id": "compositionend-064",
+      "category": "compositionend",
+      "composition_value": "역삼역완성06ㅇ",
+      "display_value": "역삼역완성064",
+      "expected_query": "역삼역완성064",
+      "response_name": "역삼역완성064 후보"
+    },
+    {
+      "id": "compositionend-065",
+      "category": "compositionend",
+      "composition_value": "을지로입구완성06ㅈ",
+      "display_value": "을지로입구완성065",
+      "expected_query": "을지로입구완성065",
+      "response_name": "을지로입구완성065 후보"
+    },
+    {
+      "id": "compositionend-066",
+      "category": "compositionend",
+      "composition_value": "종각역완성06ㅊ",
+      "display_value": "종각역완성066",
+      "expected_query": "종각역완성066",
+      "response_name": "종각역완성066 후보"
+    },
+    {
+      "id": "compositionend-067",
+      "category": "compositionend",
+      "composition_value": "강남역완성06ㅋ",
+      "display_value": "강남역완성067",
+      "expected_query": "강남역완성067",
+      "response_name": "강남역완성067 후보"
+    },
+    {
+      "id": "compositionend-068",
+      "category": "compositionend",
+      "composition_value": "서울역완성06ㅌ",
+      "display_value": "서울역완성068",
+      "expected_query": "서울역완성068",
+      "response_name": "서울역완성068 후보"
+    },
+    {
+      "id": "compositionend-069",
+      "category": "compositionend",
+      "composition_value": "판교역완성06ㅍ",
+      "display_value": "판교역완성069",
+      "expected_query": "판교역완성069",
+      "response_name": "판교역완성069 후보"
+    },
+    {
+      "id": "compositionend-070",
+      "category": "compositionend",
+      "composition_value": "수서역완성07ㅎ",
+      "display_value": "수서역완성070",
+      "expected_query": "수서역완성070",
+      "response_name": "수서역완성070 후보"
+    },
+    {
+      "id": "compositionend-071",
+      "category": "compositionend",
+      "composition_value": "잠실역완성07ㅏ",
+      "display_value": "잠실역완성071",
+      "expected_query": "잠실역완성071",
+      "response_name": "잠실역완성071 후보"
+    },
+    {
+      "id": "compositionend-072",
+      "category": "compositionend",
+      "composition_value": "사당역완성07ㅣ",
+      "display_value": "사당역완성072",
+      "expected_query": "사당역완성072",
+      "response_name": "사당역완성072 후보"
+    },
+    {
+      "id": "compositionend-073",
+      "category": "compositionend",
+      "composition_value": "신촌역완성07ᄀ",
+      "display_value": "신촌역완성073",
+      "expected_query": "신촌역완성073",
+      "response_name": "신촌역완성073 후보"
+    },
+    {
+      "id": "compositionend-074",
+      "category": "compositionend",
+      "composition_value": "홍대입구완성07ᄂ",
+      "display_value": "홍대입구완성074",
+      "expected_query": "홍대입구완성074",
+      "response_name": "홍대입구완성074 후보"
+    },
+    {
+      "id": "compositionend-075",
+      "category": "compositionend",
+      "composition_value": "센트럴시티완성07ᄃ",
+      "display_value": "센트럴시티완성075",
+      "expected_query": "센트럴시티완성075",
+      "response_name": "센트럴시티완성075 후보"
+    },
+    {
+      "id": "compositionend-076",
+      "category": "compositionend",
+      "composition_value": "카카오판교완성07ᄅ",
+      "display_value": "카카오판교완성076",
+      "expected_query": "카카오판교완성076",
+      "response_name": "카카오판교완성076 후보"
+    },
+    {
+      "id": "compositionend-077",
+      "category": "compositionend",
+      "composition_value": "네이버1784완성07ㄱ",
+      "display_value": "네이버1784완성077",
+      "expected_query": "네이버1784완성077",
+      "response_name": "네이버1784완성077 후보"
+    },
+    {
+      "id": "compositionend-078",
+      "category": "compositionend",
+      "composition_value": "코엑스완성07ㄴ",
+      "display_value": "코엑스완성078",
+      "expected_query": "코엑스완성078",
+      "response_name": "코엑스완성078 후보"
+    },
+    {
+      "id": "compositionend-079",
+      "category": "compositionend",
+      "composition_value": "스타필드완성07ㄷ",
+      "display_value": "스타필드완성079",
+      "expected_query": "스타필드완성079",
+      "response_name": "스타필드완성079 후보"
+    },
+    {
+      "id": "compositionend-080",
+      "category": "compositionend",
+      "composition_value": "롯데월드완성08ㄹ",
+      "display_value": "롯데월드완성080",
+      "expected_query": "롯데월드완성080",
+      "response_name": "롯데월드완성080 후보"
+    },
+    {
+      "id": "compositionend-081",
+      "category": "compositionend",
+      "composition_value": "서울시청완성08ㅁ",
+      "display_value": "서울시청완성081",
+      "expected_query": "서울시청완성081",
+      "response_name": "서울시청완성081 후보"
+    },
+    {
+      "id": "compositionend-082",
+      "category": "compositionend",
+      "composition_value": "광화문완성08ㅂ",
+      "display_value": "광화문완성082",
+      "expected_query": "광화문완성082",
+      "response_name": "광화문완성082 후보"
+    },
+    {
+      "id": "compositionend-083",
+      "category": "compositionend",
+      "composition_value": "여의도공원완성08ㅅ",
+      "display_value": "여의도공원완성083",
+      "expected_query": "여의도공원완성083",
+      "response_name": "여의도공원완성083 후보"
+    },
+    {
+      "id": "compositionend-084",
+      "category": "compositionend",
+      "composition_value": "분당서울대완성08ㅇ",
+      "display_value": "분당서울대완성084",
+      "expected_query": "분당서울대완성084",
+      "response_name": "분당서울대완성084 후보"
+    },
+    {
+      "id": "compositionend-085",
+      "category": "compositionend",
+      "composition_value": "삼성서울완성08ㅈ",
+      "display_value": "삼성서울완성085",
+      "expected_query": "삼성서울완성085",
+      "response_name": "삼성서울완성085 후보"
+    },
+    {
+      "id": "compositionend-086",
+      "category": "compositionend",
+      "composition_value": "고속터미널완성08ㅊ",
+      "display_value": "고속터미널완성086",
+      "expected_query": "고속터미널완성086",
+      "response_name": "고속터미널완성086 후보"
+    },
+    {
+      "id": "compositionend-087",
+      "category": "compositionend",
+      "composition_value": "교대역완성08ㅋ",
+      "display_value": "교대역완성087",
+      "expected_query": "교대역완성087",
+      "response_name": "교대역완성087 후보"
+    },
+    {
+      "id": "compositionend-088",
+      "category": "compositionend",
+      "composition_value": "역삼역완성08ㅌ",
+      "display_value": "역삼역완성088",
+      "expected_query": "역삼역완성088",
+      "response_name": "역삼역완성088 후보"
+    },
+    {
+      "id": "compositionend-089",
+      "category": "compositionend",
+      "composition_value": "을지로입구완성08ㅍ",
+      "display_value": "을지로입구완성089",
+      "expected_query": "을지로입구완성089",
+      "response_name": "을지로입구완성089 후보"
+    },
+    {
+      "id": "compositionend-090",
+      "category": "compositionend",
+      "composition_value": "종각역완성09ㅎ",
+      "display_value": "종각역완성090",
+      "expected_query": "종각역완성090",
+      "response_name": "종각역완성090 후보"
+    },
+    {
+      "id": "compositionend-091",
+      "category": "compositionend",
+      "composition_value": "강남역완성09ㅏ",
+      "display_value": "강남역완성091",
+      "expected_query": "강남역완성091",
+      "response_name": "강남역완성091 후보"
+    },
+    {
+      "id": "compositionend-092",
+      "category": "compositionend",
+      "composition_value": "서울역완성09ㅣ",
+      "display_value": "서울역완성092",
+      "expected_query": "서울역완성092",
+      "response_name": "서울역완성092 후보"
+    },
+    {
+      "id": "compositionend-093",
+      "category": "compositionend",
+      "composition_value": "판교역완성09ᄀ",
+      "display_value": "판교역완성093",
+      "expected_query": "판교역완성093",
+      "response_name": "판교역완성093 후보"
+    },
+    {
+      "id": "compositionend-094",
+      "category": "compositionend",
+      "composition_value": "수서역완성09ᄂ",
+      "display_value": "수서역완성094",
+      "expected_query": "수서역완성094",
+      "response_name": "수서역완성094 후보"
+    },
+    {
+      "id": "compositionend-095",
+      "category": "compositionend",
+      "composition_value": "잠실역완성09ᄃ",
+      "display_value": "잠실역완성095",
+      "expected_query": "잠실역완성095",
+      "response_name": "잠실역완성095 후보"
+    },
+    {
+      "id": "compositionend-096",
+      "category": "compositionend",
+      "composition_value": "사당역완성09ᄅ",
+      "display_value": "사당역완성096",
+      "expected_query": "사당역완성096",
+      "response_name": "사당역완성096 후보"
+    },
+    {
+      "id": "compositionend-097",
+      "category": "compositionend",
+      "composition_value": "신촌역완성09ㄱ",
+      "display_value": "신촌역완성097",
+      "expected_query": "신촌역완성097",
+      "response_name": "신촌역완성097 후보"
+    },
+    {
+      "id": "compositionend-098",
+      "category": "compositionend",
+      "composition_value": "홍대입구완성09ㄴ",
+      "display_value": "홍대입구완성098",
+      "expected_query": "홍대입구완성098",
+      "response_name": "홍대입구완성098 후보"
+    },
+    {
+      "id": "compositionend-099",
+      "category": "compositionend",
+      "composition_value": "센트럴시티완성09ㄷ",
+      "display_value": "센트럴시티완성099",
+      "expected_query": "센트럴시티완성099",
+      "response_name": "센트럴시티완성099 후보"
+    },
+    {
+      "id": "compositionend-100",
+      "category": "compositionend",
+      "composition_value": "카카오판교완성10ㄹ",
+      "display_value": "카카오판교완성100",
+      "expected_query": "카카오판교완성100",
+      "response_name": "카카오판교완성100 후보"
+    },
+    {
+      "id": "compositionend-101",
+      "category": "compositionend",
+      "composition_value": "네이버1784완성10ㅁ",
+      "display_value": "네이버1784완성101",
+      "expected_query": "네이버1784완성101",
+      "response_name": "네이버1784완성101 후보"
+    },
+    {
+      "id": "compositionend-102",
+      "category": "compositionend",
+      "composition_value": "코엑스완성10ㅂ",
+      "display_value": "코엑스완성102",
+      "expected_query": "코엑스완성102",
+      "response_name": "코엑스완성102 후보"
+    },
+    {
+      "id": "compositionend-103",
+      "category": "compositionend",
+      "composition_value": "스타필드완성10ㅅ",
+      "display_value": "스타필드완성103",
+      "expected_query": "스타필드완성103",
+      "response_name": "스타필드완성103 후보"
+    },
+    {
+      "id": "compositionend-104",
+      "category": "compositionend",
+      "composition_value": "롯데월드완성10ㅇ",
+      "display_value": "롯데월드완성104",
+      "expected_query": "롯데월드완성104",
+      "response_name": "롯데월드완성104 후보"
+    },
+    {
+      "id": "compositionend-105",
+      "category": "compositionend",
+      "composition_value": "서울시청완성10ㅈ",
+      "display_value": "서울시청완성105",
+      "expected_query": "서울시청완성105",
+      "response_name": "서울시청완성105 후보"
+    },
+    {
+      "id": "compositionend-106",
+      "category": "compositionend",
+      "composition_value": "광화문완성10ㅊ",
+      "display_value": "광화문완성106",
+      "expected_query": "광화문완성106",
+      "response_name": "광화문완성106 후보"
+    },
+    {
+      "id": "compositionend-107",
+      "category": "compositionend",
+      "composition_value": "여의도공원완성10ㅋ",
+      "display_value": "여의도공원완성107",
+      "expected_query": "여의도공원완성107",
+      "response_name": "여의도공원완성107 후보"
+    },
+    {
+      "id": "compositionend-108",
+      "category": "compositionend",
+      "composition_value": "분당서울대완성10ㅌ",
+      "display_value": "분당서울대완성108",
+      "expected_query": "분당서울대완성108",
+      "response_name": "분당서울대완성108 후보"
+    },
+    {
+      "id": "compositionend-109",
+      "category": "compositionend",
+      "composition_value": "삼성서울완성10ㅍ",
+      "display_value": "삼성서울완성109",
+      "expected_query": "삼성서울완성109",
+      "response_name": "삼성서울완성109 후보"
+    },
+    {
+      "id": "compositionend-110",
+      "category": "compositionend",
+      "composition_value": "고속터미널완성11ㅎ",
+      "display_value": "고속터미널완성110",
+      "expected_query": "고속터미널완성110",
+      "response_name": "고속터미널완성110 후보"
+    },
+    {
+      "id": "compositionend-111",
+      "category": "compositionend",
+      "composition_value": "교대역완성11ㅏ",
+      "display_value": "교대역완성111",
+      "expected_query": "교대역완성111",
+      "response_name": "교대역완성111 후보"
+    },
+    {
+      "id": "compositionend-112",
+      "category": "compositionend",
+      "composition_value": "역삼역완성11ㅣ",
+      "display_value": "역삼역완성112",
+      "expected_query": "역삼역완성112",
+      "response_name": "역삼역완성112 후보"
+    },
+    {
+      "id": "compositionend-113",
+      "category": "compositionend",
+      "composition_value": "을지로입구완성11ᄀ",
+      "display_value": "을지로입구완성113",
+      "expected_query": "을지로입구완성113",
+      "response_name": "을지로입구완성113 후보"
+    },
+    {
+      "id": "compositionend-114",
+      "category": "compositionend",
+      "composition_value": "종각역완성11ᄂ",
+      "display_value": "종각역완성114",
+      "expected_query": "종각역완성114",
+      "response_name": "종각역완성114 후보"
+    },
+    {
+      "id": "compositionend-115",
+      "category": "compositionend",
+      "composition_value": "강남역완성11ᄃ",
+      "display_value": "강남역완성115",
+      "expected_query": "강남역완성115",
+      "response_name": "강남역완성115 후보"
+    },
+    {
+      "id": "compositionend-116",
+      "category": "compositionend",
+      "composition_value": "서울역완성11ᄅ",
+      "display_value": "서울역완성116",
+      "expected_query": "서울역완성116",
+      "response_name": "서울역완성116 후보"
+    },
+    {
+      "id": "compositionend-117",
+      "category": "compositionend",
+      "composition_value": "판교역완성11ㄱ",
+      "display_value": "판교역완성117",
+      "expected_query": "판교역완성117",
+      "response_name": "판교역완성117 후보"
+    },
+    {
+      "id": "compositionend-118",
+      "category": "compositionend",
+      "composition_value": "수서역완성11ㄴ",
+      "display_value": "수서역완성118",
+      "expected_query": "수서역완성118",
+      "response_name": "수서역완성118 후보"
+    },
+    {
+      "id": "compositionend-119",
+      "category": "compositionend",
+      "composition_value": "잠실역완성11ㄷ",
+      "display_value": "잠실역완성119",
+      "expected_query": "잠실역완성119",
+      "response_name": "잠실역완성119 후보"
+    },
+    {
+      "id": "plain-000",
+      "category": "plain_input",
+      "display_value": "코엑스일반000",
+      "expected_query": "코엑스일반000",
+      "response_name": "코엑스일반000 후보"
+    },
+    {
+      "id": "plain-001",
+      "category": "plain_input",
+      "display_value": "스타필드일반001",
+      "expected_query": "스타필드일반001",
+      "response_name": "스타필드일반001 후보"
+    },
+    {
+      "id": "plain-002",
+      "category": "plain_input",
+      "display_value": "롯데월드일반002",
+      "expected_query": "롯데월드일반002",
+      "response_name": "롯데월드일반002 후보"
+    },
+    {
+      "id": "plain-003",
+      "category": "plain_input",
+      "display_value": "서울시청일반003",
+      "expected_query": "서울시청일반003",
+      "response_name": "서울시청일반003 후보"
+    },
+    {
+      "id": "plain-004",
+      "category": "plain_input",
+      "display_value": "광화문일반004",
+      "expected_query": "광화문일반004",
+      "response_name": "광화문일반004 후보"
+    },
+    {
+      "id": "plain-005",
+      "category": "plain_input",
+      "display_value": "여의도공원일반005",
+      "expected_query": "여의도공원일반005",
+      "response_name": "여의도공원일반005 후보"
+    },
+    {
+      "id": "plain-006",
+      "category": "plain_input",
+      "display_value": "분당서울대일반006",
+      "expected_query": "분당서울대일반006",
+      "response_name": "분당서울대일반006 후보"
+    },
+    {
+      "id": "plain-007",
+      "category": "plain_input",
+      "display_value": "삼성서울일반007",
+      "expected_query": "삼성서울일반007",
+      "response_name": "삼성서울일반007 후보"
+    },
+    {
+      "id": "plain-008",
+      "category": "plain_input",
+      "display_value": "고속터미널일반008",
+      "expected_query": "고속터미널일반008",
+      "response_name": "고속터미널일반008 후보"
+    },
+    {
+      "id": "plain-009",
+      "category": "plain_input",
+      "display_value": "교대역일반009",
+      "expected_query": "교대역일반009",
+      "response_name": "교대역일반009 후보"
+    },
+    {
+      "id": "plain-010",
+      "category": "plain_input",
+      "display_value": "역삼역일반010",
+      "expected_query": "역삼역일반010",
+      "response_name": "역삼역일반010 후보"
+    },
+    {
+      "id": "plain-011",
+      "category": "plain_input",
+      "display_value": "을지로입구일반011",
+      "expected_query": "을지로입구일반011",
+      "response_name": "을지로입구일반011 후보"
+    },
+    {
+      "id": "plain-012",
+      "category": "plain_input",
+      "display_value": "종각역일반012",
+      "expected_query": "종각역일반012",
+      "response_name": "종각역일반012 후보"
+    },
+    {
+      "id": "plain-013",
+      "category": "plain_input",
+      "display_value": "강남역일반013",
+      "expected_query": "강남역일반013",
+      "response_name": "강남역일반013 후보"
+    },
+    {
+      "id": "plain-014",
+      "category": "plain_input",
+      "display_value": "서울역일반014",
+      "expected_query": "서울역일반014",
+      "response_name": "서울역일반014 후보"
+    },
+    {
+      "id": "plain-015",
+      "category": "plain_input",
+      "display_value": "판교역일반015",
+      "expected_query": "판교역일반015",
+      "response_name": "판교역일반015 후보"
+    },
+    {
+      "id": "plain-016",
+      "category": "plain_input",
+      "display_value": "수서역일반016",
+      "expected_query": "수서역일반016",
+      "response_name": "수서역일반016 후보"
+    },
+    {
+      "id": "plain-017",
+      "category": "plain_input",
+      "display_value": "잠실역일반017",
+      "expected_query": "잠실역일반017",
+      "response_name": "잠실역일반017 후보"
+    },
+    {
+      "id": "plain-018",
+      "category": "plain_input",
+      "display_value": "사당역일반018",
+      "expected_query": "사당역일반018",
+      "response_name": "사당역일반018 후보"
+    },
+    {
+      "id": "plain-019",
+      "category": "plain_input",
+      "display_value": "신촌역일반019",
+      "expected_query": "신촌역일반019",
+      "response_name": "신촌역일반019 후보"
+    },
+    {
+      "id": "plain-020",
+      "category": "plain_input",
+      "display_value": "홍대입구일반020",
+      "expected_query": "홍대입구일반020",
+      "response_name": "홍대입구일반020 후보"
+    },
+    {
+      "id": "plain-021",
+      "category": "plain_input",
+      "display_value": "센트럴시티일반021",
+      "expected_query": "센트럴시티일반021",
+      "response_name": "센트럴시티일반021 후보"
+    },
+    {
+      "id": "plain-022",
+      "category": "plain_input",
+      "display_value": "카카오판교일반022",
+      "expected_query": "카카오판교일반022",
+      "response_name": "카카오판교일반022 후보"
+    },
+    {
+      "id": "plain-023",
+      "category": "plain_input",
+      "display_value": "네이버1784일반023",
+      "expected_query": "네이버1784일반023",
+      "response_name": "네이버1784일반023 후보"
+    },
+    {
+      "id": "plain-024",
+      "category": "plain_input",
+      "display_value": "코엑스일반024",
+      "expected_query": "코엑스일반024",
+      "response_name": "코엑스일반024 후보"
+    },
+    {
+      "id": "plain-025",
+      "category": "plain_input",
+      "display_value": "스타필드일반025",
+      "expected_query": "스타필드일반025",
+      "response_name": "스타필드일반025 후보"
+    },
+    {
+      "id": "plain-026",
+      "category": "plain_input",
+      "display_value": "롯데월드일반026",
+      "expected_query": "롯데월드일반026",
+      "response_name": "롯데월드일반026 후보"
+    },
+    {
+      "id": "plain-027",
+      "category": "plain_input",
+      "display_value": "서울시청일반027",
+      "expected_query": "서울시청일반027",
+      "response_name": "서울시청일반027 후보"
+    },
+    {
+      "id": "plain-028",
+      "category": "plain_input",
+      "display_value": "광화문일반028",
+      "expected_query": "광화문일반028",
+      "response_name": "광화문일반028 후보"
+    },
+    {
+      "id": "plain-029",
+      "category": "plain_input",
+      "display_value": "여의도공원일반029",
+      "expected_query": "여의도공원일반029",
+      "response_name": "여의도공원일반029 후보"
+    },
+    {
+      "id": "plain-030",
+      "category": "plain_input",
+      "display_value": "분당서울대일반030",
+      "expected_query": "분당서울대일반030",
+      "response_name": "분당서울대일반030 후보"
+    },
+    {
+      "id": "plain-031",
+      "category": "plain_input",
+      "display_value": "삼성서울일반031",
+      "expected_query": "삼성서울일반031",
+      "response_name": "삼성서울일반031 후보"
+    },
+    {
+      "id": "plain-032",
+      "category": "plain_input",
+      "display_value": "고속터미널일반032",
+      "expected_query": "고속터미널일반032",
+      "response_name": "고속터미널일반032 후보"
+    },
+    {
+      "id": "plain-033",
+      "category": "plain_input",
+      "display_value": "교대역일반033",
+      "expected_query": "교대역일반033",
+      "response_name": "교대역일반033 후보"
+    },
+    {
+      "id": "plain-034",
+      "category": "plain_input",
+      "display_value": "역삼역일반034",
+      "expected_query": "역삼역일반034",
+      "response_name": "역삼역일반034 후보"
+    },
+    {
+      "id": "plain-035",
+      "category": "plain_input",
+      "display_value": "을지로입구일반035",
+      "expected_query": "을지로입구일반035",
+      "response_name": "을지로입구일반035 후보"
+    },
+    {
+      "id": "plain-036",
+      "category": "plain_input",
+      "display_value": "종각역일반036",
+      "expected_query": "종각역일반036",
+      "response_name": "종각역일반036 후보"
+    },
+    {
+      "id": "plain-037",
+      "category": "plain_input",
+      "display_value": "강남역일반037",
+      "expected_query": "강남역일반037",
+      "response_name": "강남역일반037 후보"
+    },
+    {
+      "id": "plain-038",
+      "category": "plain_input",
+      "display_value": "서울역일반038",
+      "expected_query": "서울역일반038",
+      "response_name": "서울역일반038 후보"
+    },
+    {
+      "id": "plain-039",
+      "category": "plain_input",
+      "display_value": "판교역일반039",
+      "expected_query": "판교역일반039",
+      "response_name": "판교역일반039 후보"
+    },
+    {
+      "id": "plain-040",
+      "category": "plain_input",
+      "display_value": "수서역일반040",
+      "expected_query": "수서역일반040",
+      "response_name": "수서역일반040 후보"
+    },
+    {
+      "id": "plain-041",
+      "category": "plain_input",
+      "display_value": "잠실역일반041",
+      "expected_query": "잠실역일반041",
+      "response_name": "잠실역일반041 후보"
+    },
+    {
+      "id": "plain-042",
+      "category": "plain_input",
+      "display_value": "사당역일반042",
+      "expected_query": "사당역일반042",
+      "response_name": "사당역일반042 후보"
+    },
+    {
+      "id": "plain-043",
+      "category": "plain_input",
+      "display_value": "신촌역일반043",
+      "expected_query": "신촌역일반043",
+      "response_name": "신촌역일반043 후보"
+    },
+    {
+      "id": "plain-044",
+      "category": "plain_input",
+      "display_value": "홍대입구일반044",
+      "expected_query": "홍대입구일반044",
+      "response_name": "홍대입구일반044 후보"
+    },
+    {
+      "id": "plain-045",
+      "category": "plain_input",
+      "display_value": "센트럴시티일반045",
+      "expected_query": "센트럴시티일반045",
+      "response_name": "센트럴시티일반045 후보"
+    },
+    {
+      "id": "plain-046",
+      "category": "plain_input",
+      "display_value": "카카오판교일반046",
+      "expected_query": "카카오판교일반046",
+      "response_name": "카카오판교일반046 후보"
+    },
+    {
+      "id": "plain-047",
+      "category": "plain_input",
+      "display_value": "네이버1784일반047",
+      "expected_query": "네이버1784일반047",
+      "response_name": "네이버1784일반047 후보"
+    },
+    {
+      "id": "plain-048",
+      "category": "plain_input",
+      "display_value": "코엑스일반048",
+      "expected_query": "코엑스일반048",
+      "response_name": "코엑스일반048 후보"
+    },
+    {
+      "id": "plain-049",
+      "category": "plain_input",
+      "display_value": "스타필드일반049",
+      "expected_query": "스타필드일반049",
+      "response_name": "스타필드일반049 후보"
+    },
+    {
+      "id": "plain-050",
+      "category": "plain_input",
+      "display_value": "롯데월드일반050",
+      "expected_query": "롯데월드일반050",
+      "response_name": "롯데월드일반050 후보"
+    },
+    {
+      "id": "plain-051",
+      "category": "plain_input",
+      "display_value": "서울시청일반051",
+      "expected_query": "서울시청일반051",
+      "response_name": "서울시청일반051 후보"
+    },
+    {
+      "id": "plain-052",
+      "category": "plain_input",
+      "display_value": "광화문일반052",
+      "expected_query": "광화문일반052",
+      "response_name": "광화문일반052 후보"
+    },
+    {
+      "id": "plain-053",
+      "category": "plain_input",
+      "display_value": "여의도공원일반053",
+      "expected_query": "여의도공원일반053",
+      "response_name": "여의도공원일반053 후보"
+    },
+    {
+      "id": "plain-054",
+      "category": "plain_input",
+      "display_value": "분당서울대일반054",
+      "expected_query": "분당서울대일반054",
+      "response_name": "분당서울대일반054 후보"
+    },
+    {
+      "id": "plain-055",
+      "category": "plain_input",
+      "display_value": "삼성서울일반055",
+      "expected_query": "삼성서울일반055",
+      "response_name": "삼성서울일반055 후보"
+    },
+    {
+      "id": "plain-056",
+      "category": "plain_input",
+      "display_value": "고속터미널일반056",
+      "expected_query": "고속터미널일반056",
+      "response_name": "고속터미널일반056 후보"
+    },
+    {
+      "id": "plain-057",
+      "category": "plain_input",
+      "display_value": "교대역일반057",
+      "expected_query": "교대역일반057",
+      "response_name": "교대역일반057 후보"
+    },
+    {
+      "id": "plain-058",
+      "category": "plain_input",
+      "display_value": "역삼역일반058",
+      "expected_query": "역삼역일반058",
+      "response_name": "역삼역일반058 후보"
+    },
+    {
+      "id": "plain-059",
+      "category": "plain_input",
+      "display_value": "을지로입구일반059",
+      "expected_query": "을지로입구일반059",
+      "response_name": "을지로입구일반059 후보"
+    },
+    {
+      "id": "plain-060",
+      "category": "plain_input",
+      "display_value": "종각역일반060",
+      "expected_query": "종각역일반060",
+      "response_name": "종각역일반060 후보"
+    },
+    {
+      "id": "plain-061",
+      "category": "plain_input",
+      "display_value": "강남역일반061",
+      "expected_query": "강남역일반061",
+      "response_name": "강남역일반061 후보"
+    },
+    {
+      "id": "plain-062",
+      "category": "plain_input",
+      "display_value": "서울역일반062",
+      "expected_query": "서울역일반062",
+      "response_name": "서울역일반062 후보"
+    },
+    {
+      "id": "plain-063",
+      "category": "plain_input",
+      "display_value": "판교역일반063",
+      "expected_query": "판교역일반063",
+      "response_name": "판교역일반063 후보"
+    },
+    {
+      "id": "plain-064",
+      "category": "plain_input",
+      "display_value": "수서역일반064",
+      "expected_query": "수서역일반064",
+      "response_name": "수서역일반064 후보"
+    },
+    {
+      "id": "plain-065",
+      "category": "plain_input",
+      "display_value": "잠실역일반065",
+      "expected_query": "잠실역일반065",
+      "response_name": "잠실역일반065 후보"
+    },
+    {
+      "id": "plain-066",
+      "category": "plain_input",
+      "display_value": "사당역일반066",
+      "expected_query": "사당역일반066",
+      "response_name": "사당역일반066 후보"
+    },
+    {
+      "id": "plain-067",
+      "category": "plain_input",
+      "display_value": "신촌역일반067",
+      "expected_query": "신촌역일반067",
+      "response_name": "신촌역일반067 후보"
+    },
+    {
+      "id": "plain-068",
+      "category": "plain_input",
+      "display_value": "홍대입구일반068",
+      "expected_query": "홍대입구일반068",
+      "response_name": "홍대입구일반068 후보"
+    },
+    {
+      "id": "plain-069",
+      "category": "plain_input",
+      "display_value": "센트럴시티일반069",
+      "expected_query": "센트럴시티일반069",
+      "response_name": "센트럴시티일반069 후보"
+    },
+    {
+      "id": "plain-070",
+      "category": "plain_input",
+      "display_value": "카카오판교일반070",
+      "expected_query": "카카오판교일반070",
+      "response_name": "카카오판교일반070 후보"
+    },
+    {
+      "id": "plain-071",
+      "category": "plain_input",
+      "display_value": "네이버1784일반071",
+      "expected_query": "네이버1784일반071",
+      "response_name": "네이버1784일반071 후보"
+    },
+    {
+      "id": "plain-072",
+      "category": "plain_input",
+      "display_value": "코엑스일반072",
+      "expected_query": "코엑스일반072",
+      "response_name": "코엑스일반072 후보"
+    },
+    {
+      "id": "plain-073",
+      "category": "plain_input",
+      "display_value": "스타필드일반073",
+      "expected_query": "스타필드일반073",
+      "response_name": "스타필드일반073 후보"
+    },
+    {
+      "id": "plain-074",
+      "category": "plain_input",
+      "display_value": "롯데월드일반074",
+      "expected_query": "롯데월드일반074",
+      "response_name": "롯데월드일반074 후보"
+    },
+    {
+      "id": "plain-075",
+      "category": "plain_input",
+      "display_value": "서울시청일반075",
+      "expected_query": "서울시청일반075",
+      "response_name": "서울시청일반075 후보"
+    },
+    {
+      "id": "plain-076",
+      "category": "plain_input",
+      "display_value": "광화문일반076",
+      "expected_query": "광화문일반076",
+      "response_name": "광화문일반076 후보"
+    },
+    {
+      "id": "plain-077",
+      "category": "plain_input",
+      "display_value": "여의도공원일반077",
+      "expected_query": "여의도공원일반077",
+      "response_name": "여의도공원일반077 후보"
+    },
+    {
+      "id": "plain-078",
+      "category": "plain_input",
+      "display_value": "분당서울대일반078",
+      "expected_query": "분당서울대일반078",
+      "response_name": "분당서울대일반078 후보"
+    },
+    {
+      "id": "plain-079",
+      "category": "plain_input",
+      "display_value": "삼성서울일반079",
+      "expected_query": "삼성서울일반079",
+      "response_name": "삼성서울일반079 후보"
+    },
+    {
+      "id": "plain-080",
+      "category": "plain_input",
+      "display_value": "고속터미널일반080",
+      "expected_query": "고속터미널일반080",
+      "response_name": "고속터미널일반080 후보"
+    },
+    {
+      "id": "plain-081",
+      "category": "plain_input",
+      "display_value": "교대역일반081",
+      "expected_query": "교대역일반081",
+      "response_name": "교대역일반081 후보"
+    },
+    {
+      "id": "plain-082",
+      "category": "plain_input",
+      "display_value": "역삼역일반082",
+      "expected_query": "역삼역일반082",
+      "response_name": "역삼역일반082 후보"
+    },
+    {
+      "id": "plain-083",
+      "category": "plain_input",
+      "display_value": "을지로입구일반083",
+      "expected_query": "을지로입구일반083",
+      "response_name": "을지로입구일반083 후보"
+    },
+    {
+      "id": "plain-084",
+      "category": "plain_input",
+      "display_value": "종각역일반084",
+      "expected_query": "종각역일반084",
+      "response_name": "종각역일반084 후보"
+    },
+    {
+      "id": "plain-085",
+      "category": "plain_input",
+      "display_value": "강남역일반085",
+      "expected_query": "강남역일반085",
+      "response_name": "강남역일반085 후보"
+    },
+    {
+      "id": "plain-086",
+      "category": "plain_input",
+      "display_value": "서울역일반086",
+      "expected_query": "서울역일반086",
+      "response_name": "서울역일반086 후보"
+    },
+    {
+      "id": "plain-087",
+      "category": "plain_input",
+      "display_value": "판교역일반087",
+      "expected_query": "판교역일반087",
+      "response_name": "판교역일반087 후보"
+    },
+    {
+      "id": "plain-088",
+      "category": "plain_input",
+      "display_value": "수서역일반088",
+      "expected_query": "수서역일반088",
+      "response_name": "수서역일반088 후보"
+    },
+    {
+      "id": "plain-089",
+      "category": "plain_input",
+      "display_value": "잠실역일반089",
+      "expected_query": "잠실역일반089",
+      "response_name": "잠실역일반089 후보"
+    },
+    {
+      "id": "plain-090",
+      "category": "plain_input",
+      "display_value": "사당역일반090",
+      "expected_query": "사당역일반090",
+      "response_name": "사당역일반090 후보"
+    },
+    {
+      "id": "plain-091",
+      "category": "plain_input",
+      "display_value": "신촌역일반091",
+      "expected_query": "신촌역일반091",
+      "response_name": "신촌역일반091 후보"
+    },
+    {
+      "id": "plain-092",
+      "category": "plain_input",
+      "display_value": "홍대입구일반092",
+      "expected_query": "홍대입구일반092",
+      "response_name": "홍대입구일반092 후보"
+    },
+    {
+      "id": "plain-093",
+      "category": "plain_input",
+      "display_value": "센트럴시티일반093",
+      "expected_query": "센트럴시티일반093",
+      "response_name": "센트럴시티일반093 후보"
+    },
+    {
+      "id": "plain-094",
+      "category": "plain_input",
+      "display_value": "카카오판교일반094",
+      "expected_query": "카카오판교일반094",
+      "response_name": "카카오판교일반094 후보"
+    },
+    {
+      "id": "plain-095",
+      "category": "plain_input",
+      "display_value": "네이버1784일반095",
+      "expected_query": "네이버1784일반095",
+      "response_name": "네이버1784일반095 후보"
+    },
+    {
+      "id": "plain-096",
+      "category": "plain_input",
+      "display_value": "코엑스일반096",
+      "expected_query": "코엑스일반096",
+      "response_name": "코엑스일반096 후보"
+    },
+    {
+      "id": "plain-097",
+      "category": "plain_input",
+      "display_value": "스타필드일반097",
+      "expected_query": "스타필드일반097",
+      "response_name": "스타필드일반097 후보"
+    },
+    {
+      "id": "plain-098",
+      "category": "plain_input",
+      "display_value": "롯데월드일반098",
+      "expected_query": "롯데월드일반098",
+      "response_name": "롯데월드일반098 후보"
+    },
+    {
+      "id": "plain-099",
+      "category": "plain_input",
+      "display_value": "서울시청일반099",
+      "expected_query": "서울시청일반099",
+      "response_name": "서울시청일반099 후보"
+    },
+    {
+      "id": "plain-100",
+      "category": "plain_input",
+      "display_value": "광화문일반100",
+      "expected_query": "광화문일반100",
+      "response_name": "광화문일반100 후보"
+    },
+    {
+      "id": "plain-101",
+      "category": "plain_input",
+      "display_value": "여의도공원일반101",
+      "expected_query": "여의도공원일반101",
+      "response_name": "여의도공원일반101 후보"
+    },
+    {
+      "id": "plain-102",
+      "category": "plain_input",
+      "display_value": "분당서울대일반102",
+      "expected_query": "분당서울대일반102",
+      "response_name": "분당서울대일반102 후보"
+    },
+    {
+      "id": "plain-103",
+      "category": "plain_input",
+      "display_value": "삼성서울일반103",
+      "expected_query": "삼성서울일반103",
+      "response_name": "삼성서울일반103 후보"
+    },
+    {
+      "id": "plain-104",
+      "category": "plain_input",
+      "display_value": "고속터미널일반104",
+      "expected_query": "고속터미널일반104",
+      "response_name": "고속터미널일반104 후보"
+    },
+    {
+      "id": "plain-105",
+      "category": "plain_input",
+      "display_value": "교대역일반105",
+      "expected_query": "교대역일반105",
+      "response_name": "교대역일반105 후보"
+    },
+    {
+      "id": "plain-106",
+      "category": "plain_input",
+      "display_value": "역삼역일반106",
+      "expected_query": "역삼역일반106",
+      "response_name": "역삼역일반106 후보"
+    },
+    {
+      "id": "plain-107",
+      "category": "plain_input",
+      "display_value": "을지로입구일반107",
+      "expected_query": "을지로입구일반107",
+      "response_name": "을지로입구일반107 후보"
+    },
+    {
+      "id": "plain-108",
+      "category": "plain_input",
+      "display_value": "종각역일반108",
+      "expected_query": "종각역일반108",
+      "response_name": "종각역일반108 후보"
+    },
+    {
+      "id": "plain-109",
+      "category": "plain_input",
+      "display_value": "강남역일반109",
+      "expected_query": "강남역일반109",
+      "response_name": "강남역일반109 후보"
+    },
+    {
+      "id": "plain-110",
+      "category": "plain_input",
+      "display_value": "서울역일반110",
+      "expected_query": "서울역일반110",
+      "response_name": "서울역일반110 후보"
+    },
+    {
+      "id": "plain-111",
+      "category": "plain_input",
+      "display_value": "판교역일반111",
+      "expected_query": "판교역일반111",
+      "response_name": "판교역일반111 후보"
+    },
+    {
+      "id": "plain-112",
+      "category": "plain_input",
+      "display_value": "수서역일반112",
+      "expected_query": "수서역일반112",
+      "response_name": "수서역일반112 후보"
+    },
+    {
+      "id": "plain-113",
+      "category": "plain_input",
+      "display_value": "잠실역일반113",
+      "expected_query": "잠실역일반113",
+      "response_name": "잠실역일반113 후보"
+    },
+    {
+      "id": "plain-114",
+      "category": "plain_input",
+      "display_value": "사당역일반114",
+      "expected_query": "사당역일반114",
+      "response_name": "사당역일반114 후보"
+    },
+    {
+      "id": "plain-115",
+      "category": "plain_input",
+      "display_value": "신촌역일반115",
+      "expected_query": "신촌역일반115",
+      "response_name": "신촌역일반115 후보"
+    },
+    {
+      "id": "plain-116",
+      "category": "plain_input",
+      "display_value": "홍대입구일반116",
+      "expected_query": "홍대입구일반116",
+      "response_name": "홍대입구일반116 후보"
+    },
+    {
+      "id": "plain-117",
+      "category": "plain_input",
+      "display_value": "센트럴시티일반117",
+      "expected_query": "센트럴시티일반117",
+      "response_name": "센트럴시티일반117 후보"
+    },
+    {
+      "id": "plain-118",
+      "category": "plain_input",
+      "display_value": "카카오판교일반118",
+      "expected_query": "카카오판교일반118",
+      "response_name": "카카오판교일반118 후보"
+    },
+    {
+      "id": "plain-119",
+      "category": "plain_input",
+      "display_value": "네이버1784일반119",
+      "expected_query": "네이버1784일반119",
+      "response_name": "네이버1784일반119 후보"
+    }
+  ]
+}
