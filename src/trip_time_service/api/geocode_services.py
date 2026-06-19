@@ -995,19 +995,6 @@ def _autocomplete_naver_map_uncached(
     if len(_compact_text(query)) < _AUTOCOMPLETE_MIN_QUERY_LEN:
         return ()
 
-    naver_results = _time_autocomplete_stage(
-        "naver_all_search",
-        lambda: autocomplete_naver_map_raw(
-            query,
-            limit,
-            search_coord=search_coord,
-            record_ncaptcha_backoff=record_ncaptcha_backoff,
-        ),
-    )
-    if naver_results:
-        _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "naver_all_search")
-        return naver_results
-
     _increment_runtime_counter(_EXTERNAL_PROVIDER_CALL_COUNTS, "browser_autocomplete")
     browser_results = _time_autocomplete_stage(
         "browser_autocomplete",
@@ -1156,36 +1143,18 @@ def _autocomplete_naver_map_uncached(
         )
         return browser_results
 
-    nominatim_results = _time_autocomplete_stage(
-        "nominatim",
-        lambda: autocomplete_nominatim(query, limit=limit),
+    naver_results = _time_autocomplete_stage(
+        "naver_all_search",
+        lambda: autocomplete_naver_map_raw(
+            query,
+            limit,
+            search_coord=search_coord,
+            record_ncaptcha_backoff=record_ncaptcha_backoff,
+        ),
     )
-    if nominatim_results:
-        _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "nominatim")
-        _log.info(
-            "autocomplete query=%s source=nominatim fallback_count=%d",
-            _redact_query(query),
-            len(nominatim_results),
-        )
-        return nominatim_results
-
-    if not _contains_hangul(query):
-        photon_results = _time_autocomplete_stage(
-            "photon",
-            lambda: autocomplete_photon(
-                query,
-                limit=limit,
-                search_coord=search_coord,
-            ),
-        )
-        if photon_results:
-            _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "photon")
-            _log.info(
-                "autocomplete query=%s source=photon fallback_count=%d",
-                _redact_query(query),
-                len(photon_results),
-            )
-            return photon_results
+    if naver_results:
+        _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "naver_all_search")
+        return naver_results
 
     _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "none")
     return ()

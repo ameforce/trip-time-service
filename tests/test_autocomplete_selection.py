@@ -324,7 +324,95 @@ def test_autocomplete_address_like_query_still_uses_browser_promotion(
     assert results == promoted_results
 
 
-def test_autocomplete_stage_metrics_start_with_naver_all_search_not_local_hint(
+def test_autocomplete_prefers_naver_map_browser_ui_over_all_search(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    browser_results = (
+        {
+            "display_name": "강남역",
+            "address": "강남역",
+            "type": "검색어",
+            "lat": "",
+            "lon": "",
+            "source": "naver_browser_suggest",
+            "confidence": 0.9,
+        },
+    )
+    all_search_results = (
+        {
+            "display_name": "강남역 HTTP",
+            "address": "서울 강남구 강남대로 396",
+            "type": "역",
+            "lat": "37.4979",
+            "lon": "127.0276",
+            "source": "naver_all_search",
+            "confidence": 0.95,
+        },
+    )
+    calls: list[str] = []
+
+    def _browser(*args, **kwargs):
+        calls.append("browser")
+        return browser_results
+
+    def _all_search(*args, **kwargs):
+        calls.append("all_search")
+        return all_search_results
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        _browser,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        _all_search,
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("강남역", limit=5)
+
+    assert results[0]["source"] == "naver_browser_suggest"
+    assert calls == ["browser"]
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert "naver_all_search" not in stage_metrics
+    assert stage_metrics["browser_autocomplete"]["outcomes"]["hit"] >= 1
+
+
+def test_autocomplete_does_not_show_non_naver_fallbacks_when_naver_map_misses(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_nominatim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("autocomplete must not show non-Naver candidates")
+        ),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_photon",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("autocomplete must not show non-Naver candidates")
+        ),
+    )
+
+    assert geocode_services._autocomplete_naver_map_uncached("강남역", limit=5) == ()
+
+
+def test_autocomplete_falls_back_to_naver_all_search_when_browser_ui_misses(
     monkeypatch,
 ) -> None:
     geocode_services._reset_runtime_counters()
@@ -338,6 +426,11 @@ def test_autocomplete_stage_metrics_start_with_naver_all_search_not_local_hint(
             "source": "naver_all_search",
             "confidence": 0.95,
         },
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        lambda *args, **kwargs: (),
     )
     monkeypatch.setattr(
         geocode_services,
