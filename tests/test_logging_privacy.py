@@ -47,15 +47,18 @@ def test_geocode_route_log_omits_raw_query(monkeypatch, caplog) -> None:
 def test_geocode_service_log_omits_raw_query(monkeypatch, caplog) -> None:
     monkeypatch.setattr(
         geocode_services,
-        "_search_local_hints",
-        lambda *_args, **_kwargs: [
+        "autocomplete_naver_map_raw",
+        lambda *_args, **_kwargs: (
             {
                 "lat": "37.0",
                 "lon": "127.0",
                 "display_name": "강남역",
-                "source": "local_hint",
-            }
-        ],
+                "address": "서울 강남구 강남대로 396",
+                "type": "역",
+                "source": "naver_all_search",
+                "confidence": 0.95,
+            },
+        ),
     )
 
     with caplog.at_level(logging.INFO, logger=geocode_services.__name__):

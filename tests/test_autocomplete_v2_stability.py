@@ -30,11 +30,6 @@ def test_browser_poi_autocomplete_returns_progressive_without_geocode_promotion(
 
     monkeypatch.setattr(
         geocode_services,
-        "_search_local_hints",
-        lambda *args, **kwargs: (),
-    )
-    monkeypatch.setattr(
-        geocode_services,
         "autocomplete_naver_map_raw",
         lambda *args, **kwargs: (),
     )

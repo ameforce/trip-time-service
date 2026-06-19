@@ -56,114 +56,6 @@ _ROAD_ADDRESS_CORE_RE = re.compile(
 _ROAD_ADDRESS_SEGMENT_RE = re.compile(
     r"([^\s,()]+(?:번길|대로|로|길))\s*(\d+(?:-\d+)?)"
 )
-# A small public fallback seed keeps route-critical autocomplete usable when the
-# live Naver allSearch endpoint is captcha-degraded and browser suggestions lack
-# coordinates.  It is intentionally limited to stable, high-traffic public
-# transit/landmark/road-address anchors used by normal smoke paths; general
-# queries still prefer live providers.
-_LOCAL_POI_HINTS: tuple[dict, ...] = (
-    {
-        "display_name": "강남역",
-        "address": "서울 강남구 강남대로 396",
-        "type": "역",
-        "lat": 37.4979,
-        "lon": 127.0276,
-        "aliases": ("강남역",),
-    },
-    {
-        "display_name": "서울역",
-        "address": "서울 용산구 한강대로 405",
-        "type": "역",
-        "lat": 37.5547,
-        "lon": 126.9707,
-        "aliases": ("서울역", "한강대로 405", "한강대로405"),
-    },
-    {
-        "display_name": "판교역",
-        "address": "경기 성남시 분당구 판교역로 160",
-        "type": "역",
-        "lat": 37.3948,
-        "lon": 127.1112,
-        "aliases": ("판교역",),
-    },
-    {
-        "display_name": "수서역",
-        "address": "서울 강남구 밤고개로 99",
-        "type": "역",
-        "lat": 37.4875,
-        "lon": 127.1019,
-        "aliases": ("수서역",),
-    },
-    {
-        "display_name": "잠실역",
-        "address": "서울 송파구 올림픽로 265",
-        "type": "역",
-        "lat": 37.5133,
-        "lon": 127.1002,
-        "aliases": ("잠실역",),
-    },
-    {
-        "display_name": "코엑스",
-        "address": "서울 강남구 영동대로 513",
-        "type": "복합문화공간",
-        "lat": 37.5117,
-        "lon": 127.0592,
-        "aliases": ("코엑스", "coex"),
-    },
-    {
-        "display_name": "스타벅스 강남",
-        "address": "서울 강남구 강남대로 390",
-        "type": "카페",
-        "lat": 37.4974,
-        "lon": 127.0280,
-        "aliases": ("스타벅스 강남", "스타벅스강남", "강남 스타벅스"),
-    },
-    {
-        "display_name": "네이버 1784",
-        "address": "경기 성남시 분당구 정자일로 95",
-        "type": "회사",
-        "lat": 37.3595,
-        "lon": 127.1052,
-        "aliases": ("네이버 1784", "네이버1784"),
-    },
-    {
-        "display_name": "경수대로680번길 40",
-        "address": "경기 수원시 팔달구 경수대로680번길 40 센트럴하우스",
-        "type": "주소",
-        "lat": 37.2801,
-        "lon": 127.0312,
-        "aliases": (
-            "경수대로680번길40",
-            "경수대로680번길 40",
-            "경수대로 680",
-            "경수대로680",
-        ),
-    },
-    {
-        "display_name": "테헤란로 152",
-        "address": "서울 강남구 테헤란로 152",
-        "type": "주소",
-        "lat": 37.5008,
-        "lon": 127.0365,
-        "aliases": ("테헤란로 152", "테헤란로152"),
-    },
-    {
-        "display_name": "세종대로 110",
-        "address": "서울 중구 세종대로 110",
-        "type": "주소",
-        "lat": 37.5663,
-        "lon": 126.9780,
-        "aliases": ("세종대로 110", "세종대로110"),
-    },
-    {
-        "display_name": "판교역로 235",
-        "address": "경기 성남시 분당구 판교역로 235",
-        "type": "주소",
-        "lat": 37.4010,
-        "lon": 127.1086,
-        "aliases": ("판교역로 235", "판교역로235"),
-    },
-)
 _NAVER_NCAPTCHA_RETRY_AFTER_TS = 0.0
 _AUTOCOMPLETE_WARMUP_DRAIN_SECONDS = 5.0
 _PRE_GEOCODE_TIMEOUT_SECONDS = 30.0
@@ -463,53 +355,6 @@ def _looks_like_query_match(query: str, *candidate_parts: str) -> bool:
     return False
 
 
-def _local_hint_matches(query: str, alias: str) -> bool:
-    compact_alias = _compact_text(alias)
-    for variant in _build_query_variants(query):
-        compact_query = _compact_text(variant)
-        if not compact_query:
-            continue
-        if compact_query == compact_alias:
-            return True
-        if len(compact_query) >= 2 and compact_alias.startswith(compact_query):
-            return True
-    return False
-
-
-def _search_local_hints(query: str, *, limit: int = 5) -> tuple[dict, ...]:
-    scored_results: list[tuple[float, dict]] = []
-    for hint in _LOCAL_POI_HINTS:
-        aliases = hint.get("aliases", ())
-        if not any(_local_hint_matches(query, alias) for alias in aliases):
-            continue
-        score = _rank_naver_candidate(
-            query,
-            {
-                "display_name": hint["display_name"],
-                "address": hint["address"],
-                "type": hint["type"],
-            },
-            0,
-        )
-        scored_results.append(
-            (
-                score,
-                {
-                    "lat": hint["lat"],
-                    "lon": hint["lon"],
-                    "display_name": hint["display_name"],
-                    "address": hint["address"],
-                    "type": hint["type"],
-                    "source": "local_hint",
-                    "confidence": 0.99,
-                },
-            )
-        )
-
-    scored_results.sort(key=lambda item: item[0], reverse=True)
-    return tuple(item[1] for item in scored_results[:limit])
-
-
 def _format_search_coord(search_coord: tuple[float, float] | None) -> str:
     if search_coord is None:
         return f"{_DEFAULT_SEARCH_LON:.6f};{_DEFAULT_SEARCH_LAT:.6f}"
@@ -726,16 +571,6 @@ def geocode_one(
     *,
     search_coord: tuple[float, float] | None = None,
 ) -> dict | None:
-    local_hints = _search_local_hints(place, limit=1)
-    if local_hints:
-        local_result = local_hints[0]
-        _increment_runtime_counter(_GEOCODE_SOURCE_COUNTS, "local_hint")
-        _log.info(
-            "geocode query=%s source=local_hint",
-            _redact_query(place),
-        )
-        return local_result
-
     naver_candidates = autocomplete_naver_map_raw(
         place,
         limit=5,
@@ -1159,22 +994,6 @@ def _autocomplete_naver_map_uncached(
     started_at = time.perf_counter()
     if len(_compact_text(query)) < _AUTOCOMPLETE_MIN_QUERY_LEN:
         return ()
-
-    # Exact/high-confidence local hints are deterministic and route-ready; using
-    # them before external providers prevents typing UX from depending on a
-    # captcha/backoff-prone live request for known smoke and public anchors.
-    local_hints = _time_autocomplete_stage(
-        "local_hint",
-        lambda: _search_local_hints(query, limit=limit),
-    )
-    if local_hints:
-        _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "local_hint")
-        _log.info(
-            "autocomplete query=%s source=local_hint fallback_count=%d",
-            _redact_query(query),
-            len(local_hints),
-        )
-        return local_hints
 
     naver_results = _time_autocomplete_stage(
         "naver_all_search",

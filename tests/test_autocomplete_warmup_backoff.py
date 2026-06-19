@@ -61,11 +61,6 @@ def _patch_autocomplete_fallbacks(
     )
     monkeypatch.setattr(
         geocode_services,
-        "_search_local_hints",
-        lambda *args, **kwargs: (),
-    )
-    monkeypatch.setattr(
-        geocode_services,
         "autocomplete_nominatim",
         lambda *args, **kwargs: (),
     )

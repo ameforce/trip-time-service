@@ -122,10 +122,6 @@ def test_warmup_ncaptcha_does_not_enable_shared_backoff(monkeypatch) -> None:
         lambda *_args, **_kwargs: (),
     )
     monkeypatch.setattr(
-        "trip_time_service.api.geocode_services._search_local_hints",
-        lambda *_args, **_kwargs: (),
-    )
-    monkeypatch.setattr(
         "trip_time_service.api.geocode_services.autocomplete_nominatim",
         lambda *_args, **_kwargs: (),
     )
@@ -165,10 +161,6 @@ def test_interactive_ncaptcha_enables_shared_backoff(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "trip_time_service.api.geocode_services.autocomplete_naver_browser_pool",
-        lambda *_args, **_kwargs: (),
-    )
-    monkeypatch.setattr(
-        "trip_time_service.api.geocode_services._search_local_hints",
         lambda *_args, **_kwargs: (),
     )
     monkeypatch.setattr(
