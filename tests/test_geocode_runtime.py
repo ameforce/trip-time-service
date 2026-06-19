@@ -96,7 +96,9 @@ def test_cache_clear_drains_tracked_warmup_future() -> None:
         geocode_services.shutdown_autocomplete_runtime(wait_seconds=0.0)
 
 
-def test_warmup_ncaptcha_does_not_enable_shared_backoff(monkeypatch) -> None:
+def test_warmup_does_not_call_all_search_or_enable_shared_backoff(
+    monkeypatch,
+) -> None:
     urlopen_calls: list[object] = []
     monkeypatch.setattr(
         "trip_time_service.api.geocode_services.warmup_naver_browser_pool",
@@ -135,14 +137,16 @@ def test_warmup_ncaptcha_does_not_enable_shared_backoff(monkeypatch) -> None:
         background=False,
     )
 
-    assert len(urlopen_calls) == 1
+    assert len(urlopen_calls) == 0
     assert (
         geocode_services.get_autocomplete_runtime_metrics()["ncaptcha_backoff_active"]
         is False
     )
 
 
-def test_interactive_ncaptcha_enables_shared_backoff(monkeypatch) -> None:
+def test_interactive_autocomplete_miss_does_not_call_all_search_backoff(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         "trip_time_service.api.geocode_services.warmup_naver_browser_pool",
         lambda: 0,
@@ -175,5 +179,5 @@ def test_interactive_ncaptcha_enables_shared_backoff(monkeypatch) -> None:
     assert geocode_services.autocomplete_naver_map("경수대로680번길40", limit=12) == ()
     assert (
         geocode_services.get_autocomplete_runtime_metrics()["ncaptcha_backoff_active"]
-        is True
+        is False
     )

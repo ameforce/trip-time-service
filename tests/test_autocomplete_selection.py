@@ -412,37 +412,32 @@ def test_autocomplete_does_not_show_non_naver_fallbacks_when_naver_map_misses(
     assert geocode_services._autocomplete_naver_map_uncached("강남역", limit=5) == ()
 
 
-def test_autocomplete_falls_back_to_naver_all_search_when_browser_ui_misses(
+def test_autocomplete_returns_empty_when_naver_map_browser_ui_misses(
     monkeypatch,
 ) -> None:
     geocode_services._reset_runtime_counters()
-    naver_results = (
-        {
-            "display_name": "강남역 LIVE",
-            "address": "서울 강남구 강남대로 396",
-            "type": "역",
-            "lat": "37.4979",
-            "lon": "127.0276",
-            "source": "naver_all_search",
-            "confidence": 0.95,
-        },
-    )
+    calls: list[str] = []
     monkeypatch.setattr(
         geocode_services,
         "autocomplete_naver_browser_pool",
         lambda *args, **kwargs: (),
     )
+
+    def _all_search(*args, **kwargs):
+        calls.append("all_search")
+        raise AssertionError("browser UI miss must not show allSearch candidates")
+
     monkeypatch.setattr(
         geocode_services,
         "autocomplete_naver_map_raw",
-        lambda *args, **kwargs: naver_results,
+        _all_search,
     )
 
     results = geocode_services._autocomplete_naver_map_uncached("강남역", limit=5)
 
-    assert results == naver_results
+    assert results == ()
+    assert calls == []
     metrics = geocode_services.get_autocomplete_runtime_metrics()
     stage_metrics = metrics["autocomplete_stage_metrics"]
     assert "local_hint" not in stage_metrics
-    assert stage_metrics["naver_all_search"]["outcomes"]["hit"] >= 1
-    assert stage_metrics["naver_all_search"]["avg_ms"] >= 0
+    assert "naver_all_search" not in stage_metrics

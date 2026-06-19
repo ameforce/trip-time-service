@@ -71,7 +71,7 @@ def _patch_autocomplete_fallbacks(
     )
 
 
-def test_warmup_ncaptcha_does_not_arm_global_backoff(monkeypatch) -> None:
+def test_warmup_does_not_call_all_search_or_arm_global_backoff(monkeypatch) -> None:
     calls: list[str] = []
     _patch_autocomplete_fallbacks(
         monkeypatch,
@@ -118,16 +118,15 @@ def test_warmup_ncaptcha_does_not_arm_global_backoff(monkeypatch) -> None:
 
         results = geocode_services.autocomplete_naver_map("세종대로 110", limit=5)
 
-        assert len(results) == 1
-        assert calls == [
-            "경수대로680번길40",
-            "세종대로 110",
-        ]
+        assert results == ()
+        assert calls == []
     finally:
         geocode_services.clear_autocomplete_cache()
 
 
-def test_interactive_ncaptcha_still_arms_global_backoff(monkeypatch) -> None:
+def test_interactive_autocomplete_miss_does_not_call_all_search_backoff(
+    monkeypatch,
+) -> None:
     calls: list[str] = []
     _patch_autocomplete_fallbacks(
         monkeypatch,
@@ -171,11 +170,11 @@ def test_interactive_ncaptcha_still_arms_global_backoff(monkeypatch) -> None:
             geocode_services.get_autocomplete_runtime_metrics()[
                 "ncaptcha_backoff_active"
             ]
-            is True
+            is False
         )
 
         assert geocode_services.autocomplete_naver_map("세종대로 110", limit=5) == ()
-        assert calls == ["경수대로680번길40"]
+        assert calls == []
     finally:
         geocode_services.clear_autocomplete_cache()
 
@@ -230,6 +229,6 @@ def test_warmup_skips_verbose_reverse_geocoded_address_queries(monkeypatch) -> N
         )
 
         assert queued == 1
-        assert calls == ["세종대로 110"]
+        assert calls == []
     finally:
         geocode_services.clear_autocomplete_cache()

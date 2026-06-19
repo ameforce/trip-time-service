@@ -1143,19 +1143,6 @@ def _autocomplete_naver_map_uncached(
         )
         return browser_results
 
-    naver_results = _time_autocomplete_stage(
-        "naver_all_search",
-        lambda: autocomplete_naver_map_raw(
-            query,
-            limit,
-            search_coord=search_coord,
-            record_ncaptcha_backoff=record_ncaptcha_backoff,
-        ),
-    )
-    if naver_results:
-        _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "naver_all_search")
-        return naver_results
-
     _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "none")
     return ()
 
