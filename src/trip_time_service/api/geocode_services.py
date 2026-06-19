@@ -47,6 +47,7 @@ _NOMINATIM_TIMEOUT_SECONDS = 1.5
 _PHOTON_TIMEOUT_SECONDS = 0.8
 _NAVER_NCAPTCHA_BACKOFF_SECONDS = 300
 _AUTOCOMPLETE_EXPENSIVE_PROVIDER_BUDGET_SECONDS = 3.0
+_AUTOCOMPLETE_BROWSER_RETRY_MIN_REMAINING_SECONDS = 0.5
 _WS_RE = re.compile(r"\s+")
 _HANGUL_RE = re.compile(r"[가-힣]")
 _ROAD_ADDRESS_RE = re.compile(r"(로|길|대로|번길|번지)")
@@ -995,11 +996,27 @@ def _autocomplete_naver_map_uncached(
     if len(_compact_text(query)) < _AUTOCOMPLETE_MIN_QUERY_LEN:
         return ()
 
-    _increment_runtime_counter(_EXTERNAL_PROVIDER_CALL_COUNTS, "browser_autocomplete")
-    browser_results = _time_autocomplete_stage(
-        "browser_autocomplete",
-        lambda: autocomplete_naver_browser_pool(query, limit=limit),
+    def _query_browser_autocomplete(stage: str) -> tuple[dict, ...]:
+        _increment_runtime_counter(
+            _EXTERNAL_PROVIDER_CALL_COUNTS,
+            "browser_autocomplete",
+        )
+        return _time_autocomplete_stage(
+            stage,
+            lambda: autocomplete_naver_browser_pool(query, limit=limit),
+        )
+
+    browser_results = _query_browser_autocomplete("browser_autocomplete")
+    remaining_budget_seconds = _AUTOCOMPLETE_EXPENSIVE_PROVIDER_BUDGET_SECONDS - (
+        time.perf_counter() - started_at
     )
+    if (
+        not browser_results
+        and remaining_budget_seconds
+        >= _AUTOCOMPLETE_BROWSER_RETRY_MIN_REMAINING_SECONDS
+    ):
+        browser_results = _query_browser_autocomplete("browser_autocomplete_retry")
+
     if browser_results:
         browser_fast_path = len(browser_results) == 1 and bool(
             _ROAD_ADDRESS_RE.search(query) or re.search(r"\d", query)

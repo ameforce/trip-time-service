@@ -441,3 +441,122 @@ def test_autocomplete_returns_empty_when_naver_map_browser_ui_misses(
     stage_metrics = metrics["autocomplete_stage_metrics"]
     assert "local_hint" not in stage_metrics
     assert "naver_all_search" not in stage_metrics
+
+
+def test_autocomplete_retries_browser_ui_once_when_first_live_query_is_empty(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    recovered_results = (
+        {
+            "display_name": "광교역",
+            "address": "광교역",
+            "type": "검색어",
+            "lat": "",
+            "lon": "",
+            "source": "naver_browser_suggest",
+            "confidence": 0.9,
+        },
+    )
+    calls: list[str] = []
+
+    def _browser(*args, **kwargs):
+        calls.append("browser")
+        return () if len(calls) == 1 else recovered_results
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        _browser,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("retry must stay on the Naver browser UI provider")
+        ),
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("광교역", limit=5)
+
+    assert len(results) == 1
+    assert results[0]["display_name"] == recovered_results[0]["display_name"]
+    assert results[0]["source"] == "naver_browser_suggest"
+    assert results[0]["autocomplete_mode"] == "progressive"
+    assert calls == ["browser", "browser"]
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert stage_metrics["browser_autocomplete"]["outcomes"]["empty"] == 1
+    assert stage_metrics["browser_autocomplete_retry"]["outcomes"]["hit"] == 1
+    assert metrics["external_provider_call_counts"]["browser_autocomplete"] == 2
+
+
+def test_autocomplete_browser_ui_retry_preserves_empty_contract(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    calls: list[str] = []
+
+    def _browser(*args, **kwargs):
+        calls.append("browser")
+        return ()
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        _browser,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_nominatim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("autocomplete must not show non-Naver candidates")
+        ),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_photon",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("autocomplete must not show non-Naver candidates")
+        ),
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("태안ㅇ우", limit=5)
+
+    assert results == ()
+    assert calls == ["browser", "browser"]
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert stage_metrics["browser_autocomplete_retry"]["outcomes"]["empty"] == 1
+    assert "naver_all_search" not in stage_metrics
+
+
+def test_autocomplete_does_not_retry_browser_ui_when_budget_is_nearly_exhausted(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    calls: list[str] = []
+    perf_counter_values = iter([0.0, 0.0, 2.6, 2.6, 2.6, 3.1])
+
+    def _browser(*args, **kwargs):
+        calls.append("browser")
+        return ()
+
+    monkeypatch.setattr(
+        geocode_services.time,
+        "perf_counter",
+        perf_counter_values.__next__,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        _browser,
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("광교역", limit=5)
+
+    assert results == ()
+    assert calls == ["browser"]
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert "browser_autocomplete_retry" not in stage_metrics
