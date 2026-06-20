@@ -20,6 +20,14 @@ function futureLocalDatetime(hhmm: string): string {
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolver) => {
+    resolve = resolver;
+  });
+  return { promise, resolve };
+}
+
 test.describe('autocomplete unresolved poi display', () => {
   test('geocodes clicked unresolved poi candidate and shows a map marker', async ({
     page,
@@ -89,6 +97,100 @@ test.describe('autocomplete unresolved poi display', () => {
       })
       .toBeGreaterThanOrEqual(1);
     await expect(page.locator('.leaflet-marker-icon').first()).toContainText('출발');
+  });
+
+  test('ignores stale geocode result after another candidate is selected', async ({
+    page,
+  }) => {
+    const staleGeocode = createDeferred<void>();
+    const geocodeQueries: string[] = [];
+    const unresolvedPoi = {
+      lat: null,
+      lon: null,
+      display_name: '경기 수원시 팔달구 경수대로680번길 40 센트럴하우스',
+      address: '경기 수원시 팔달구 경수대로680번길 40 센트럴하우스',
+      type: '장소',
+      source: 'naver_browser_suggest',
+      confidence: 0.9,
+      coords_ready: false,
+      selection_kind: 'poi',
+      canonical_query: '경수대로680번길 40',
+    };
+    const station = {
+      lat: 37.554722,
+      lon: 126.970833,
+      display_name: '서울역',
+      address: '서울 중구 한강대로 405',
+      type: '역',
+      source: 'naver_map',
+      confidence: 0.99,
+      coords_ready: true,
+      selection_kind: 'station',
+      canonical_query: '서울역',
+    };
+
+    await page.route('**/api/autocomplete**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/autocomplete/warmup') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ queued: 0 }),
+        });
+        return;
+      }
+      const query = url.searchParams.get('q');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          query === '경수대로680번길40'
+            ? [unresolvedPoi]
+            : query === '서울역'
+              ? [station]
+              : [],
+        ),
+      });
+    });
+
+    await page.route('**/api/geocode?*', async (route) => {
+      const url = new URL(route.request().url());
+      geocodeQueries.push(url.searchParams.get('q') ?? '');
+      await staleGeocode.promise;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            lat: 37.277501,
+            lon: 127.030501,
+            source: 'naver_browser_geocode',
+            confidence: 0.95,
+          },
+        ]),
+      });
+    });
+
+    await page.goto('/');
+    await page.fill('#origin', '경수대로680번길40');
+    await expect(page.locator('#origin-ac .ac-item')).toHaveCount(1);
+    await page.locator('#origin-ac .ac-item').first().click();
+    await expect.poll(() => geocodeQueries, { timeout: 3000 }).toEqual(['경수대로680번길 40']);
+
+    await page.fill('#origin', '서울역');
+    await expect(page.locator('#origin-ac .ac-item')).toHaveCount(1);
+    await page.locator('#origin-ac .ac-item').first().click();
+    await expect(page.locator('#origin')).toHaveValue('서울역');
+    await expect
+      .poll(async () => page.locator('.leaflet-marker-icon').count(), {
+        timeout: 5000,
+      })
+      .toBe(1);
+
+    staleGeocode.resolve();
+    await page.waitForTimeout(1000);
+    await expect(page.locator('#origin')).toHaveValue('서울역');
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
   });
 
   test('keeps poi label but blocks stream request when coordinates stay unresolved', async ({

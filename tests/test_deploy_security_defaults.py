@@ -47,13 +47,11 @@ def test_playwright_web_server_command_is_posix_compatible() -> None:
     config = (ROOT / "playwright.config.ts").read_text()
 
     assert "cmd /c" not in config
+    assert "powershell -NoProfile" not in config
     assert "const e2eProvider = process.env.TTS_PROVIDER ?? 'naver_selenium'" in config
     assert "TTS_PROVIDER: e2eProvider" in config
-    assert "const posixServerCommand" in config
-    assert (
-        "process.platform === 'win32' ? powershellServerCommand : posixServerCommand"
-        in config
-    )
+    assert "command: 'uv run trip-time-service'" in config
+    assert "env: serverEnv" in config
 
 
 def test_live_e2e_scripts_are_split_by_operational_mode() -> None:
