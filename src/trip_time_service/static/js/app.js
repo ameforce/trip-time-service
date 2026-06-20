@@ -1444,6 +1444,26 @@ function geocodeAndMark(address, color) {
     });
 }
 
+function geocodeSelectionAndMark(address, selection, color, onResolved) {
+  if (!_map) return Promise.resolve(null);
+  var geocodeQuery = getStableSearchQuery(address, selection);
+  if (!geocodeQuery) return Promise.resolve(null);
+  return geocodeQueryToCoords(geocodeQuery, address)
+    .then(function (coords) {
+      if (!coords) {
+        console.warn("geocode: no results for", geocodeQuery);
+        return null;
+      }
+      hideError();
+      var label = color === "#03C75A" ? "출발" : "도착";
+      addMarker([coords.lat, coords.lon], { color: color, label: label });
+      if (hasStableSelection(selection) && typeof onResolved === "function") {
+        onResolved(markSelectionCoordsResolved(selection, coords), selection);
+      }
+      return coords;
+    });
+}
+
 function fitBounds() {
   var layers = _markers.slice();
   if (_routeGroup) {
@@ -1497,8 +1517,15 @@ function updateMapMarkersAsync(originText, destText) {
   if (hasValidCoords(_selectedOrigin)) {
     addMarker([_selectedOrigin.lat, _selectedOrigin.lon], { color: "#03C75A", label: "출발" });
     pOrigin = Promise.resolve({ lat: _selectedOrigin.lat, lon: _selectedOrigin.lon });
-  } else if (hasStableSelection(_selectedOrigin)) {
-    pOrigin = Promise.resolve(null);
+  } else if (hasStableSelection(_selectedOrigin) && String(originText || "").trim()) {
+    pOrigin = geocodeSelectionAndMark(
+      originText,
+      _selectedOrigin,
+      "#03C75A",
+      function (selection, previousSelection) {
+        if (_selectedOrigin === previousSelection) _selectedOrigin = selection;
+      }
+    );
   } else {
     var originQuery = String(originText || "").trim();
     pOrigin = originQuery ? geocodeAndMark(originQuery, "#03C75A") : Promise.resolve(null);
@@ -1507,8 +1534,15 @@ function updateMapMarkersAsync(originText, destText) {
   if (hasValidCoords(_selectedDest)) {
     addMarker([_selectedDest.lat, _selectedDest.lon], { color: "#E53935", label: "도착" });
     pDest = Promise.resolve({ lat: _selectedDest.lat, lon: _selectedDest.lon });
-  } else if (hasStableSelection(_selectedDest)) {
-    pDest = Promise.resolve(null);
+  } else if (hasStableSelection(_selectedDest) && String(destText || "").trim()) {
+    pDest = geocodeSelectionAndMark(
+      destText,
+      _selectedDest,
+      "#E53935",
+      function (selection, previousSelection) {
+        if (_selectedDest === previousSelection) _selectedDest = selection;
+      }
+    );
   } else {
     var destQuery = String(destText || "").trim();
     pDest = destQuery ? geocodeAndMark(destQuery, "#E53935") : Promise.resolve(null);
@@ -3721,8 +3755,15 @@ function refreshMapMarkersLive() {
   if (hasValidCoords(_selectedOrigin) && orig) {
     addMarker([_selectedOrigin.lat, _selectedOrigin.lon], { color: "#03C75A", label: "출발" });
     pO = Promise.resolve({ lat: _selectedOrigin.lat, lon: _selectedOrigin.lon });
-  } else if (hasStableSelection(_selectedOrigin)) {
-    pO = Promise.resolve(null);
+  } else if (hasStableSelection(_selectedOrigin) && orig) {
+    pO = geocodeSelectionAndMark(
+      orig,
+      _selectedOrigin,
+      "#03C75A",
+      function (selection, previousSelection) {
+        if (_selectedOrigin === previousSelection) _selectedOrigin = selection;
+      }
+    );
   } else {
     var originQuery = String(orig || "").trim();
     pO = originQuery ? geocodeAndMark(originQuery, "#03C75A") : Promise.resolve(null);
@@ -3730,8 +3771,15 @@ function refreshMapMarkersLive() {
   if (hasValidCoords(_selectedDest) && dest) {
     addMarker([_selectedDest.lat, _selectedDest.lon], { color: "#E53935", label: "도착" });
     pD = Promise.resolve({ lat: _selectedDest.lat, lon: _selectedDest.lon });
-  } else if (hasStableSelection(_selectedDest)) {
-    pD = Promise.resolve(null);
+  } else if (hasStableSelection(_selectedDest) && dest) {
+    pD = geocodeSelectionAndMark(
+      dest,
+      _selectedDest,
+      "#E53935",
+      function (selection, previousSelection) {
+        if (_selectedDest === previousSelection) _selectedDest = selection;
+      }
+    );
   } else {
     var destQuery = String(dest || "").trim();
     pD = destQuery ? geocodeAndMark(destQuery, "#E53935") : Promise.resolve(null);

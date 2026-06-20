@@ -21,6 +21,76 @@ function futureLocalDatetime(hhmm: string): string {
 }
 
 test.describe('autocomplete unresolved poi display', () => {
+  test('geocodes clicked unresolved poi candidate and shows a map marker', async ({
+    page,
+  }) => {
+    const geocodeQueries: string[] = [];
+    const unresolvedPoi = {
+      lat: null,
+      lon: null,
+      display_name: '경기 수원시 팔달구 경수대로680번길 40 센트럴하우스',
+      address: '경기 수원시 팔달구 경수대로680번길 40 센트럴하우스',
+      type: '장소',
+      source: 'naver_browser_suggest',
+      confidence: 0.9,
+      coords_ready: false,
+      selection_kind: 'poi',
+      canonical_query: '경수대로680번길 40',
+    };
+
+    await page.route('**/api/autocomplete**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/autocomplete/warmup') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ queued: 0 }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          url.searchParams.get('q') === '경수대로680번길40' ? [unresolvedPoi] : [],
+        ),
+      });
+    });
+
+    await page.route('**/api/geocode?*', async (route) => {
+      const url = new URL(route.request().url());
+      geocodeQueries.push(url.searchParams.get('q') ?? '');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            lat: 37.277501,
+            lon: 127.030501,
+            source: 'naver_browser_geocode',
+            confidence: 0.95,
+          },
+        ]),
+      });
+    });
+
+    await page.goto('/');
+    await page.fill('#origin', '경수대로680번길40');
+    await expect(page.locator('#origin-ac .ac-item')).toHaveCount(1);
+    await page.locator('#origin-ac .ac-item').first().click();
+
+    await expect(page.locator('#origin')).toHaveValue('경수대로680번길 40');
+    await expect
+      .poll(() => geocodeQueries, { timeout: 3000 })
+      .toEqual(['경수대로680번길 40']);
+    await expect
+      .poll(async () => page.locator('.leaflet-marker-icon').count(), {
+        timeout: 5000,
+      })
+      .toBeGreaterThanOrEqual(1);
+    await expect(page.locator('.leaflet-marker-icon').first()).toContainText('출발');
+  });
+
   test('keeps poi label but blocks stream request when coordinates stay unresolved', async ({
     page,
   }) => {
@@ -181,6 +251,7 @@ test.describe('autocomplete unresolved poi display', () => {
         stream: streamRequests.length,
       }))
       .toEqual({ baseline: 0, stream: 0 });
-    expect(geocodeQueries).toEqual(['삼성로 766']);
+    expect(geocodeQueries).toContain('삼성로 766');
+    expect(geocodeQueries.every((query) => query === '삼성로 766')).toBeTruthy();
   });
 });
