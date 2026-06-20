@@ -12,6 +12,7 @@ const strictPort = process.env.TTS_PORT_STRICT ?? '1';
 const fixtureMode = process.env.TTS_E2E_FIXTURE_MODE ?? '0';
 const autocompleteBrowserEnable =
   process.env.TTS_AUTOCOMPLETE_BROWSER_ENABLE ?? (fixtureMode === '1' ? '0' : '1');
+const browserExecutablePath = process.env.TTS_E2E_BROWSER_EXECUTABLE_PATH?.trim();
 const liveMode = fixtureMode !== '1' && e2eProvider !== 'mock';
 const liveArtifactsDir =
   process.env.TTS_E2E_ARTIFACTS_DIR ?? join(process.cwd(), '.artifacts', 'live');
@@ -53,6 +54,27 @@ writeFileSync(
   'utf-8',
 );
 const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+const powershellQuote = (value: string) => `'${value.replace(/'/g, `''`)}'`;
+const serverEnv = {
+  TTS_PROVIDER: e2eProvider,
+  TTS_E2E_FIXTURE_MODE: fixtureMode,
+  TTS_AUTOCOMPLETE_BROWSER_ENABLE: autocompleteBrowserEnable,
+  TTS_PORT_STRICT: strictPort,
+  TTS_RELOAD: 'false',
+  TTS_HEADLESS: 'true',
+  TTS_ENABLE_DEBUG_ROUTES: '1',
+  TTS_DEBUG_TOKEN: e2eDebugToken,
+  TTS_PORT: e2ePort,
+  TTS_CHROME_USER_DATA_DIR: chromeUserDataDir,
+};
+const posixServerCommand = `${Object.entries(serverEnv)
+  .map(([key, value]) => `${key}=${shellQuote(value)}`)
+  .join(' ')} uv run trip-time-service`;
+const powershellServerCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "& { ${Object.entries(
+  serverEnv,
+)
+  .map(([key, value]) => `$env:${key}=${powershellQuote(value)};`)
+  .join(' ')} uv run trip-time-service }"`;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -73,21 +95,17 @@ export default defineConfig({
     baseURL,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    video: browserExecutablePath ? 'off' : 'retain-on-failure',
+    ...(browserExecutablePath
+      ? {
+          launchOptions: {
+            executablePath: browserExecutablePath,
+          },
+        }
+      : {}),
   },
   webServer: {
-    command:
-      `TTS_PROVIDER=${shellQuote(e2eProvider)} ` +
-      `TTS_E2E_FIXTURE_MODE=${shellQuote(fixtureMode)} ` +
-      `TTS_AUTOCOMPLETE_BROWSER_ENABLE=${shellQuote(autocompleteBrowserEnable)} ` +
-      `TTS_PORT_STRICT=${shellQuote(strictPort)} ` +
-      `TTS_RELOAD=false ` +
-      `TTS_HEADLESS=true ` +
-      `TTS_ENABLE_DEBUG_ROUTES=1 ` +
-      `TTS_DEBUG_TOKEN=${shellQuote(e2eDebugToken)} ` +
-      `TTS_PORT=${shellQuote(e2ePort)} ` +
-      `TTS_CHROME_USER_DATA_DIR=${shellQuote(chromeUserDataDir)} ` +
-      'uv run trip-time-service',
+    command: process.platform === 'win32' ? powershellServerCommand : posixServerCommand,
     url: `${baseURL}/healthz`,
     reuseExistingServer: false,
     timeout: 240_000,
