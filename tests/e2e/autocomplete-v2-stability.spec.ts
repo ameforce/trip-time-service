@@ -148,4 +148,43 @@ test.describe('autocomplete v2 stability', () => {
     await page.waitForTimeout(350);
     expect(autocompleteQueries).toEqual(['강남']);
   });
+
+  test('waits for slow live autocomplete responses before aborting', async ({ page }) => {
+    const autocompleteQueries: string[] = [];
+
+    await installQuietWarmup(page);
+    await page.route('**/api/autocomplete/warmup', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ queued: 0 }),
+      });
+    });
+    await page.route('**/api/autocomplete?*', async (route) => {
+      const requestUrl = new URL(route.request().url());
+      autocompleteQueries.push(requestUrl.searchParams.get('q') ?? '');
+      await new Promise((resolve) => setTimeout(resolve, 13_000));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          autocompleteItem('경기 수원시 팔달구 경수대로680번길 40 센트럴하우스'),
+        ]),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.locator('#origin')).toBeVisible();
+    await page.locator('#origin').fill('경수대로680번길40');
+
+    await expect.poll(() => autocompleteQueries, { timeout: 3000 }).toEqual([
+      '경수대로680번길40',
+    ]);
+    await expect(page.locator('#origin-ac .ac-item').first()).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.locator('#origin-ac .ac-item').first()).toContainText(
+      '센트럴하우스',
+    );
+  });
 });
