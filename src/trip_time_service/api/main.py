@@ -5,10 +5,11 @@ import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from trip_time_service import __version__
@@ -31,9 +32,29 @@ from trip_time_service.services.trip_time_service import (
     NoFeasibleDepartureError,
     TripTimeService,
 )
+from trip_time_service.versioning import resolve_display_version
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 _log = logging.getLogger(__name__)
+
+
+def _static_cache_needs_revalidation(path: str) -> bool:
+    return path == "/" or path.startswith("/static/")
+
+
+def _versioned_index_html() -> str:
+    version = quote(resolve_display_version(), safe="._-")
+    html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    replacements = {
+        '/static/css/style.css"': f'/static/css/style.css?v={version}"',
+        '/static/js/app.js"': f'/static/js/app.js?v={version}"',
+        '/static/js/autocomplete-controller.js"': (
+            f'/static/js/autocomplete-controller.js?v={version}"'
+        ),
+    }
+    for source, target in replacements.items():
+        html = html.replace(source, target)
+    return html
 
 
 @asynccontextmanager
@@ -122,6 +143,8 @@ def create_app() -> FastAPI:
             "Strict-Transport-Security",
             "max-age=31536000; includeSubDomains",
         )
+        if _static_cache_needs_revalidation(request.url.path):
+            headers["Cache-Control"] = "no-cache"
         return response
 
     app.include_router(router)
@@ -167,8 +190,8 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/", include_in_schema=False)
-    async def index() -> FileResponse:
-        return FileResponse(_STATIC_DIR / "index.html", media_type="text/html")
+    async def index() -> HTMLResponse:
+        return HTMLResponse(_versioned_index_html())
 
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 

@@ -187,4 +187,56 @@ test.describe('autocomplete v2 stability', () => {
       '센트럴하우스',
     );
   });
+
+  test('retries same focused value after an autocomplete failure', async ({ page }) => {
+    const autocompleteQueries: string[] = [];
+    let calls = 0;
+
+    await installQuietWarmup(page);
+    await page.route('**/api/autocomplete/warmup', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ queued: 0 }),
+      });
+    });
+    await page.route('**/api/autocomplete?*', async (route) => {
+      const requestUrl = new URL(route.request().url());
+      autocompleteQueries.push(requestUrl.searchParams.get('q') ?? '');
+      calls += 1;
+      if (calls === 1) {
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ detail: 'temporary autocomplete outage' }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          autocompleteItem('경기 수원시 팔달구 경수대로680번길 40 센트럴하우스'),
+        ]),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.locator('#origin')).toBeVisible();
+    await page.locator('#origin').fill('경수대로680번길40');
+
+    await expect.poll(() => autocompleteQueries, { timeout: 3000 }).toEqual([
+      '경수대로680번길40',
+    ]);
+    await page.locator('#destination').click();
+    await page.locator('#origin').click();
+
+    await expect.poll(() => autocompleteQueries, { timeout: 3000 }).toEqual([
+      '경수대로680번길40',
+      '경수대로680번길40',
+    ]);
+    await expect(page.locator('#origin-ac .ac-item').first()).toContainText(
+      '센트럴하우스',
+    );
+  });
 });
