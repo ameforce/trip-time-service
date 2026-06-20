@@ -38,6 +38,7 @@ HEALTHCHECK_DELAY_SECONDS="${HEALTHCHECK_DELAY_SECONDS:-2}"
 ROLLBACK_IMAGE_REF="${ROLLBACK_IMAGE_REF:-}"
 SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-yes}"
 SSH_KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${HOME}/.ssh/known_hosts}"
+TTS_CHROME_NO_SANDBOX="${TTS_CHROME_NO_SANDBOX:-1}"
 
 if [[ "${DEPLOY_ENV}" == "prod" ]]; then
   DEPLOY_DOMAIN="${DOMAIN_PROD}"
@@ -76,6 +77,7 @@ TRAEFIK_TLS_CERTRESOLVER="$(printf '%q' "${TRAEFIK_TLS_CERTRESOLVER}")"
 HEALTHCHECK_RETRIES="$(printf '%q' "${HEALTHCHECK_RETRIES}")"
 HEALTHCHECK_DELAY_SECONDS="$(printf '%q' "${HEALTHCHECK_DELAY_SECONDS}")"
 ROLLBACK_IMAGE_REF="$(printf '%q' "${ROLLBACK_IMAGE_REF}")"
+TTS_CHROME_NO_SANDBOX="$(printf '%q' "${TTS_CHROME_NO_SANDBOX}")"
 
 normalize_optional() {
   local value="\$1"
@@ -130,6 +132,7 @@ run_container() {
     --name "\${CONTAINER_NAME}"
     --restart unless-stopped
     --env-file "\${ENV_FILE}"
+    --env "TTS_CHROME_NO_SANDBOX=\${TTS_CHROME_NO_SANDBOX}"
     --publish "127.0.0.1:\${HOST_PORT}:\${CONTAINER_PORT}"
     --label "service=\${CONTAINER_PREFIX}"
     --label "deploy_env=\${DEPLOY_ENV}"
