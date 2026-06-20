@@ -393,6 +393,24 @@
       setAutocompleteTimer(timerKey, timerId);
     }
 
+    function handleFocusRetry() {
+      var derived = deriveEffectiveQuery($input.value);
+      var q = derived.effectiveQuery;
+      if (q.length < AUTOCOMPLETE_MIN_QUERY_LENGTH) return;
+      if (state.phase === "loading" || state.phase === "scheduled") return;
+      if (currentItems.length > 0 && state.lastRenderedQuery === q) {
+        renderACDropdown($dropdown, currentItems, function (item) {
+          applyAutocompleteSelection($input, $dropdown, setSelected, item);
+        });
+        transition("rendered", q, {
+          reason: "focus-restore",
+          count: currentItems.length,
+        });
+        return;
+      }
+      handleInput(null, "focus-retry");
+    }
+
     $input.addEventListener(
       "input",
       function (event) {
@@ -423,6 +441,14 @@
         setTimeout(function () {
           handleInput(null, "compositionend");
         }, 0);
+      },
+      true
+    );
+
+    $input.addEventListener(
+      "focus",
+      function () {
+        setTimeout(handleFocusRetry, 0);
       },
       true
     );

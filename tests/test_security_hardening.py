@@ -34,3 +34,20 @@ def test_openapi_docs_are_disabled_by_default(monkeypatch) -> None:
 
     assert client.get("/docs").status_code == 404
     assert client.get("/openapi.json").status_code == 404
+
+
+def test_static_entrypoints_force_revalidation(monkeypatch) -> None:
+    monkeypatch.delenv("TTS_ENABLE_DOCS", raising=False)
+
+    client = _client()
+
+    index_response = client.get("/")
+    app_js_response = client.get("/static/js/app.js")
+
+    assert index_response.status_code == 200
+    assert app_js_response.status_code == 200
+    assert index_response.headers["cache-control"] == "no-cache"
+    assert app_js_response.headers["cache-control"] == "no-cache"
+    assert '/static/js/app.js?v=' in index_response.text
+    assert '/static/js/autocomplete-controller.js?v=' in index_response.text
+    assert '/static/css/style.css?v=' in index_response.text
