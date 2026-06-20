@@ -69,3 +69,39 @@ def test_worker_waits_for_suggestions_matching_current_query(monkeypatch) -> Non
     assert len(results) == 1
     assert results[0]["display_name"] == "광교역"
     assert driver.option_calls == 3
+
+
+def test_worker_wait_budget_covers_live_naver_suggestion_latency(monkeypatch) -> None:
+    class _LatencyAwareWebDriverWait:
+        def __init__(self, driver: _FakeDriver, timeout: float) -> None:
+            self.driver = driver
+            self.timeout = timeout
+
+        def until(self, condition):
+            result = condition(self.driver)
+            if self.timeout == 2.5:
+                return result
+            if self.timeout < 5.0:
+                raise TimeoutError("live Naver suggestions were not ready yet")
+            return result
+
+    monkeypatch.setattr(
+        naver_browser_autocomplete,
+        "WebDriverWait",
+        _LatencyAwareWebDriverWait,
+    )
+    worker = naver_browser_autocomplete._BrowserAutocompleteWorker(worker_index=1)
+    driver = _FakeDriver()
+    driver.option_sequences = [
+        [_FakeOption("장소\n경기 수원시 팔달구 경수대로680번길 40 센트럴하우스")]
+    ]
+
+    results = worker._query_locked(
+        driver,
+        "경수대로680번길40",
+        limit=5,
+        wait_seconds=naver_browser_autocomplete._SUGGEST_WAIT_SECONDS,
+    )
+
+    assert len(results) == 1
+    assert "센트럴하우스" in str(results[0]["display_name"])
