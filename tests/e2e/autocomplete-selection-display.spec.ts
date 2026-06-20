@@ -193,6 +193,144 @@ test.describe('autocomplete unresolved poi display', () => {
     await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
   });
 
+  test('ignores stale submit search after input changes during geocode', async ({
+    page,
+  }) => {
+    const staleDestinationGeocode = createDeferred<void>();
+    const geocodeQueries: string[] = [];
+    const tripRequests: string[] = [];
+    const routeRequests: string[] = [];
+
+    await page.route('**/api/autocomplete**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([]),
+      });
+    });
+
+    await page.route('**/api/geocode?*', async (route) => {
+      const url = new URL(route.request().url());
+      const query = url.searchParams.get('q') ?? '';
+      geocodeQueries.push(query);
+      if (query === '코엑스') {
+        await staleDestinationGeocode.promise;
+      }
+      const coords =
+        query === '서울역'
+          ? { lat: 37.554722, lon: 126.970833 }
+          : query === '코엑스'
+            ? { lat: 37.511823, lon: 127.059159 }
+            : { lat: 37.394776, lon: 127.11116 };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            ...coords,
+            source: 'test-geocode',
+            confidence: 0.99,
+          },
+        ]),
+      });
+    });
+
+    await page.route('**/api/route?*', async (route) => {
+      routeRequests.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          routes: [
+            {
+              geometry: {
+                type: 'LineString',
+                coordinates: [
+                  [126.970833, 37.554722],
+                  [127.059159, 37.511823],
+                ],
+              },
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/trip/arrival-time', async (route) => {
+      tripRequests.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          route: {
+            origin: '서울역',
+            destination: '코엑스',
+          },
+          departure_time: '2026-04-27T05:30:00+09:00',
+          arrival_time: '2026-04-27T06:10:00+09:00',
+          duration_seconds: 2400,
+          provider: 'naver_selenium',
+          cache_hit: false,
+        }),
+      });
+    });
+
+    await page.route('**/v1/trip/recommended-departure-time/stream', async (route) => {
+      tripRequests.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: buildSseBody([
+          {
+            event: 'recommendation',
+            data: {
+              route: {
+                origin: '서울역',
+                destination: '코엑스',
+              },
+              desired_arrival_time: '2026-04-27T06:30:00+09:00',
+              recommended_departure_time: '2026-04-27T05:40:00+09:00',
+              expected_arrival_time: '2026-04-27T06:20:00+09:00',
+              duration_seconds: 2400,
+              meets_deadline: true,
+              provider: 'naver_selenium',
+              provider_calls: 1,
+              candidates_checked: 1,
+              planned_queries: 1,
+              total_candidates: 1,
+              candidate_evaluations: [],
+            },
+          },
+        ]),
+      });
+    });
+
+    await page.goto('/');
+    await page.click('#tab-departure');
+    await page.fill('#datetime-input', futureLocalDatetime('06:30'));
+    await page.fill('#origin', '서울역');
+    await page.fill('#destination', '코엑스');
+    await page.click('#search-btn');
+
+    await expect
+      .poll(
+        () =>
+          geocodeQueries.includes('서울역') &&
+          geocodeQueries.includes('코엑스'),
+        { timeout: 3000 },
+      )
+      .toBe(true);
+    await page.fill('#destination', '판교역');
+
+    staleDestinationGeocode.resolve();
+    await page.waitForTimeout(1500);
+
+    await expect(page.locator('#destination')).toHaveValue('판교역');
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(0);
+    expect(routeRequests).toEqual([]);
+    expect(tripRequests).toEqual([]);
+  });
+
   test('keeps poi label but blocks stream request when coordinates stay unresolved', async ({
     page,
   }) => {
