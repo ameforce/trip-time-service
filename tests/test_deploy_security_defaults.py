@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_dockerfile_runs_as_non_root_and_does_not_force_chrome_no_sandbox() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text()
     dev_env_example = (ROOT / "deploy/enm/env/dev.env.example").read_text()
+    prod_env_example = (ROOT / "deploy/enm/env/prod.env.example").read_text()
 
     assert "USER appuser" in dockerfile
     assert "useradd --create-home" in dockerfile
@@ -16,6 +17,19 @@ def test_dockerfile_runs_as_non_root_and_does_not_force_chrome_no_sandbox() -> N
     assert "TTS_CHROME_NO_SANDBOX" not in dockerfile
     assert "TTS_CHROME_USER_DATA_DIR" not in dockerfile
     assert "TTS_CHROME_NO_SANDBOX=1" in dev_env_example
+    assert "TTS_CHROME_NO_SANDBOX=1" in prod_env_example
+
+
+def test_enm_deploy_scripts_pass_chrome_no_sandbox_to_runtime() -> None:
+    for script_name in ("deploy/enm/deploy.sh", "deploy/enm/rollback.sh"):
+        script = (ROOT / script_name).read_text()
+
+        assert 'TTS_CHROME_NO_SANDBOX="${TTS_CHROME_NO_SANDBOX:-1}"' in script
+        assert (
+            'TTS_CHROME_NO_SANDBOX="$(printf \'%q\' "${TTS_CHROME_NO_SANDBOX}")"'
+            in script
+        )
+        assert '--env "TTS_CHROME_NO_SANDBOX=\\${TTS_CHROME_NO_SANDBOX}"' in script
 
 
 def test_deploy_scripts_verify_host_keys_by_default() -> None:

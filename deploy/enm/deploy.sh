@@ -40,6 +40,7 @@ SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-yes}"
 SSH_KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${HOME}/.ssh/known_hosts}"
 APP_VERSION="${APP_VERSION:-${IMAGE_REF##*:}}"
 SOURCE_ARCHIVE_PATH="${SOURCE_ARCHIVE_PATH:-}"
+TTS_CHROME_NO_SANDBOX="${TTS_CHROME_NO_SANDBOX:-1}"
 
 if [[ "${DEPLOY_ENV}" == "prod" ]]; then
   DEPLOY_DOMAIN="${DOMAIN_PROD}"
@@ -97,6 +98,7 @@ HEALTHCHECK_DELAY_SECONDS="$(printf '%q' "${HEALTHCHECK_DELAY_SECONDS}")"
 APP_VERSION="$(printf '%q' "${APP_VERSION}")"
 SOURCE_ARCHIVE_REMOTE="$(printf '%q' "${SOURCE_ARCHIVE_REMOTE}")"
 REMOTE_APP_ROOT="$(printf '%q' "${REMOTE_APP_ROOT}")"
+TTS_CHROME_NO_SANDBOX="$(printf '%q' "${TTS_CHROME_NO_SANDBOX}")"
 
 normalize_optional() {
   local value="\$1"
@@ -169,6 +171,7 @@ run_container() {
     --env-file "\${ENV_FILE}"
     # Runtime version must come from the deployed image/tag, not a stale env file.
     --env "TTS_VERSION=\${APP_VERSION}"
+    --env "TTS_CHROME_NO_SANDBOX=\${TTS_CHROME_NO_SANDBOX}"
     --publish "127.0.0.1:\${HOST_PORT}:\${CONTAINER_PORT}"
     --label "service=\${CONTAINER_PREFIX}"
     --label "deploy_env=\${DEPLOY_ENV}"
