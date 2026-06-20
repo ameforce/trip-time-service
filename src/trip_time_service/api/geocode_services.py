@@ -46,6 +46,8 @@ _NAVER_SEARCH_TIMEOUT_SECONDS = 1.5
 _NOMINATIM_TIMEOUT_SECONDS = 1.5
 _PHOTON_TIMEOUT_SECONDS = 0.8
 _NAVER_NCAPTCHA_BACKOFF_SECONDS = 300
+_AUTOCOMPLETE_EXPENSIVE_PROVIDER_BUDGET_SECONDS = 3.0
+_AUTOCOMPLETE_BROWSER_RETRY_MIN_REMAINING_SECONDS = 0.5
 _WS_RE = re.compile(r"\s+")
 _HANGUL_RE = re.compile(r"[가-힣]")
 _ROAD_ADDRESS_RE = re.compile(r"(로|길|대로|번길|번지)")
@@ -54,114 +56,6 @@ _ROAD_ADDRESS_CORE_RE = re.compile(
 )
 _ROAD_ADDRESS_SEGMENT_RE = re.compile(
     r"([^\s,()]+(?:번길|대로|로|길))\s*(\d+(?:-\d+)?)"
-)
-# A small public fallback seed keeps route-critical autocomplete usable when the
-# live Naver allSearch endpoint is captcha-degraded and browser suggestions lack
-# coordinates.  It is intentionally limited to stable, high-traffic public
-# transit/landmark/road-address anchors used by normal smoke paths; general
-# queries still prefer live providers.
-_LOCAL_POI_HINTS: tuple[dict, ...] = (
-    {
-        "display_name": "강남역",
-        "address": "서울 강남구 강남대로 396",
-        "type": "역",
-        "lat": 37.4979,
-        "lon": 127.0276,
-        "aliases": ("강남역",),
-    },
-    {
-        "display_name": "서울역",
-        "address": "서울 용산구 한강대로 405",
-        "type": "역",
-        "lat": 37.5547,
-        "lon": 126.9707,
-        "aliases": ("서울역", "한강대로 405", "한강대로405"),
-    },
-    {
-        "display_name": "판교역",
-        "address": "경기 성남시 분당구 판교역로 160",
-        "type": "역",
-        "lat": 37.3948,
-        "lon": 127.1112,
-        "aliases": ("판교역",),
-    },
-    {
-        "display_name": "수서역",
-        "address": "서울 강남구 밤고개로 99",
-        "type": "역",
-        "lat": 37.4875,
-        "lon": 127.1019,
-        "aliases": ("수서역",),
-    },
-    {
-        "display_name": "잠실역",
-        "address": "서울 송파구 올림픽로 265",
-        "type": "역",
-        "lat": 37.5133,
-        "lon": 127.1002,
-        "aliases": ("잠실역",),
-    },
-    {
-        "display_name": "코엑스",
-        "address": "서울 강남구 영동대로 513",
-        "type": "복합문화공간",
-        "lat": 37.5117,
-        "lon": 127.0592,
-        "aliases": ("코엑스", "coex"),
-    },
-    {
-        "display_name": "스타벅스 강남",
-        "address": "서울 강남구 강남대로 390",
-        "type": "카페",
-        "lat": 37.4974,
-        "lon": 127.0280,
-        "aliases": ("스타벅스 강남", "스타벅스강남", "강남 스타벅스"),
-    },
-    {
-        "display_name": "네이버 1784",
-        "address": "경기 성남시 분당구 정자일로 95",
-        "type": "회사",
-        "lat": 37.3595,
-        "lon": 127.1052,
-        "aliases": ("네이버 1784", "네이버1784"),
-    },
-    {
-        "display_name": "경수대로680번길 40",
-        "address": "경기 수원시 팔달구 경수대로680번길 40 센트럴하우스",
-        "type": "주소",
-        "lat": 37.2801,
-        "lon": 127.0312,
-        "aliases": (
-            "경수대로680번길40",
-            "경수대로680번길 40",
-            "경수대로 680",
-            "경수대로680",
-        ),
-    },
-    {
-        "display_name": "테헤란로 152",
-        "address": "서울 강남구 테헤란로 152",
-        "type": "주소",
-        "lat": 37.5008,
-        "lon": 127.0365,
-        "aliases": ("테헤란로 152", "테헤란로152"),
-    },
-    {
-        "display_name": "세종대로 110",
-        "address": "서울 중구 세종대로 110",
-        "type": "주소",
-        "lat": 37.5663,
-        "lon": 126.9780,
-        "aliases": ("세종대로 110", "세종대로110"),
-    },
-    {
-        "display_name": "판교역로 235",
-        "address": "경기 성남시 분당구 판교역로 235",
-        "type": "주소",
-        "lat": 37.4010,
-        "lon": 127.1086,
-        "aliases": ("판교역로 235", "판교역로235"),
-    },
 )
 _NAVER_NCAPTCHA_RETRY_AFTER_TS = 0.0
 _AUTOCOMPLETE_WARMUP_DRAIN_SECONDS = 5.0
@@ -183,6 +77,7 @@ _RUNTIME_METRICS_LOCK = threading.Lock()
 _EXTERNAL_PROVIDER_CALL_COUNTS: dict[str, int] = {}
 _AUTOCOMPLETE_SOURCE_COUNTS: dict[str, int] = {}
 _AUTOCOMPLETE_DEGRADED_COUNTS: dict[str, int] = {}
+_AUTOCOMPLETE_STAGE_METRICS: dict[str, dict[str, object]] = {}
 _GEOCODE_SOURCE_COUNTS: dict[str, int] = {}
 
 
@@ -196,11 +91,74 @@ def _runtime_counter_snapshot(target: dict[str, int]) -> dict[str, int]:
         return dict(sorted(target.items()))
 
 
+def _record_autocomplete_stage_metric(
+    stage: str,
+    *,
+    duration_ms: float,
+    outcome: str,
+) -> None:
+    with _RUNTIME_METRICS_LOCK:
+        current = _AUTOCOMPLETE_STAGE_METRICS.setdefault(
+            stage,
+            {
+                "count": 0,
+                "total_ms": 0.0,
+                "max_ms": 0.0,
+                "outcomes": {},
+            },
+        )
+        current["count"] = int(current.get("count", 0)) + 1
+        total_ms = float(current.get("total_ms", 0.0)) + duration_ms
+        current["total_ms"] = total_ms
+        current["max_ms"] = max(float(current.get("max_ms", 0.0)), duration_ms)
+        outcomes = current.setdefault("outcomes", {})
+        if isinstance(outcomes, dict):
+            outcomes[outcome] = int(outcomes.get(outcome, 0)) + 1
+
+
+def _autocomplete_stage_metrics_snapshot() -> dict[str, dict[str, object]]:
+    with _RUNTIME_METRICS_LOCK:
+        snapshot: dict[str, dict[str, object]] = {}
+        for stage, values in sorted(_AUTOCOMPLETE_STAGE_METRICS.items()):
+            count = int(values.get("count", 0))
+            total_ms = float(values.get("total_ms", 0.0))
+            max_ms = float(values.get("max_ms", 0.0))
+            snapshot[stage] = {
+                "count": count,
+                "avg_ms": round(total_ms / count, 2) if count else 0.0,
+                "max_ms": round(max_ms, 2),
+                "outcomes": dict(values.get("outcomes", {})),
+            }
+        return snapshot
+
+
+def _time_autocomplete_stage(
+    stage: str,
+    call: Callable[[], tuple[dict, ...]],
+) -> tuple[dict, ...]:
+    start = time.perf_counter()
+    outcome = "empty"
+    try:
+        result = call()
+        outcome = "hit" if result else "empty"
+        return result
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        _record_autocomplete_stage_metric(
+            stage,
+            duration_ms=(time.perf_counter() - start) * 1000,
+            outcome=outcome,
+        )
+
+
 def _reset_runtime_counters() -> None:
     with _RUNTIME_METRICS_LOCK:
         _EXTERNAL_PROVIDER_CALL_COUNTS.clear()
         _AUTOCOMPLETE_SOURCE_COUNTS.clear()
         _AUTOCOMPLETE_DEGRADED_COUNTS.clear()
+        _AUTOCOMPLETE_STAGE_METRICS.clear()
         _GEOCODE_SOURCE_COUNTS.clear()
 
 
@@ -396,53 +354,6 @@ def _looks_like_query_match(query: str, *candidate_parts: str) -> bool:
         if normalized_query and normalized_query in normalized_candidate:
             return True
     return False
-
-
-def _local_hint_matches(query: str, alias: str) -> bool:
-    compact_alias = _compact_text(alias)
-    for variant in _build_query_variants(query):
-        compact_query = _compact_text(variant)
-        if not compact_query:
-            continue
-        if compact_query == compact_alias:
-            return True
-        if len(compact_query) >= 2 and compact_alias.startswith(compact_query):
-            return True
-    return False
-
-
-def _search_local_hints(query: str, *, limit: int = 5) -> tuple[dict, ...]:
-    scored_results: list[tuple[float, dict]] = []
-    for hint in _LOCAL_POI_HINTS:
-        aliases = hint.get("aliases", ())
-        if not any(_local_hint_matches(query, alias) for alias in aliases):
-            continue
-        score = _rank_naver_candidate(
-            query,
-            {
-                "display_name": hint["display_name"],
-                "address": hint["address"],
-                "type": hint["type"],
-            },
-            0,
-        )
-        scored_results.append(
-            (
-                score,
-                {
-                    "lat": hint["lat"],
-                    "lon": hint["lon"],
-                    "display_name": hint["display_name"],
-                    "address": hint["address"],
-                    "type": hint["type"],
-                    "source": "local_hint",
-                    "confidence": 0.99,
-                },
-            )
-        )
-
-    scored_results.sort(key=lambda item: item[0], reverse=True)
-    return tuple(item[1] for item in scored_results[:limit])
 
 
 def _format_search_coord(search_coord: tuple[float, float] | None) -> str:
@@ -661,16 +572,6 @@ def geocode_one(
     *,
     search_coord: tuple[float, float] | None = None,
 ) -> dict | None:
-    local_hints = _search_local_hints(place, limit=1)
-    if local_hints:
-        local_result = local_hints[0]
-        _increment_runtime_counter(_GEOCODE_SOURCE_COUNTS, "local_hint")
-        _log.info(
-            "geocode query=%s source=local_hint",
-            _redact_query(place),
-        )
-        return local_result
-
     naver_candidates = autocomplete_naver_map_raw(
         place,
         limit=5,
@@ -1001,6 +902,23 @@ def _should_use_browser_poi_fast_path(
     )
 
 
+def _mark_progressive_browser_autocomplete_results(
+    candidates: tuple[dict, ...],
+    *,
+    reason: str,
+    deadline_hit: bool = False,
+) -> tuple[dict, ...]:
+    progressive: list[dict] = []
+    for candidate in candidates:
+        item = dict(candidate)
+        item.setdefault("coords_status", "unresolved")
+        item.setdefault("degraded_reason", reason)
+        item["deadline_hit"] = bool(deadline_hit)
+        item["autocomplete_mode"] = "progressive"
+        progressive.append(item)
+    return tuple(progressive)
+
+
 def _promote_browser_autocomplete_results(
     query: str,
     candidates: tuple[dict, ...],
@@ -1074,31 +992,31 @@ def _autocomplete_naver_map_uncached(
     search_coord: tuple[float, float] | None = None,
     record_ncaptcha_backoff: bool | None = None,
 ) -> tuple[dict, ...]:
+    started_at = time.perf_counter()
     if len(_compact_text(query)) < _AUTOCOMPLETE_MIN_QUERY_LEN:
         return ()
 
-    naver_results = autocomplete_naver_map_raw(
-        query,
-        limit,
-        search_coord=search_coord,
-        record_ncaptcha_backoff=record_ncaptcha_backoff,
-    )
-    if naver_results:
-        _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "naver_all_search")
-        return naver_results
-
-    local_hints = _search_local_hints(query, limit=limit)
-    if local_hints:
-        _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "local_hint")
-        _log.info(
-            "autocomplete query=%s source=local_hint fallback_count=%d",
-            _redact_query(query),
-            len(local_hints),
+    def _query_browser_autocomplete(stage: str) -> tuple[dict, ...]:
+        _increment_runtime_counter(
+            _EXTERNAL_PROVIDER_CALL_COUNTS,
+            "browser_autocomplete",
         )
-        return local_hints
+        return _time_autocomplete_stage(
+            stage,
+            lambda: autocomplete_naver_browser_pool(query, limit=limit),
+        )
 
-    _increment_runtime_counter(_EXTERNAL_PROVIDER_CALL_COUNTS, "browser_autocomplete")
-    browser_results = autocomplete_naver_browser_pool(query, limit=limit)
+    browser_results = _query_browser_autocomplete("browser_autocomplete")
+    remaining_budget_seconds = _AUTOCOMPLETE_EXPENSIVE_PROVIDER_BUDGET_SECONDS - (
+        time.perf_counter() - started_at
+    )
+    if (
+        not browser_results
+        and remaining_budget_seconds
+        >= _AUTOCOMPLETE_BROWSER_RETRY_MIN_REMAINING_SECONDS
+    ):
+        browser_results = _query_browser_autocomplete("browser_autocomplete_retry")
+
     if browser_results:
         browser_fast_path = len(browser_results) == 1 and bool(
             _ROAD_ADDRESS_RE.search(query) or re.search(r"\d", query)
@@ -1107,12 +1025,15 @@ def _autocomplete_naver_map_uncached(
             query,
             browser_results,
         )
-        if browser_fast_path or browser_poi_fast_path:
-            promoted_browser_results = _promote_browser_autocomplete_results(
-                query,
-                browser_results,
-                limit=limit,
-                search_coord=search_coord,
+        if browser_fast_path:
+            promoted_browser_results = _time_autocomplete_stage(
+                "browser_geocode_promotion",
+                lambda: _promote_browser_autocomplete_results(
+                    query,
+                    browser_results,
+                    limit=limit,
+                    search_coord=search_coord,
+                ),
             )
             if promoted_browser_results:
                 _increment_runtime_counter(
@@ -1144,26 +1065,71 @@ def _autocomplete_naver_map_uncached(
             )
             return browser_results
         if browser_poi_fast_path:
+            progressive_results = _mark_progressive_browser_autocomplete_results(
+                browser_results,
+                reason="progressive_browser_suggest",
+            )
             _increment_runtime_counter(
                 _AUTOCOMPLETE_SOURCE_COUNTS,
-                "naver_browser_suggest_fast_poi",
+                "naver_browser_suggest_progressive_poi",
             )
             _increment_runtime_counter(
                 _AUTOCOMPLETE_DEGRADED_COUNTS,
                 "coords_unresolved",
             )
             _log.info(
-                "autocomplete query=%s source=naver_browser_suggest_fast_poi "
+                "autocomplete query=%s source=naver_browser_suggest_progressive_poi "
                 "fallback_count=%d",
                 _redact_query(query),
-                len(browser_results),
+                len(progressive_results),
             )
-            return browser_results
-        promoted_browser_results = _promote_browser_autocomplete_results(
-            query,
-            browser_results,
-            limit=limit,
-            search_coord=search_coord,
+            return progressive_results
+        if (
+            _contains_hangul(query)
+            and not (_ROAD_ADDRESS_RE.search(query) or re.search(r"\d", query))
+        ):
+            deadline_hit = (
+                time.perf_counter() - started_at
+                >= _AUTOCOMPLETE_EXPENSIVE_PROVIDER_BUDGET_SECONDS
+            )
+            progressive_results = _mark_progressive_browser_autocomplete_results(
+                browser_results,
+                reason=(
+                    "autocomplete_provider_budget"
+                    if deadline_hit
+                    else "progressive_browser_suggest"
+                ),
+                deadline_hit=deadline_hit,
+            )
+            _increment_runtime_counter(
+                _AUTOCOMPLETE_SOURCE_COUNTS,
+                "naver_browser_suggest_progressive",
+            )
+            _increment_runtime_counter(
+                _AUTOCOMPLETE_DEGRADED_COUNTS,
+                "coords_unresolved",
+            )
+            if deadline_hit:
+                _increment_runtime_counter(
+                    _AUTOCOMPLETE_DEGRADED_COUNTS,
+                    "autocomplete_provider_budget",
+                )
+            _log.info(
+                "autocomplete query=%s source=naver_browser_suggest_progressive "
+                "fallback_count=%d deadline_hit=%s",
+                _redact_query(query),
+                len(progressive_results),
+                deadline_hit,
+            )
+            return progressive_results
+        promoted_browser_results = _time_autocomplete_stage(
+            "browser_geocode_promotion",
+            lambda: _promote_browser_autocomplete_results(
+                query,
+                browser_results,
+                limit=limit,
+                search_coord=search_coord,
+            ),
         )
         if promoted_browser_results:
             _increment_runtime_counter(
@@ -1193,31 +1159,6 @@ def _autocomplete_naver_map_uncached(
             len(browser_results),
         )
         return browser_results
-
-    nominatim_results = autocomplete_nominatim(query, limit=limit)
-    if nominatim_results:
-        _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "nominatim")
-        _log.info(
-            "autocomplete query=%s source=nominatim fallback_count=%d",
-            _redact_query(query),
-            len(nominatim_results),
-        )
-        return nominatim_results
-
-    if not _contains_hangul(query):
-        photon_results = autocomplete_photon(
-            query,
-            limit=limit,
-            search_coord=search_coord,
-        )
-        if photon_results:
-            _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "photon")
-            _log.info(
-                "autocomplete query=%s source=photon fallback_count=%d",
-                _redact_query(query),
-                len(photon_results),
-            )
-            return photon_results
 
     _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "none")
     return ()
@@ -1459,6 +1400,7 @@ def get_autocomplete_runtime_metrics() -> dict:
     metrics["autocomplete_degraded_counts"] = _runtime_counter_snapshot(
         _AUTOCOMPLETE_DEGRADED_COUNTS
     )
+    metrics["autocomplete_stage_metrics"] = _autocomplete_stage_metrics_snapshot()
     metrics["provider_degraded_counts"] = _runtime_counter_snapshot(
         _AUTOCOMPLETE_DEGRADED_COUNTS
     )

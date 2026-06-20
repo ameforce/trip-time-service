@@ -4,6 +4,7 @@ import hmac
 import logging
 import math
 import os
+import time
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -119,6 +120,32 @@ def _serialize_autocomplete_items(
     return serialized
 
 
+def _autocomplete_response_headers(
+    *,
+    duration_ms: float,
+    mode: str,
+    serialized: list[dict[str, object]],
+) -> dict[str, str]:
+    headers = {
+        "Server-Timing": f'autocomplete;dur={duration_ms:.1f};desc="{mode}"',
+        "X-TTS-Autocomplete-Count": str(len(serialized)),
+    }
+    degraded_reasons = sorted(
+        {
+            str(item.get("degraded_reason") or "").strip()
+            for item in serialized
+            if str(item.get("degraded_reason") or "").strip()
+        }
+    )
+    if degraded_reasons:
+        headers["X-TTS-Autocomplete-Degraded"] = ",".join(degraded_reasons)
+    if any(bool(item.get("deadline_hit")) for item in serialized):
+        headers["X-TTS-Autocomplete-Deadline-Hit"] = "1"
+    if any(item.get("autocomplete_mode") == "progressive" for item in serialized):
+        headers["X-TTS-Autocomplete-Mode"] = "progressive"
+    return headers
+
+
 def _debug_route_allowed(
     request: Request,
     *,
@@ -229,33 +256,54 @@ def autocomplete(
     center_lat: float | None = Query(default=None, ge=-90, le=90),
     center_lon: float | None = Query(default=None, ge=-180, le=180),
 ) -> JSONResponse:
+    started = time.perf_counter()
     search_coord: tuple[float, float] | None = None
     if center_lat is not None and center_lon is not None:
         search_coord = (center_lon, center_lat)
     if is_fixture_mode_enabled():
         results = autocomplete_fixtures(q, limit=12)
+        serialized = _serialize_autocomplete_items(results)
+        duration_ms = (time.perf_counter() - started) * 1000
         _log.info(
             "autocomplete query=%s center_present=%s count=%d mode=fixture "
-            "external_provider_calls=0",
+            "external_provider_calls=0 duration_ms=%.1f",
             redact_text(q),
             center_lat is not None and center_lon is not None,
-            len(results),
+            len(serialized),
+            duration_ms,
         )
-        return JSONResponse(content=_serialize_autocomplete_items(results))
+        return JSONResponse(
+            content=serialized,
+            headers=_autocomplete_response_headers(
+                duration_ms=duration_ms,
+                mode="fixture",
+                serialized=serialized,
+            ),
+        )
 
     results = autocomplete_naver_map(q, 12, search_coord=search_coord)
+    serialized = _serialize_autocomplete_items(results)
+    duration_ms = (time.perf_counter() - started) * 1000
     runtime_metrics = get_autocomplete_runtime_metrics()
     _log.info(
         "autocomplete query=%s center_present=%s count=%d mode=live "
-        "workers=%s upper=%s miss_ratio=%s",
+        "workers=%s upper=%s miss_ratio=%s duration_ms=%.1f",
         redact_text(q),
         center_lat is not None and center_lon is not None,
-        len(results),
+        len(serialized),
         runtime_metrics.get("workers"),
         runtime_metrics.get("upper_bound"),
         runtime_metrics.get("window_busy_miss_ratio"),
+        duration_ms,
     )
-    return JSONResponse(content=_serialize_autocomplete_items(results))
+    return JSONResponse(
+        content=serialized,
+        headers=_autocomplete_response_headers(
+            duration_ms=duration_ms,
+            mode="live",
+            serialized=serialized,
+        ),
+    )
 
 
 @router.post("/api/autocomplete/warmup")

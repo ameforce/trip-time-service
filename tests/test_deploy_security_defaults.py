@@ -63,6 +63,33 @@ def test_jenkins_live_policy_archives_only_sanitized_summary_by_default() -> Non
     assert ".artifacts/live/playwright-report/**" not in jenkinsfile
 
 
+def test_jenkins_dev_deploy_has_nonempty_enm_defaults_and_known_hosts() -> None:
+    jenkinsfile = (ROOT / "Jenkinsfile").read_text()
+
+    assert 'string(name: "ENM_HOST", defaultValue: "enmsoftware.com"' in jenkinsfile
+    assert 'defaultValue: "enm-server-ssh-key"' in jenkinsfile
+    assert "env.EFFECTIVE_ENM_HOST = params.ENM_HOST?.trim()" in jenkinsfile
+    assert (
+        'ssh-keyscan -p "$EFFECTIVE_ENM_PORT" "$EFFECTIVE_ENM_HOST"'
+        in jenkinsfile
+    )
+    assert '"SSH_STRICT_HOST_KEY_CHECKING=yes"' in jenkinsfile
+    assert '"SSH_KNOWN_HOSTS_FILE=${env.DEPLOY_KNOWN_HOSTS}"' in jenkinsfile
+    assert '"ENM_HOST=${env.EFFECTIVE_ENM_HOST}"' in jenkinsfile
+    assert '"ENM_HOST=${params.ENM_HOST}"' not in jenkinsfile
+
+
+def test_jenkins_dev_runtime_version_uses_deploy_image_tag() -> None:
+    jenkinsfile = (ROOT / "Jenkinsfile").read_text()
+    deploy_stage = jenkinsfile.split('stage("Deploy To ENM")', 1)[1].split(
+        'stage("Smoke Verify")', 1
+    )[0]
+
+    assert "env.DEPLOY_APP_VERSION = env.IMAGE_TAG" in jenkinsfile
+    assert '"APP_VERSION=${env.DEPLOY_APP_VERSION}"' in deploy_stage
+    assert '"APP_VERSION=${env.APP_VERSION}"' not in deploy_stage
+
+
 def test_jenkins_live_e2e_stage_exports_uv_path() -> None:
     jenkinsfile = (ROOT / "Jenkinsfile").read_text()
 

@@ -109,7 +109,9 @@ def test_trim_to_core_road_address_extracts_searchable_segment() -> None:
     )
 
 
-def test_curated_local_hint_returns_route_ready_coordinates(monkeypatch) -> None:
+def test_autocomplete_does_not_return_curated_local_hint_when_live_providers_miss(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         geocode_services,
         "autocomplete_naver_map_raw",
@@ -120,20 +122,53 @@ def test_curated_local_hint_returns_route_ready_coordinates(monkeypatch) -> None
         "autocomplete_naver_browser_pool",
         lambda *args, **kwargs: (),
     )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_nominatim",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_photon",
+        lambda *args, **kwargs: (),
+    )
 
     results = geocode_services._autocomplete_naver_map_uncached(
         "경수대로680번길40",
         limit=5,
     )
 
-    assert len(results) == 1
-    assert results[0]["display_name"] == "경수대로680번길 40"
-    assert results[0]["lat"] == 37.2801
-    assert results[0]["lon"] == 127.0312
-    assert results[0]["source"] == "local_hint"
+    assert results == ()
 
 
-def test_autocomplete_browser_poi_fallback_prefers_geocoded_promotion(
+def test_geocode_one_does_not_return_curated_local_hint_when_live_providers_miss(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "geocode_naver",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "geocode_photon",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "geocode_nominatim",
+        lambda *args, **kwargs: None,
+    )
+
+    assert geocode_services.geocode_one("강남역") is None
+
+
+def test_autocomplete_browser_poi_fallback_returns_progressive_suggestion(
     monkeypatch,
 ) -> None:
     browser_results = (
@@ -147,26 +182,9 @@ def test_autocomplete_browser_poi_fallback_prefers_geocoded_promotion(
             "confidence": 0.82,
         },
     )
-    promoted_results = (
-        {
-            "display_name": "센트럴시티터미널",
-            "address": "서울 서초구 신반포로 194",
-            "type": "버스터미널",
-            "lat": "37.5030",
-            "lon": "127.0048",
-            "source": "naver_browser_suggest_geocoded",
-            "confidence": 0.82,
-        },
-    )
-
     monkeypatch.setattr(
         geocode_services,
         "autocomplete_naver_map_raw",
-        lambda *args, **kwargs: (),
-    )
-    monkeypatch.setattr(
-        geocode_services,
-        "_search_local_hints",
         lambda *args, **kwargs: (),
     )
     monkeypatch.setattr(
@@ -177,9 +195,9 @@ def test_autocomplete_browser_poi_fallback_prefers_geocoded_promotion(
 
     promotion_calls: list[str] = []
 
-    def _promote(query: str, *args, **kwargs):
+    def _promote(query: str, *args, **kwargs):  # pragma: no cover - must not run
         promotion_calls.append(query)
-        return promoted_results
+        raise AssertionError("POI autocomplete should return progressive suggestions")
 
     monkeypatch.setattr(
         geocode_services,
@@ -189,8 +207,12 @@ def test_autocomplete_browser_poi_fallback_prefers_geocoded_promotion(
 
     results = geocode_services._autocomplete_naver_map_uncached("센트럴", limit=12)
 
-    assert results == promoted_results
-    assert promotion_calls == ["센트럴"]
+    assert len(results) == 1
+    assert results[0]["source"] == "naver_browser_suggest"
+    assert results[0]["autocomplete_mode"] == "progressive"
+    assert results[0]["degraded_reason"] == "progressive_browser_suggest"
+    assert results[0]["deadline_hit"] is False
+    assert promotion_calls == []
 
 
 def test_autocomplete_single_address_like_browser_result_uses_promotion(
@@ -222,11 +244,6 @@ def test_autocomplete_single_address_like_browser_result_uses_promotion(
     monkeypatch.setattr(
         geocode_services,
         "autocomplete_naver_map_raw",
-        lambda *args, **kwargs: (),
-    )
-    monkeypatch.setattr(
-        geocode_services,
-        "_search_local_hints",
         lambda *args, **kwargs: (),
     )
     monkeypatch.setattr(
@@ -290,11 +307,6 @@ def test_autocomplete_address_like_query_still_uses_browser_promotion(
     )
     monkeypatch.setattr(
         geocode_services,
-        "_search_local_hints",
-        lambda *args, **kwargs: (),
-    )
-    monkeypatch.setattr(
-        geocode_services,
         "autocomplete_naver_browser_pool",
         lambda *args, **kwargs: browser_results,
     )
@@ -310,3 +322,241 @@ def test_autocomplete_address_like_query_still_uses_browser_promotion(
     )
 
     assert results == promoted_results
+
+
+def test_autocomplete_prefers_naver_map_browser_ui_over_all_search(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    browser_results = (
+        {
+            "display_name": "강남역",
+            "address": "강남역",
+            "type": "검색어",
+            "lat": "",
+            "lon": "",
+            "source": "naver_browser_suggest",
+            "confidence": 0.9,
+        },
+    )
+    all_search_results = (
+        {
+            "display_name": "강남역 HTTP",
+            "address": "서울 강남구 강남대로 396",
+            "type": "역",
+            "lat": "37.4979",
+            "lon": "127.0276",
+            "source": "naver_all_search",
+            "confidence": 0.95,
+        },
+    )
+    calls: list[str] = []
+
+    def _browser(*args, **kwargs):
+        calls.append("browser")
+        return browser_results
+
+    def _all_search(*args, **kwargs):
+        calls.append("all_search")
+        return all_search_results
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        _browser,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        _all_search,
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("강남역", limit=5)
+
+    assert results[0]["source"] == "naver_browser_suggest"
+    assert calls == ["browser"]
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert "naver_all_search" not in stage_metrics
+    assert stage_metrics["browser_autocomplete"]["outcomes"]["hit"] >= 1
+
+
+def test_autocomplete_does_not_show_non_naver_fallbacks_when_naver_map_misses(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_nominatim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("autocomplete must not show non-Naver candidates")
+        ),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_photon",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("autocomplete must not show non-Naver candidates")
+        ),
+    )
+
+    assert geocode_services._autocomplete_naver_map_uncached("강남역", limit=5) == ()
+
+
+def test_autocomplete_returns_empty_when_naver_map_browser_ui_misses(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        lambda *args, **kwargs: (),
+    )
+
+    def _all_search(*args, **kwargs):
+        calls.append("all_search")
+        raise AssertionError("browser UI miss must not show allSearch candidates")
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        _all_search,
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("강남역", limit=5)
+
+    assert results == ()
+    assert calls == []
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert "local_hint" not in stage_metrics
+    assert "naver_all_search" not in stage_metrics
+
+
+def test_autocomplete_retries_browser_ui_once_when_first_live_query_is_empty(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    recovered_results = (
+        {
+            "display_name": "광교역",
+            "address": "광교역",
+            "type": "검색어",
+            "lat": "",
+            "lon": "",
+            "source": "naver_browser_suggest",
+            "confidence": 0.9,
+        },
+    )
+    calls: list[str] = []
+
+    def _browser(*args, **kwargs):
+        calls.append("browser")
+        return () if len(calls) == 1 else recovered_results
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        _browser,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("retry must stay on the Naver browser UI provider")
+        ),
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("광교역", limit=5)
+
+    assert len(results) == 1
+    assert results[0]["display_name"] == recovered_results[0]["display_name"]
+    assert results[0]["source"] == "naver_browser_suggest"
+    assert results[0]["autocomplete_mode"] == "progressive"
+    assert calls == ["browser", "browser"]
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert stage_metrics["browser_autocomplete"]["outcomes"]["empty"] == 1
+    assert stage_metrics["browser_autocomplete_retry"]["outcomes"]["hit"] == 1
+    assert metrics["external_provider_call_counts"]["browser_autocomplete"] == 2
+
+
+def test_autocomplete_browser_ui_retry_preserves_empty_contract(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    calls: list[str] = []
+
+    def _browser(*args, **kwargs):
+        calls.append("browser")
+        return ()
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        _browser,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_nominatim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("autocomplete must not show non-Naver candidates")
+        ),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_photon",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("autocomplete must not show non-Naver candidates")
+        ),
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("태안ㅇ우", limit=5)
+
+    assert results == ()
+    assert calls == ["browser", "browser"]
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert stage_metrics["browser_autocomplete_retry"]["outcomes"]["empty"] == 1
+    assert "naver_all_search" not in stage_metrics
+
+
+def test_autocomplete_does_not_retry_browser_ui_when_budget_is_nearly_exhausted(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    calls: list[str] = []
+    perf_counter_values = iter([0.0, 0.0, 2.6, 2.6, 2.6, 3.1])
+
+    def _browser(*args, **kwargs):
+        calls.append("browser")
+        return ()
+
+    monkeypatch.setattr(
+        geocode_services.time,
+        "perf_counter",
+        perf_counter_values.__next__,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        _browser,
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("광교역", limit=5)
+
+    assert results == ()
+    assert calls == ["browser"]
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert "browser_autocomplete_retry" not in stage_metrics

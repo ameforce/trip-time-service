@@ -97,6 +97,17 @@ test.describe('autocomplete ime composition', () => {
       .poll(() => autocompleteQueries, { timeout: 3000 })
       .toEqual(['센트']);
     await expect(page.locator('#origin-ac .ac-item').first()).toBeVisible();
+    const metrics = await page.evaluate(() => {
+      const reader = (window as unknown as {
+        __ttsGetAutocompleteMetrics?: () => {
+          events: Array<Record<string, unknown>>;
+          counters: Record<string, number>;
+        };
+      }).__ttsGetAutocompleteMetrics;
+      return reader ? reader() : null;
+    });
+    expect(metrics?.events.some((event) => event.stage === 'state' && event.phase === 'rendered')).toBeTruthy();
+    expect(JSON.stringify(metrics)).not.toContain('센트');
   });
 
   test('shows suggestions after compositionend without extra keypress', async ({
@@ -189,6 +200,187 @@ test.describe('autocomplete ime composition', () => {
       .poll(() => autocompleteQueries, { timeout: 3000 })
       .toEqual(['센트럴']);
     await expect(page.locator('#origin-ac .ac-item').first()).toBeVisible();
+  });
+
+  test('normalizes decomposed hangul jamo to stable syllables without extra keypress', async ({
+    page,
+  }) => {
+    const autocompleteQueries: string[] = [];
+
+    await page.addInitScript(() => {
+      localStorage.setItem('tts_recent_searches', '[]');
+      localStorage.setItem('tts_favorites', '[]');
+      window.requestIdleCallback = (callback: IdleRequestCallback) => {
+        window.setTimeout(
+          () =>
+            callback({
+              didTimeout: false,
+              timeRemaining: () => 50,
+            } as IdleDeadline),
+          0,
+        );
+        return 1;
+      };
+    });
+
+    await page.route('**/api/autocomplete/warmup', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ queued: 0 }),
+      });
+    });
+
+    await page.route('**/api/autocomplete?*', async (route) => {
+      const requestUrl = new URL(route.request().url());
+      autocompleteQueries.push(requestUrl.searchParams.get('q') ?? '');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            lat: '37.505089',
+            lon: '127.004918',
+            display_name: '센트럴시티',
+            address: '서울 서초구 신반포로 176',
+            type: '버스터미널',
+            coords_ready: true,
+            selection_kind: 'poi',
+            canonical_query: '센트럴시티',
+            source: 'test',
+            confidence: 0.99,
+          },
+        ]),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.locator('#origin')).toBeVisible();
+
+    await page.locator('#origin').click();
+    await page.evaluate(() => {
+      const input = document.querySelector<HTMLInputElement>('#origin');
+      if (!input) {
+        throw new Error('origin input missing');
+      }
+      input.focus();
+      input.dispatchEvent(
+        new CompositionEvent('compositionstart', {
+          bubbles: true,
+          data: 'ᄉ',
+        }),
+      );
+      input.value = '센트';
+      input.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          data: 'ᅳ',
+          inputType: 'insertCompositionText',
+        }),
+      );
+    });
+
+    await expect
+      .poll(() => autocompleteQueries, { timeout: 3000 })
+      .toEqual(['센트']);
+    await expect(page.locator('#origin-ac .ac-item').first()).toBeVisible();
+  });
+
+  test.describe('mobile viewport', () => {
+    test.use({ viewport: { width: 390, height: 844 }, isMobile: true });
+
+    test('shows suggestions after korean compositionend without extra keypress', async ({
+      page,
+    }) => {
+      const autocompleteQueries: string[] = [];
+
+      await page.addInitScript(() => {
+        localStorage.setItem('tts_recent_searches', '[]');
+        localStorage.setItem('tts_favorites', '[]');
+        window.requestIdleCallback = (callback: IdleRequestCallback) => {
+          window.setTimeout(
+            () =>
+              callback({
+                didTimeout: false,
+                timeRemaining: () => 50,
+              } as IdleDeadline),
+            0,
+          );
+          return 1;
+        };
+      });
+
+      await page.route('**/api/autocomplete/warmup', async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ queued: 0 }),
+        });
+      });
+
+      await page.route('**/api/autocomplete?*', async (route) => {
+        const requestUrl = new URL(route.request().url());
+        autocompleteQueries.push(requestUrl.searchParams.get('q') ?? '');
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            {
+              lat: '37.505089',
+              lon: '127.004918',
+              display_name: '센트럴시티',
+              address: '서울 서초구 신반포로 176',
+              type: '버스터미널',
+              coords_ready: true,
+              selection_kind: 'poi',
+              canonical_query: '센트럴시티',
+              source: 'test',
+              confidence: 0.99,
+            },
+          ]),
+        });
+      });
+
+      await page.goto('/');
+      await page.locator('#mobile-toggle').click();
+      await expect(page.locator('#sidebar')).toHaveClass(/open/);
+      await expect(page.locator('#origin')).toBeVisible();
+
+      await page.locator('#origin').click();
+      await page.evaluate(() => {
+        const input = document.querySelector<HTMLInputElement>('#origin');
+        if (!input) {
+          throw new Error('origin input missing');
+        }
+        input.focus();
+        input.dispatchEvent(
+          new CompositionEvent('compositionstart', {
+            bubbles: true,
+            data: 'ㄹ',
+          }),
+        );
+        input.value = '센트ㄹ';
+        input.dispatchEvent(
+          new InputEvent('input', {
+            bubbles: true,
+            data: 'ㄹ',
+            inputType: 'insertCompositionText',
+          }),
+        );
+        input.dispatchEvent(
+          new CompositionEvent('compositionend', {
+            bubbles: true,
+            data: '럴',
+          }),
+        );
+        input.value = '센트럴';
+      });
+
+      await expect
+        .poll(() => autocompleteQueries, { timeout: 3000 })
+        .toEqual(['센트럴']);
+      await expect(page.locator('#origin-ac .ac-item').first()).toBeVisible();
+    });
   });
 
   test('blocks unresolved poi route submit after compositionend fires post-click', async ({

@@ -444,18 +444,14 @@ class _BrowserAutocompleteWorker:
         search_input.send_keys(Keys.DELETE)
         search_input.send_keys(query)
 
+        def _matching_suggestions(cur: webdriver.Chrome) -> tuple[dict, ...]:
+            options = cur.find_elements(By.CSS_SELECTOR, _SUGGEST_OPTION_SELECTOR)
+            return _extract_suggestions_from_options(query, options, limit=limit)
+
         try:
-            WebDriverWait(driver, wait_seconds).until(
-                lambda cur: len(
-                    cur.find_elements(By.CSS_SELECTOR, _SUGGEST_OPTION_SELECTOR)
-                )
-                > 0
-            )
+            return WebDriverWait(driver, wait_seconds).until(_matching_suggestions)
         except Exception:
             return ()
-
-        options = driver.find_elements(By.CSS_SELECTOR, _SUGGEST_OPTION_SELECTOR)
-        return _extract_suggestions_from_options(query, options, limit=limit)
 
 
 def _extract_suggestions_from_options(
