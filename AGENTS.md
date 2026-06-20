@@ -1,5 +1,42 @@
 # trip-time-service agent instructions
 
+## Branching and Git-flow rules
+
+이 프로젝트의 브랜치/릴리즈 작업은 Fork 앱의 Git-flow 절차를 기준으로 수행한다.
+버그 개선, 회귀 수정, 장애 대응, hotfix/fix 성격의 작업은 `main` 기준
+`hotfix/vX.Y.Z` 브랜치에서 작업한다.
+
+Hotfix 절차:
+
+1. `main`에서 `hotfix/vX.Y.Z` 브랜치를 생성한다. 버전이 지정되지 않았으면
+   현재 릴리즈의 patch 버전을 1 올린다.
+2. hotfix 브랜치에 수정 커밋을 만든다.
+3. hotfix를 닫을 때 `main`에 no-ff merge하고 기본 merge 메시지
+   `Merge branch 'hotfix/vX.Y.Z'`를 유지한다.
+4. `main` merge commit에 annotated tag `vX.Y.Z`를 생성한다.
+5. tag `vX.Y.Z`를 `develop`에 no-ff merge하고 기본 merge 메시지
+   `Merge tag 'vX.Y.Z' into develop`을 유지한다.
+6. `main`, `develop`, tag를 push하고 배포/검증을 완료한 뒤 hotfix 브랜치를 삭제한다.
+
+새 기능은 `develop` 기준 `feature/<name>` 브랜치에서 작업한다. 기능 브랜치를
+`develop`에 merge한 뒤, 그 `develop`을 기준으로 release 브랜치를 생성한다.
+release 버전은 현재 릴리즈의 minor 버전을 1 올리고 patch 버전을 0으로 초기화한
+`vMAJOR.MINOR.0` 형식이며, 브랜치 이름은 `release/vMAJOR.MINOR.0`이다.
+
+Release 절차:
+
+1. `develop`에서 `release/vMAJOR.MINOR.0` 브랜치를 생성한다.
+2. release 브랜치를 닫을 때 `main`에 no-ff merge하고 기본 merge 메시지
+   `Merge branch 'release/vMAJOR.MINOR.0'`를 유지한다.
+3. `main` merge commit에 annotated tag `vMAJOR.MINOR.0`을 생성한다.
+4. tag `vMAJOR.MINOR.0`을 `develop`에 no-ff merge하고 기본 merge 메시지
+   `Merge tag 'vMAJOR.MINOR.0' into develop`을 유지한다.
+5. `main`, `develop`, tag를 push하고 배포/검증을 완료한 뒤 release 브랜치를 삭제한다.
+
+fix/hotfix 또는 feature/release 성격의 작업에서 `main`과 `develop`에 직접 일반
+커밋을 남기지 않는다. 이미 push된 Git-flow 그래프를 사용자 지시에 따라 고칠 때만
+`--force-with-lease`로 갱신한다.
+
 ## Completion gate for code/config changes
 
 이 프로젝트에서 코드, 설정, 배포 스크립트, E2E/운영 정책을 변경한 작업은
