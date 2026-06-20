@@ -53,8 +53,6 @@ writeFileSync(
   )}\n`,
   'utf-8',
 );
-const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
-const powershellQuote = (value: string) => `'${value.replace(/'/g, `''`)}'`;
 const serverEnv = {
   TTS_PROVIDER: e2eProvider,
   TTS_E2E_FIXTURE_MODE: fixtureMode,
@@ -67,14 +65,6 @@ const serverEnv = {
   TTS_PORT: e2ePort,
   TTS_CHROME_USER_DATA_DIR: chromeUserDataDir,
 };
-const posixServerCommand = `${Object.entries(serverEnv)
-  .map(([key, value]) => `${key}=${shellQuote(value)}`)
-  .join(' ')} uv run trip-time-service`;
-const powershellServerCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "& { ${Object.entries(
-  serverEnv,
-)
-  .map(([key, value]) => `$env:${key}=${powershellQuote(value)};`)
-  .join(' ')} uv run trip-time-service }"`;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -105,7 +95,8 @@ export default defineConfig({
       : {}),
   },
   webServer: {
-    command: process.platform === 'win32' ? powershellServerCommand : posixServerCommand,
+    command: 'uv run trip-time-service',
+    env: serverEnv,
     url: `${baseURL}/healthz`,
     reuseExistingServer: false,
     timeout: 240_000,

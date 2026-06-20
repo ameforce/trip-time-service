@@ -1444,7 +1444,7 @@ function geocodeAndMark(address, color) {
     });
 }
 
-function geocodeSelectionAndMark(address, selection, color, onResolved) {
+function geocodeSelectionAndMark(address, selection, color, isCurrentSelection, onResolved) {
   if (!_map) return Promise.resolve(null);
   var geocodeQuery = getStableSearchQuery(address, selection);
   if (!geocodeQuery) return Promise.resolve(null);
@@ -1452,6 +1452,12 @@ function geocodeSelectionAndMark(address, selection, color, onResolved) {
     .then(function (coords) {
       if (!coords) {
         console.warn("geocode: no results for", geocodeQuery);
+        return null;
+      }
+      if (
+        typeof isCurrentSelection === "function" &&
+        !isCurrentSelection(selection)
+      ) {
         return null;
       }
       hideError();
@@ -1522,6 +1528,9 @@ function updateMapMarkersAsync(originText, destText) {
       originText,
       _selectedOrigin,
       "#03C75A",
+      function (previousSelection) {
+        return _selectedOrigin === previousSelection;
+      },
       function (selection, previousSelection) {
         if (_selectedOrigin === previousSelection) _selectedOrigin = selection;
       }
@@ -1539,6 +1548,9 @@ function updateMapMarkersAsync(originText, destText) {
       destText,
       _selectedDest,
       "#E53935",
+      function (previousSelection) {
+        return _selectedDest === previousSelection;
+      },
       function (selection, previousSelection) {
         if (_selectedDest === previousSelection) _selectedDest = selection;
       }
@@ -3760,6 +3772,9 @@ function refreshMapMarkersLive() {
       orig,
       _selectedOrigin,
       "#03C75A",
+      function (previousSelection) {
+        return _selectedOrigin === previousSelection;
+      },
       function (selection, previousSelection) {
         if (_selectedOrigin === previousSelection) _selectedOrigin = selection;
       }
@@ -3776,6 +3791,9 @@ function refreshMapMarkersLive() {
       dest,
       _selectedDest,
       "#E53935",
+      function (previousSelection) {
+        return _selectedDest === previousSelection;
+      },
       function (selection, previousSelection) {
         if (_selectedDest === previousSelection) _selectedDest = selection;
       }
