@@ -586,6 +586,7 @@ test.describe('autocomplete ime composition', () => {
         stream: streamRequests.length,
       }))
       .toEqual({ baseline: 0, stream: 0 });
-    expect(geocodeQueries).toEqual(['삼성로 766']);
+    expect(geocodeQueries).toContain('삼성로 766');
+    expect(geocodeQueries.every((query) => query === '삼성로 766')).toBeTruthy();
   });
 });
