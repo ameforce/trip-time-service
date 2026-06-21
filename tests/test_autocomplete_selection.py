@@ -49,6 +49,29 @@ def test_serialize_autocomplete_items_preserves_stable_fields_for_unresolved_can
     assert serialized[2]["canonical_query"] == "수원역"
 
 
+def test_serialize_marks_link_coords_ready_for_naver_browser_candidate(
+) -> None:
+    items = (
+        {
+            "display_name": "광교역(경기대)1번출구",
+            "address": "경기 수원시 영통구 이의동",
+            "type": "출입구",
+            "lat": "37.302",
+            "lon": "127.044",
+            "source": "naver_browser_suggest",
+            "confidence": 0.9,
+        },
+    )
+
+    serialized = routes_geo._serialize_autocomplete_items(items)
+
+    assert len(serialized) == 1
+    assert serialized[0]["coords_ready"] is True
+    assert serialized[0]["lat"] == 37.302
+    assert serialized[0]["lon"] == 127.044
+    assert serialized[0]["canonical_query"] == "광교역(경기대)1번출구"
+
+
 def test_merge_browser_candidate_promotes_text_only_suggestion() -> None:
     candidate = {
         "display_name": "테헤란로 152",
@@ -312,6 +335,11 @@ def test_autocomplete_does_not_return_curated_local_hint_when_live_providers_mis
     )
     monkeypatch.setattr(
         geocode_services,
+        "fetch_autocomplete_from_instant_search",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        geocode_services,
         "autocomplete_nominatim",
         lambda *args, **kwargs: (),
     )
@@ -569,6 +597,64 @@ def test_autocomplete_prefers_naver_map_browser_ui_over_all_search(
     assert stage_metrics["browser_autocomplete"]["outcomes"]["hit"] >= 1
 
 
+def test_autocomplete_preserves_browser_link_coords_when_all_search_is_empty(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    browser_results = (
+        {
+            "display_name": "광교역(경기대)1번출구",
+            "address": "경기 수원시 영통구 이의동",
+            "type": "출입구",
+            "lat": "37.302",
+            "lon": "127.044",
+            "source": "naver_browser_suggest",
+            "confidence": 0.9,
+        },
+    )
+    calls: list[str] = []
+
+    def _browser(*args, **kwargs):
+        calls.append("browser")
+        return browser_results
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        _browser,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("browser link coords must not require allSearch")
+        ),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_nominatim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("browser link coords must not use Nominatim")
+        ),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_photon",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("browser link coords must not use Photon")
+        ),
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("광교역", limit=12)
+
+    assert calls == ["browser"]
+    assert len(results) == 1
+    assert results[0]["display_name"] == "광교역(경기대)1번출구"
+    assert results[0]["source"] == "naver_browser_suggest"
+    assert results[0]["lat"] == "37.302"
+    assert results[0]["lon"] == "127.044"
+
+
 def test_autocomplete_does_not_show_non_naver_fallbacks_when_naver_map_misses(
     monkeypatch,
 ) -> None:
@@ -580,6 +666,11 @@ def test_autocomplete_does_not_show_non_naver_fallbacks_when_naver_map_misses(
     monkeypatch.setattr(
         geocode_services,
         "autocomplete_naver_map_raw",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "fetch_autocomplete_from_instant_search",
         lambda *args, **kwargs: (),
     )
     monkeypatch.setattr(
@@ -608,6 +699,11 @@ def test_autocomplete_returns_empty_when_naver_map_browser_ui_misses(
     monkeypatch.setattr(
         geocode_services,
         "autocomplete_naver_browser_pool",
+        lambda *args, **kwargs: (),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "fetch_autocomplete_from_instant_search",
         lambda *args, **kwargs: (),
     )
 
@@ -719,6 +815,146 @@ def test_autocomplete_browser_ui_retry_preserves_empty_contract(
     assert "naver_all_search" not in stage_metrics
 
 
+def test_autocomplete_uses_instant_search_service_fallback_after_browser_empty(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    browser_calls: list[str] = []
+    instant_calls: list[tuple[str, int]] = []
+
+    def _browser(query: str, *, limit: int):
+        browser_calls.append(query)
+        return ()
+
+    def _instant(query: str, *, limit: int):
+        instant_calls.append((query, limit))
+        return (
+            {
+                "display_name": "경수대로680번길 40",
+                "address": "경기 수원시 팔달구 경수대로680번길 40",
+                "type": "주소",
+                "lat": "37.286775649",
+                "lon": "127.029391112",
+                "source": "naver_browser_suggest",
+                "confidence": 0.93,
+            },
+        )
+
+    monkeypatch.setattr(geocode_services, "autocomplete_naver_browser_pool", _browser)
+    monkeypatch.setattr(
+        geocode_services,
+        "fetch_autocomplete_from_instant_search",
+        _instant,
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("service fallback must not call Naver allSearch")
+        ),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_nominatim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("service fallback must not call non-Naver providers")
+        ),
+    )
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_photon",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("service fallback must not call non-Naver providers")
+        ),
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached(
+        "경수대로680번길40",
+        limit=12,
+    )
+
+    assert browser_calls == ["경수대로680번길40", "경수대로680번길40"]
+    assert instant_calls == [("경수대로680번길40", 12)]
+    assert len(results) == 1
+    assert results[0]["lat"] == "37.286775649"
+    assert results[0]["lon"] == "127.029391112"
+    assert results[0]["source"] == "naver_browser_suggest_instant_fallback"
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert stage_metrics["instant_search_service_fallback"]["outcomes"]["hit"] == 1
+    assert (
+        metrics["autocomplete_source_counts"][
+            "naver_browser_suggest_instant_fallback"
+        ]
+        == 1
+    )
+    assert "naver_all_search" not in stage_metrics
+
+
+def test_autocomplete_preserves_empty_contract_when_instant_fallback_is_empty(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    instant_calls: list[str] = []
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        lambda *args, **kwargs: (),
+    )
+
+    def _instant(query: str, *, limit: int):
+        instant_calls.append(query)
+        return ()
+
+    monkeypatch.setattr(
+        geocode_services,
+        "fetch_autocomplete_from_instant_search",
+        _instant,
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("강남역", limit=5)
+
+    assert results == ()
+    assert instant_calls == ["강남역"]
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert stage_metrics["instant_search_service_fallback"]["outcomes"]["empty"] == 1
+    assert metrics["autocomplete_source_counts"]["none"] == 1
+
+
+def test_autocomplete_preserves_empty_contract_when_instant_fallback_raises(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    instant_calls: list[str] = []
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_browser_pool",
+        lambda *args, **kwargs: (),
+    )
+
+    def _instant(query: str, *, limit: int):
+        instant_calls.append(query)
+        raise RuntimeError("naver instant-search unavailable")
+
+    monkeypatch.setattr(
+        geocode_services,
+        "fetch_autocomplete_from_instant_search",
+        _instant,
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached("강남역", limit=5)
+
+    assert results == ()
+    assert instant_calls == ["강남역"]
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert stage_metrics["instant_search_service_fallback"]["outcomes"]["error"] == 1
+    assert metrics["autocomplete_source_counts"]["none"] == 1
+
+
 def test_autocomplete_does_not_retry_browser_ui_when_budget_is_nearly_exhausted(
     monkeypatch,
 ) -> None:
@@ -740,6 +976,11 @@ def test_autocomplete_does_not_retry_browser_ui_when_budget_is_nearly_exhausted(
         "autocomplete_naver_browser_pool",
         _browser,
     )
+    monkeypatch.setattr(
+        geocode_services,
+        "fetch_autocomplete_from_instant_search",
+        lambda *args, **kwargs: (),
+    )
 
     results = geocode_services._autocomplete_naver_map_uncached("광교역", limit=5)
 
@@ -748,3 +989,55 @@ def test_autocomplete_does_not_retry_browser_ui_when_budget_is_nearly_exhausted(
     metrics = geocode_services.get_autocomplete_runtime_metrics()
     stage_metrics = metrics["autocomplete_stage_metrics"]
     assert "browser_autocomplete_retry" not in stage_metrics
+
+
+def test_autocomplete_still_allows_one_instant_fallback_when_retry_budget_exhausted(
+    monkeypatch,
+) -> None:
+    geocode_services._reset_runtime_counters()
+    browser_calls: list[str] = []
+    instant_calls: list[str] = []
+    perf_counter_values = iter([0.0, 0.0, 2.6, 2.6, 2.7, 2.8])
+
+    def _browser(query: str, *, limit: int):
+        browser_calls.append(query)
+        return ()
+
+    def _instant(query: str, *, limit: int):
+        instant_calls.append(query)
+        return (
+            {
+                "display_name": "경수대로680번길 40",
+                "address": "경기 수원시 팔달구 경수대로680번길 40",
+                "type": "주소",
+                "lat": "37.286775649",
+                "lon": "127.029391112",
+                "source": "naver_browser_suggest",
+                "confidence": 0.93,
+            },
+        )
+
+    monkeypatch.setattr(
+        geocode_services.time,
+        "perf_counter",
+        perf_counter_values.__next__,
+    )
+    monkeypatch.setattr(geocode_services, "autocomplete_naver_browser_pool", _browser)
+    monkeypatch.setattr(
+        geocode_services,
+        "fetch_autocomplete_from_instant_search",
+        _instant,
+    )
+
+    results = geocode_services._autocomplete_naver_map_uncached(
+        "경수대로680번길40",
+        limit=5,
+    )
+
+    assert browser_calls == ["경수대로680번길40"]
+    assert instant_calls == ["경수대로680번길40"]
+    assert results[0]["source"] == "naver_browser_suggest_instant_fallback"
+    metrics = geocode_services.get_autocomplete_runtime_metrics()
+    stage_metrics = metrics["autocomplete_stage_metrics"]
+    assert "browser_autocomplete_retry" not in stage_metrics
+    assert stage_metrics["instant_search_service_fallback"]["outcomes"]["hit"] == 1
