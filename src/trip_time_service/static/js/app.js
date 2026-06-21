@@ -30,6 +30,7 @@ const COORDS_UNRESOLVED_ROUTE_MESSAGE =
 let _autocompleteWarmupQueued = false;
 let _autocompleteCacheMap = {};
 let _searchInProgress = false; // 중복 검색 방지 플래그
+let _routeInputRevision = 0;
 
 // geocode 결과 캐시 (address → {lat, lon})
 var _geocodeCache = {};
@@ -1342,6 +1343,16 @@ function clearMarkers() {
   }
 }
 
+function invalidateRouteInputState() {
+  _routeInputRevision += 1;
+  _searchInProgress = false;
+  if (_map) {
+    clearMarkers();
+  }
+  $results.classList.add("hidden");
+  hideLoading();
+}
+
 function addMarker(latlng, opts) {
   var label = opts.label || "";
   var icon = L.divIcon({
@@ -2030,6 +2041,7 @@ function setupAutocomplete($input, $dropdown, setSelected, timerKey) {
       return;
     }
     setSelected(null);
+    invalidateRouteInputState();
     // Keep suppressing noisy trailing-jamo states, but do not block
     // already-stable syllables while a Korean IME composition is active.
     if (hasTrailingHangulJamo(q)) return;
@@ -3839,14 +3851,18 @@ async function handleSearch() {
   var searchOriginSelection = _selectedOrigin;
   var searchDestSelection = _selectedDest;
   var searchMode = _currentMode;
+  var searchRouteInputRevision = _routeInputRevision;
   var isSearchStillCurrent = function () {
-    return isCurrentSearchSnapshot(
-      origin,
-      destination,
-      datetimeVal,
-      searchOriginSelection,
-      searchDestSelection,
-      searchMode
+    return (
+      _routeInputRevision === searchRouteInputRevision &&
+      isCurrentSearchSnapshot(
+        origin,
+        destination,
+        datetimeVal,
+        searchOriginSelection,
+        searchDestSelection,
+        searchMode
+      )
     );
   };
 
@@ -3860,8 +3876,10 @@ async function handleSearch() {
   var isoTime = toApiDatetimeString(datetimeVal);
   if (!isoTime) {
     showError("시각 값을 해석할 수 없습니다. 다시 선택해 주세요.");
-    _searchInProgress = false;
-    hideLoading();
+    if (_routeInputRevision === searchRouteInputRevision) {
+      _searchInProgress = false;
+      hideLoading();
+    }
     return;
   }
 
@@ -4328,8 +4346,10 @@ async function handleSearch() {
     if (!isSearchStillCurrent()) return;
     showError(err.message || "알 수 없는 오류가 발생했습니다.");
   } finally {
-    _searchInProgress = false;
-    hideLoading();
+    if (_routeInputRevision === searchRouteInputRevision) {
+      _searchInProgress = false;
+      hideLoading();
+    }
   }
 }
 
