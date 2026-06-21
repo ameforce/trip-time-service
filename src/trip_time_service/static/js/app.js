@@ -2020,6 +2020,7 @@ function applyAutocompleteSelection($input, $dropdown, setSelected, item) {
       : item.display_name || item.address || "";
   setSelected(selection);
   closeACDropdown($dropdown);
+  invalidateRouteInputState();
   refreshMapMarkersLive();
 }
 
