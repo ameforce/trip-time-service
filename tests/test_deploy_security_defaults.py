@@ -6,10 +6,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _read_repo_text(relative_path: str) -> str:
+    return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
 def test_dockerfile_runs_as_non_root_and_does_not_force_chrome_no_sandbox() -> None:
-    dockerfile = (ROOT / "Dockerfile").read_text()
-    dev_env_example = (ROOT / "deploy/enm/env/dev.env.example").read_text()
-    prod_env_example = (ROOT / "deploy/enm/env/prod.env.example").read_text()
+    dockerfile = _read_repo_text("Dockerfile")
+    dev_env_example = _read_repo_text("deploy/enm/env/dev.env.example")
+    prod_env_example = _read_repo_text("deploy/enm/env/prod.env.example")
 
     assert "USER appuser" in dockerfile
     assert "useradd --create-home" in dockerfile
@@ -22,7 +26,7 @@ def test_dockerfile_runs_as_non_root_and_does_not_force_chrome_no_sandbox() -> N
 
 def test_enm_deploy_scripts_pass_chrome_no_sandbox_to_runtime() -> None:
     for script_name in ("deploy/enm/deploy.sh", "deploy/enm/rollback.sh"):
-        script = (ROOT / script_name).read_text()
+        script = _read_repo_text(script_name)
 
         assert 'TTS_CHROME_NO_SANDBOX="${TTS_CHROME_NO_SANDBOX:-1}"' in script
         assert (
@@ -34,7 +38,7 @@ def test_enm_deploy_scripts_pass_chrome_no_sandbox_to_runtime() -> None:
 
 def test_deploy_scripts_verify_host_keys_by_default() -> None:
     for script_name in ("deploy/enm/deploy.sh", "deploy/enm/rollback.sh"):
-        script = (ROOT / script_name).read_text()
+        script = _read_repo_text(script_name)
         assert (
             'SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-yes}"'
             in script
@@ -44,7 +48,7 @@ def test_deploy_scripts_verify_host_keys_by_default() -> None:
 
 
 def test_playwright_web_server_command_is_posix_compatible() -> None:
-    config = (ROOT / "playwright.config.ts").read_text()
+    config = _read_repo_text("playwright.config.ts")
 
     assert "cmd /c" not in config
     assert "powershell -NoProfile" not in config
@@ -55,7 +59,7 @@ def test_playwright_web_server_command_is_posix_compatible() -> None:
 
 
 def test_live_e2e_scripts_are_split_by_operational_mode() -> None:
-    package_json = (ROOT / "package.json").read_text()
+    package_json = _read_repo_text("package.json")
 
     assert '"e2e:live:smoke"' in package_json
     assert '"e2e:live:diagnose"' in package_json
@@ -66,7 +70,7 @@ def test_live_e2e_scripts_are_split_by_operational_mode() -> None:
 
 
 def test_jenkins_live_policy_archives_only_sanitized_summary_by_default() -> None:
-    jenkinsfile = (ROOT / "Jenkinsfile").read_text()
+    jenkinsfile = _read_repo_text("Jenkinsfile")
 
     assert "LIVE_E2E_POLICY" in jenkinsfile
     assert 'choices: ["off", "advisory", "blocking"]' in jenkinsfile
@@ -81,7 +85,7 @@ def test_jenkins_live_policy_archives_only_sanitized_summary_by_default() -> Non
 
 
 def test_jenkins_dev_deploy_has_nonempty_enm_defaults_and_known_hosts() -> None:
-    jenkinsfile = (ROOT / "Jenkinsfile").read_text()
+    jenkinsfile = _read_repo_text("Jenkinsfile")
 
     assert 'string(name: "ENM_HOST", defaultValue: "enmsoftware.com"' in jenkinsfile
     assert 'defaultValue: "enm-server-ssh-key"' in jenkinsfile
@@ -97,7 +101,7 @@ def test_jenkins_dev_deploy_has_nonempty_enm_defaults_and_known_hosts() -> None:
 
 
 def test_jenkins_dev_runtime_version_uses_deploy_image_tag() -> None:
-    jenkinsfile = (ROOT / "Jenkinsfile").read_text()
+    jenkinsfile = _read_repo_text("Jenkinsfile")
     deploy_stage = jenkinsfile.split('stage("Deploy To ENM")', 1)[1].split(
         'stage("Smoke Verify")', 1
     )[0]
@@ -108,7 +112,7 @@ def test_jenkins_dev_runtime_version_uses_deploy_image_tag() -> None:
 
 
 def test_jenkins_live_e2e_stage_exports_uv_path() -> None:
-    jenkinsfile = (ROOT / "Jenkinsfile").read_text()
+    jenkinsfile = _read_repo_text("Jenkinsfile")
 
     assert jenkinsfile.count('export PATH="$HOME/.local/bin:$PATH"') >= 3
     assert re.search(
@@ -126,7 +130,7 @@ def test_jenkins_live_e2e_stage_exports_uv_path() -> None:
 
 
 def test_jenkins_live_e2e_stage_uses_agent_chrome_sandbox_override() -> None:
-    jenkinsfile = (ROOT / "Jenkinsfile").read_text()
+    jenkinsfile = _read_repo_text("Jenkinsfile")
 
     assert jenkinsfile.count("export TTS_CHROME_NO_SANDBOX=1") == 2
     assert (
@@ -142,7 +146,7 @@ def test_jenkins_live_e2e_stage_uses_agent_chrome_sandbox_override() -> None:
 
 
 def test_live_summary_writer_uses_bucket_counts_not_raw_route_payloads() -> None:
-    summary_writer = (ROOT / "tests/e2e/live-summary.mjs").read_text()
+    summary_writer = _read_repo_text("tests/e2e/live-summary.mjs")
 
     assert "e2e-live-summary.json" in summary_writer
     assert "bucket_counts" in summary_writer
@@ -159,7 +163,7 @@ def test_live_summary_writer_uses_bucket_counts_not_raw_route_payloads() -> None
 
 
 def test_live_e2e_wrapper_does_not_rewrite_summary_for_list_only() -> None:
-    run_live = (ROOT / "tests/e2e/run-live.mjs").read_text()
+    run_live = _read_repo_text("tests/e2e/run-live.mjs")
 
     assert "const listOnly = passThroughArgs.includes('--list')" in run_live
     assert "`.artifacts/live-list/${mode}`" in run_live
@@ -167,6 +171,6 @@ def test_live_e2e_wrapper_does_not_rewrite_summary_for_list_only() -> None:
 
 
 def test_fixture_e2e_uses_separate_artifact_root_from_live_summary() -> None:
-    package_json = (ROOT / "package.json").read_text()
+    package_json = _read_repo_text("package.json")
 
     assert "TTS_E2E_ARTIFACTS_DIR=.artifacts/e2e-ci" in package_json
