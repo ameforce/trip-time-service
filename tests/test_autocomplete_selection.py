@@ -96,6 +96,194 @@ def test_iter_browser_autocomplete_queries_adds_trimmed_road_address() -> None:
     assert "경수대로680번길 40" in queries
 
 
+def test_promote_selected_naver_candidate_uses_naver_provided_variants_only(
+    monkeypatch,
+) -> None:
+    candidate = {
+        "display_name": "광교역(경기대)1번출구",
+        "address": "경기 수원시 영통구 이의동",
+        "type": "지하철출구번호",
+        "lat": "",
+        "lon": "",
+        "source": "naver_browser_suggest",
+        "confidence": 0.73,
+        "canonical_query": "광교역(경기대)1번출구",
+        "coords_ready": False,
+    }
+    naver_all_search_calls: list[str] = []
+    naver_browser_calls: list[str] = []
+    non_naver_calls: list[str] = []
+
+    def _naver_all_search(query: str, *args, **kwargs) -> tuple[dict, ...]:
+        naver_all_search_calls.append(query)
+        return ()
+
+    def _naver_browser_geocode(query: str, *args, **kwargs) -> dict | None:
+        naver_browser_calls.append(query)
+        if query == "경기 수원시 영통구 이의동":
+            return {
+                "display_name": "경기 수원시 영통구 이의동",
+                "address": "경기 수원시 영통구 이의동",
+                "type": "주소",
+                "lat": "37.2999",
+                "lon": "127.0444",
+            }
+        return None
+
+    def _non_naver(query: str, *args, **kwargs) -> None:
+        non_naver_calls.append(query)
+        return None
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        _naver_all_search,
+    )
+    monkeypatch.setattr(geocode_services, "geocode_naver", _naver_browser_geocode)
+    monkeypatch.setattr(geocode_services, "geocode_photon", _non_naver)
+    monkeypatch.setattr(geocode_services, "geocode_nominatim", _non_naver)
+
+    promoted = geocode_services._promote_browser_autocomplete_results(
+        "광교역(경기대)1번출구",
+        (candidate,),
+        limit=5,
+    )
+
+    assert len(promoted) == 1
+    assert promoted[0]["display_name"] == "광교역(경기대)1번출구"
+    assert promoted[0]["address"] == "경기 수원시 영통구 이의동"
+    assert promoted[0]["lat"] == "37.2999"
+    assert promoted[0]["lon"] == "127.0444"
+    assert promoted[0]["coords_ready"] is True
+    assert promoted[0]["source"] == "naver_browser_suggest_geocoded"
+    assert promoted[0]["geocode_source"] == "naver_browser"
+    assert naver_all_search_calls == [
+        "광교역(경기대)1번출구",
+        "경기 수원시 영통구 이의동",
+    ]
+    assert naver_browser_calls == [
+        "광교역(경기대)1번출구",
+        "경기 수원시 영통구 이의동",
+    ]
+    assert non_naver_calls == []
+
+
+def test_promote_selected_naver_candidate_stays_empty_when_provider_variants_miss(
+    monkeypatch,
+) -> None:
+    candidate = {
+        "display_name": "광교역(경기대)1번출구",
+        "address": "",
+        "type": "지하철출구번호",
+        "lat": "",
+        "lon": "",
+        "source": "naver_browser_suggest",
+        "confidence": 0.73,
+        "canonical_query": "광교역(경기대)1번출구",
+        "coords_ready": False,
+    }
+    naver_calls: list[str] = []
+    non_naver_calls: list[str] = []
+
+    def _naver_miss(query: str, *args, **kwargs):
+        naver_calls.append(query)
+        return ()
+
+    def _naver_browser_miss(query: str, *args, **kwargs) -> None:
+        naver_calls.append(query)
+        return None
+
+    def _non_naver(query: str, *args, **kwargs) -> None:
+        non_naver_calls.append(query)
+        return None
+
+    monkeypatch.setattr(geocode_services, "autocomplete_naver_map_raw", _naver_miss)
+    monkeypatch.setattr(geocode_services, "geocode_naver", _naver_browser_miss)
+    monkeypatch.setattr(geocode_services, "geocode_photon", _non_naver)
+    monkeypatch.setattr(geocode_services, "geocode_nominatim", _non_naver)
+
+    promoted = geocode_services._promote_browser_autocomplete_results(
+        "광교역(경기대)1번출구",
+        (candidate,),
+        limit=5,
+    )
+
+    assert promoted == ()
+    assert naver_calls == [
+        "광교역(경기대)1번출구",
+        "광교역(경기대)1번출구",
+    ]
+    assert non_naver_calls == []
+
+
+def test_promote_selected_naver_candidate_does_not_use_non_naver_variant_fallbacks(
+    monkeypatch,
+) -> None:
+    candidate = {
+        "display_name": "광교역(경기대)1번출구",
+        "address": "경기 수원시 영통구 이의동",
+        "type": "지하철출구번호",
+        "lat": "",
+        "lon": "",
+        "source": "naver_browser_suggest",
+        "confidence": 0.73,
+        "canonical_query": "광교역(경기대)1번출구",
+        "coords_ready": False,
+    }
+    naver_all_search_calls: list[str] = []
+    naver_browser_calls: list[str] = []
+    non_naver_calls: list[str] = []
+
+    def _naver_all_search(query: str, *args, **kwargs) -> tuple[dict, ...]:
+        naver_all_search_calls.append(query)
+        return ()
+
+    def _naver_browser_miss(query: str, *args, **kwargs) -> None:
+        naver_browser_calls.append(query)
+        return None
+
+    def _non_naver_would_resolve(query: str, *args, **kwargs) -> dict:
+        non_naver_calls.append(query)
+        return {
+            "display_name": query,
+            "address": query,
+            "type": "주소",
+            "lat": "37.2999",
+            "lon": "127.0444",
+            "source": "non_naver",
+        }
+
+    monkeypatch.setattr(
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        _naver_all_search,
+    )
+    monkeypatch.setattr(geocode_services, "geocode_naver", _naver_browser_miss)
+    monkeypatch.setattr(geocode_services, "geocode_photon", _non_naver_would_resolve)
+    monkeypatch.setattr(
+        geocode_services,
+        "geocode_nominatim",
+        _non_naver_would_resolve,
+    )
+
+    promoted = geocode_services._promote_browser_autocomplete_results(
+        "광교역(경기대)1번출구",
+        (candidate,),
+        limit=5,
+    )
+
+    assert promoted == ()
+    assert naver_all_search_calls == [
+        "광교역(경기대)1번출구",
+        "경기 수원시 영통구 이의동",
+    ]
+    assert naver_browser_calls == [
+        "광교역(경기대)1번출구",
+        "경기 수원시 영통구 이의동",
+    ]
+    assert non_naver_calls == []
+
+
 def test_trim_to_core_road_address_extracts_searchable_segment() -> None:
     assert (
         geocode_services._trim_to_core_road_address(

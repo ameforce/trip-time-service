@@ -779,11 +779,13 @@ def _iter_browser_autocomplete_queries(candidate: dict) -> tuple[str, ...]:
     item_type = str(candidate.get("type") or "").strip()
     display_name = str(candidate.get("display_name") or "").strip()
     address = str(candidate.get("address") or "").strip()
+    canonical_query = str(candidate.get("canonical_query") or "").strip()
     raw_candidates: list[str] = []
     if item_type == "주소":
         raw_candidates.extend((address, display_name))
     else:
         raw_candidates.extend((display_name, address))
+    raw_candidates.append(canonical_query)
     for value in (display_name, address):
         core_road_address = _trim_to_core_road_address(value)
         if core_road_address:
@@ -844,6 +846,7 @@ def _merge_browser_autocomplete_candidate(
         merged["address"] = geocoded_address
     merged["lat"] = geocoded["lat"]
     merged["lon"] = geocoded["lon"]
+    merged["coords_ready"] = True
     merged["source"] = "naver_browser_suggest_geocoded"
     merged["geocode_source"] = geocoded.get("source")
     candidate_confidence = candidate.get("confidence")
@@ -855,6 +858,52 @@ def _merge_browser_autocomplete_candidate(
     ]
     merged["confidence"] = round(max(confidence_values, default=0.6), 2)
     return merged
+
+
+def _geocode_naver_only(
+    place: str,
+    *,
+    search_coord: tuple[float, float] | None = None,
+) -> dict | None:
+    naver_candidates = autocomplete_naver_map_raw(
+        place,
+        limit=5,
+        search_coord=search_coord,
+    )
+    best_naver = _select_best_naver_candidate(place, naver_candidates)
+    if best_naver:
+        _increment_runtime_counter(_GEOCODE_SOURCE_COUNTS, "naver_all_search")
+        return best_naver
+
+    _increment_runtime_counter(_EXTERNAL_PROVIDER_CALL_COUNTS, "geocode_naver")
+    naver_browser = geocode_naver(place)
+    if naver_browser:
+        naver_browser["source"] = "naver_browser"
+        naver_browser["confidence"] = 0.62
+        _increment_runtime_counter(_GEOCODE_SOURCE_COUNTS, "naver_browser")
+        return naver_browser
+    return None
+
+
+def _geocoded_matches_browser_candidate(
+    query: str,
+    candidate: dict,
+    geocode_query: str,
+    geocoded: dict,
+) -> bool:
+    geocoded_display = str(geocoded.get("display_name") or "")
+    geocoded_address = str(geocoded.get("address") or "")
+    if _looks_like_query_match(query, geocoded_display, geocoded_address):
+        return True
+    if _looks_like_query_match(geocode_query, geocoded_display, geocoded_address):
+        return True
+    candidate_display = str(candidate.get("display_name") or "")
+    candidate_address = str(candidate.get("address") or "")
+    return _looks_like_query_match(
+        geocode_query,
+        candidate_display,
+        candidate_address,
+    )
 
 
 def _select_browser_autocomplete_candidate(
@@ -932,7 +981,8 @@ def _promote_browser_autocomplete_results(
         _ROAD_ADDRESS_RE.search(query) or re.search(r"\d", query)
     )
 
-    direct_geocoded = geocode_one(query, search_coord=search_coord)
+    direct_geocoded = _geocode_naver_only(query, search_coord=search_coord)
+    geocode_cache[query] = direct_geocoded
     if direct_geocoded and (
         query_looks_like_address
         or _looks_like_query_match(
@@ -957,17 +1007,18 @@ def _promote_browser_autocomplete_results(
     for candidate in candidate_slice:
         for geocode_query in _iter_browser_autocomplete_queries(candidate):
             if geocode_query not in geocode_cache:
-                geocode_cache[geocode_query] = geocode_one(
+                geocode_cache[geocode_query] = _geocode_naver_only(
                     geocode_query,
                     search_coord=search_coord,
                 )
             geocoded = geocode_cache[geocode_query]
             if not geocoded:
                 continue
-            if not _looks_like_query_match(
+            if not _geocoded_matches_browser_candidate(
                 query,
-                str(geocoded.get("display_name") or ""),
-                str(geocoded.get("address") or ""),
+                candidate,
+                geocode_query,
+                geocoded,
             ):
                 continue
             merged = _merge_browser_autocomplete_candidate(candidate, geocoded)

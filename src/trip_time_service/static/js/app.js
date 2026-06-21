@@ -3,6 +3,7 @@
 /* ── State ────────────────────────────────────────── */
 let _map = null;
 let _markers = [];
+let _endpointMarkers = { origin: null, dest: null };
 let _routeGroup = null;
 let _config = {
   naver_map_client_id: null,
@@ -421,36 +422,11 @@ function isMockProvider(provider) {
 }
 
 function buildProviderNoticeCard(provider) {
-  if (!isMockProvider(provider)) {
-    return "";
-  }
-  return (
-    '<div class="result-card provider-notice-card">' +
-    '  <div class="provider-notice-title">&#9888; mock 모드 결과 안내</div>' +
-    '  <p class="provider-notice-copy">' +
-         "현재 소요시간은 실시간 교통이 아닌 테스트용 가상 데이터입니다. " +
-         "실제 교통 기준 분석이 필요하면 naver_selenium provider로 실행해 주세요." +
-    "</p>" +
-    "</div>"
-  );
+  return "";
 }
 
 function setProviderName(provider) {
-  if (!$providerBadge && !$providerWarning) {
-    return;
-  }
-  var providerName = resolveProviderName(provider);
-  if ($providerBadge) {
-    $providerBadge.textContent = providerName;
-    $providerBadge.classList.toggle("is-warning", providerName === "mock");
-  }
-  if ($providerWarning) {
-    if (providerName === "mock") {
-      $providerWarning.classList.remove("hidden");
-    } else {
-      $providerWarning.classList.add("hidden");
-    }
-  }
+  return;
 }
 
 function setVersionBadge(versionText) {
@@ -1337,10 +1313,38 @@ function initMap() {
 function clearMarkers() {
   _markers.forEach(function (m) { _map.removeLayer(m); });
   _markers = [];
+  _endpointMarkers = { origin: null, dest: null };
   if (_routeGroup) {
     _map.removeLayer(_routeGroup);
     _routeGroup = null;
   }
+}
+
+function syncMarkerList() {
+  _markers = [];
+  if (_endpointMarkers.origin) _markers.push(_endpointMarkers.origin);
+  if (_endpointMarkers.dest) _markers.push(_endpointMarkers.dest);
+}
+
+function clearRouteGroup() {
+  if (_routeGroup && _map) {
+    _map.removeLayer(_routeGroup);
+  }
+  _routeGroup = null;
+}
+
+function clearEndpointMarker(endpoint) {
+  if (!_map || !_endpointMarkers[endpoint]) return;
+  _map.removeLayer(_endpointMarkers[endpoint]);
+  _endpointMarkers[endpoint] = null;
+  syncMarkerList();
+}
+
+function setEndpointMarker(endpoint, latlng, opts) {
+  if (!_map) return;
+  clearEndpointMarker(endpoint);
+  _endpointMarkers[endpoint] = addMarker(latlng, opts);
+  syncMarkerList();
 }
 
 function invalidateSearchState(options) {
@@ -1355,6 +1359,13 @@ function invalidateSearchState(options) {
 }
 
 function invalidateRouteInputState() {
+  var endpoint = arguments.length > 0 ? arguments[0] : null;
+  if (endpoint === "origin" || endpoint === "dest") {
+    invalidateSearchState({ clearMarkers: false });
+    clearRouteGroup();
+    clearEndpointMarker(endpoint);
+    return;
+  }
   invalidateSearchState({ clearMarkers: true });
 }
 
@@ -1534,10 +1545,10 @@ function updateMapMarkersAsync(originText, destText) {
     }
     clearMarkers();
     if (originCoords) {
-      addMarker([originCoords.lat, originCoords.lon], { color: "#03C75A", label: "출발" });
+      setEndpointMarker("origin", [originCoords.lat, originCoords.lon], { color: "#03C75A", label: "출발" });
     }
     if (destCoords) {
-      addMarker([destCoords.lat, destCoords.lon], { color: "#E53935", label: "도착" });
+      setEndpointMarker("dest", [destCoords.lat, destCoords.lon], { color: "#E53935", label: "도착" });
     }
     fitBounds();
     if (originCoords && destCoords) {
@@ -1969,10 +1980,10 @@ function fetchAutocomplete(query, abortState) {
 
 function renderACDropdown($dropdown, items, onSelect) {
   if (!items || items.length === 0) {
-    $dropdown.classList.add("hidden");
-    $dropdown.innerHTML = "";
+    closeACDropdown($dropdown);
     return;
   }
+  $dropdown.setAttribute("role", "listbox");
   var html = "";
   for (var i = 0; i < items.length; i++) {
     var it = items[i];
@@ -1981,13 +1992,18 @@ function renderACDropdown($dropdown, items, onSelect) {
     var safeAddress = escapeHtml(it.address || "");
     var typeBadge = safeType ? '<span class="ac-item-type">' + safeType + "</span>" : "";
     html +=
-      '<div class="ac-item" data-idx="' + i + '">' +
+      '<div class="ac-item" role="option" aria-selected="false" tabindex="-1" data-idx="' + i + '">' +
       '  <div class="ac-item-name">' + safeDisplayName + typeBadge + "</div>" +
       '  <div class="ac-item-addr">' + safeAddress + "</div>" +
       "</div>";
   }
   $dropdown.innerHTML = html;
   $dropdown.classList.remove("hidden");
+  var ownerId = $dropdown.getAttribute("id");
+  var $owner = ownerId
+    ? document.querySelector('[aria-controls="' + ownerId + '"]')
+    : null;
+  if ($owner) $owner.setAttribute("aria-expanded", "true");
 
   var acItems = $dropdown.querySelectorAll(".ac-item");
   acItems.forEach(function (el) {
@@ -2001,10 +2017,20 @@ function renderACDropdown($dropdown, items, onSelect) {
 
 function closeACDropdown($dropdown) {
   $dropdown.classList.add("hidden");
-  $dropdown.innerHTML = "";
+  var ownerId = $dropdown.getAttribute("id");
+  var $owner = ownerId
+    ? document.querySelector('[aria-controls="' + ownerId + '"]')
+    : null;
+  if ($owner) $owner.setAttribute("aria-expanded", "false");
 }
 
-function applyAutocompleteSelection($input, $dropdown, setSelected, item) {
+function getEndpointForInput($input) {
+  if ($input === $origin) return "origin";
+  if ($input === $destination) return "dest";
+  return null;
+}
+
+function applyAutocompleteSelection($input, $dropdown, setSelected, item, endpoint) {
   var selection = buildStableSelection(item, {
     display_name: item.display_name || item.address || "",
     address: item.address || item.display_name || "",
@@ -2020,8 +2046,9 @@ function applyAutocompleteSelection($input, $dropdown, setSelected, item) {
       : item.display_name || item.address || "";
   setSelected(selection);
   closeACDropdown($dropdown);
-  invalidateRouteInputState();
-  refreshMapMarkersLive();
+  var routeEndpoint = endpoint || getEndpointForInput($input);
+  invalidateRouteInputState(routeEndpoint);
+  refreshMapMarkersLive(routeEndpoint);
 }
 
 function withDisplayRoute(payload, origin, destination) {
@@ -2051,7 +2078,7 @@ function setupAutocomplete($input, $dropdown, setSelected, timerKey) {
       return;
     }
     setSelected(null);
-    invalidateRouteInputState();
+    invalidateRouteInputState(timerKey);
     // Keep suppressing noisy trailing-jamo states, but do not block
     // already-stable syllables while a Korean IME composition is active.
     if (hasTrailingHangulJamo(q)) return;
@@ -2085,7 +2112,7 @@ function setupAutocomplete($input, $dropdown, setSelected, timerKey) {
         activeIdx = -1;
         _acActiveIdx[timerKey] = -1;
         renderACDropdown($dropdown, items, function (item) {
-          applyAutocompleteSelection($input, $dropdown, setSelected, item);
+          applyAutocompleteSelection($input, $dropdown, setSelected, item, timerKey);
         });
       });
     }, AUTOCOMPLETE_DEBOUNCE_MS);
@@ -2125,7 +2152,7 @@ function setupAutocomplete($input, $dropdown, setSelected, timerKey) {
     } else if (e.key === "Enter" && activeIdx >= 0 && currentItems[activeIdx]) {
       e.preventDefault();
       e.stopImmediatePropagation(); // 일반 Enter 핸들러의 handleSearch() 중복 호출 방지
-      applyAutocompleteSelection($input, $dropdown, setSelected, currentItems[activeIdx]);
+      applyAutocompleteSelection($input, $dropdown, setSelected, currentItems[activeIdx], timerKey);
     } else if (e.key === "Escape") {
       closeACDropdown($dropdown);
       activeIdx = -1;
@@ -3744,13 +3771,14 @@ $swapBtn.addEventListener("click", function () {
 });
 
 /* Live marker update on input change */
-function refreshMapMarkersLive() {
-  clearMarkers();
+function refreshMapMarkersLive(endpoint) {
   if (!_map) return;
   var orig = $origin.value.trim();
   var dest = $destination.value.trim();
   var originSelection = _selectedOrigin;
   var destSelection = _selectedDest;
+  var refreshOrigin = endpoint !== "dest";
+  var refreshDest = endpoint !== "origin";
   var isLiveMarkerRefreshCurrent = function () {
     return (
       $origin.value.trim() === orig &&
@@ -3760,12 +3788,12 @@ function refreshMapMarkersLive() {
     );
   };
 
-  var pO = orig
+  var pO = orig && refreshOrigin
     ? resolveRouteCriticalCoords(orig, originSelection)
-    : Promise.resolve(null);
-  var pD = dest
+    : Promise.resolve(orig ? normalizeCoords(originSelection) : null);
+  var pD = dest && refreshDest
     ? resolveRouteCriticalCoords(dest, destSelection)
-    : Promise.resolve(null);
+    : Promise.resolve(dest ? normalizeCoords(destSelection) : null);
 
   Promise.all([pO, pD]).then(function (results) {
     if (!isLiveMarkerRefreshCurrent()) return;
@@ -3779,15 +3807,23 @@ function refreshMapMarkersLive() {
       destSelection = markSelectionCoordsResolved(destSelection, destCoords);
       _selectedDest = destSelection;
     }
-    clearMarkers();
-    if (originCoords) {
-      addMarker([originCoords.lat, originCoords.lon], { color: "#03C75A", label: "출발" });
+    if (refreshOrigin) {
+      if (originCoords) {
+        setEndpointMarker("origin", [originCoords.lat, originCoords.lon], { color: "#03C75A", label: "출발" });
+      } else {
+        clearEndpointMarker("origin");
+      }
     }
-    if (destCoords) {
-      addMarker([destCoords.lat, destCoords.lon], { color: "#E53935", label: "도착" });
+    if (refreshDest) {
+      if (destCoords) {
+        setEndpointMarker("dest", [destCoords.lat, destCoords.lon], { color: "#E53935", label: "도착" });
+      } else {
+        clearEndpointMarker("dest");
+      }
     }
     fitBounds();
     if (originCoords && destCoords) {
+      clearRouteGroup();
       fetchAndDrawRoute(
         originCoords.lat, originCoords.lon,
         destCoords.lat, destCoords.lon,
@@ -3842,6 +3878,8 @@ function isCurrentSearchSnapshot(
  */
 async function handleSearch() {
   if (_searchInProgress) return; // 중복 검색 방지
+  closeACDropdown($originAC);
+  closeACDropdown($destAC);
 
   var origin = $origin.value.trim();
   var destination = $destination.value.trim();
@@ -3902,9 +3940,33 @@ async function handleSearch() {
 
   try {
     // ── Step 1: 출발/도착 좌표를 병렬 resolve ──
+    var originCoordsPromise = resolveRouteCriticalCoords(origin, searchOriginSelection).then(function (coords) {
+      if (!isSearchStillCurrent()) return coords;
+      if (coords && hasStableSelection(searchOriginSelection) && !hasValidCoords(searchOriginSelection)) {
+        searchOriginSelection = markSelectionCoordsResolved(searchOriginSelection, coords);
+        _selectedOrigin = searchOriginSelection;
+      }
+      if (_map && coords) {
+        setEndpointMarker("origin", [coords.lat, coords.lon], { color: "#03C75A", label: "출발" });
+        fitBounds();
+      }
+      return coords;
+    });
+    var destCoordsPromise = resolveRouteCriticalCoords(destination, searchDestSelection).then(function (coords) {
+      if (!isSearchStillCurrent()) return coords;
+      if (coords && hasStableSelection(searchDestSelection) && !hasValidCoords(searchDestSelection)) {
+        searchDestSelection = markSelectionCoordsResolved(searchDestSelection, coords);
+        _selectedDest = searchDestSelection;
+      }
+      if (_map && coords) {
+        setEndpointMarker("dest", [coords.lat, coords.lon], { color: "#E53935", label: "도착" });
+        fitBounds();
+      }
+      return coords;
+    });
     var coordResults = await Promise.all([
-      resolveRouteCriticalCoords(origin, searchOriginSelection),
-      resolveRouteCriticalCoords(destination, searchDestSelection),
+      originCoordsPromise,
+      destCoordsPromise,
     ]);
     var oCoords = coordResults[0];
     var dCoords = coordResults[1];
@@ -3951,10 +4013,10 @@ async function handleSearch() {
     clearMarkers();
     if (_map) {
       if (oCoords) {
-        addMarker([oCoords.lat, oCoords.lon], { color: "#03C75A", label: "출발" });
+        setEndpointMarker("origin", [oCoords.lat, oCoords.lon], { color: "#03C75A", label: "출발" });
       }
       if (dCoords) {
-        addMarker([dCoords.lat, dCoords.lon], { color: "#E53935", label: "도착" });
+        setEndpointMarker("dest", [dCoords.lat, dCoords.lon], { color: "#E53935", label: "도착" });
       }
       fitBounds();
     }
