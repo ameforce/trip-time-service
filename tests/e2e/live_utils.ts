@@ -107,6 +107,34 @@ function debugHeaders(): Record<string, string> {
   return E2E_DEBUG_TOKEN ? { 'X-TTS-Debug-Token': E2E_DEBUG_TOKEN } : {};
 }
 
+async function assertDeterministicFixtureRuntime(
+  request: APIRequestContext,
+): Promise<void> {
+  const response = await request.get(`${BASE_URL}/api/debug/autocomplete/runtime`, {
+    headers: debugHeaders(),
+  });
+  expect(response.ok()).toBeTruthy();
+  const payload = await response.json();
+  expect(payload).toMatchObject({
+    fixture_mode: true,
+    mode: 'fixture',
+    external_provider_calls: 0,
+  });
+  expect(payload.external_provider_call_breakdown).toMatchObject({
+    naver_all_search: 0,
+    browser_autocomplete: 0,
+    geocode_naver: 0,
+    geocode_nominatim: 0,
+    geocode_photon: 0,
+    osrm_route: 0,
+  });
+  if (process.env.TTS_PROVIDER === 'mock') {
+    expect(payload.external_provider_call_breakdown).toMatchObject({
+      selenium_route_provider: 0,
+    });
+  }
+}
+
 export async function verifyAutocompleteApi(
   request: APIRequestContext,
   testCase: AutocompleteCase,
@@ -352,10 +380,8 @@ export async function runRouteScenario(
     }
     await expect(results).toBeVisible({ timeout: 30000 });
     await expect(page.locator('#error-msg')).toBeHidden({ timeout: 5000 });
-    if (process.env.TTS_PROVIDER === 'mock') {
-      await expect(results).toContainText('mock 모드 결과 안내', { timeout: 5000 });
-    } else {
-      await expect(results).not.toContainText('mock 모드 결과 안내', { timeout: 5000 });
+    if (process.env.TTS_E2E_FIXTURE_MODE === '1') {
+      await assertDeterministicFixtureRuntime(request);
     }
     await expect(recommendationCard).toContainText('추천 출발 시간', { timeout: 30000 });
     if (scenario.mode === 'departure') {
