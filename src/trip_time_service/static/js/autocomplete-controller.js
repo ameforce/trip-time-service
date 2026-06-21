@@ -305,6 +305,9 @@
         return;
       }
       setSelected(null);
+      if (typeof invalidateRouteInputState === "function") {
+        invalidateRouteInputState();
+      }
       if (!derived.trailingJamo && q.length >= AUTOCOMPLETE_MIN_QUERY_LENGTH) {
         state.lastStableQuery = q;
       }
