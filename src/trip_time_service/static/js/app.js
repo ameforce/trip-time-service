@@ -3878,6 +3878,7 @@ async function handleSearch() {
     showError("시각 값을 해석할 수 없습니다. 다시 선택해 주세요.");
     if (_routeInputRevision === searchRouteInputRevision) {
       _searchInProgress = false;
+      if (!isSearchStillCurrent()) return;
       hideLoading();
     }
     return;
