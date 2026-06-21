@@ -1,25 +1,8 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from trip_time_service.api import geocode_services
-
-
-class _FakeResponse:
-    def __init__(self, payload: dict) -> None:
-        self.status = 200
-        self._raw = json.dumps(payload).encode("utf-8")
-
-    def read(self) -> bytes:
-        return self._raw
-
-    def __enter__(self) -> _FakeResponse:
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> bool:
-        return False
 
 
 @pytest.fixture(autouse=True)
@@ -37,21 +20,26 @@ def _reset_autocomplete_runtime_state() -> None:
 
 def _patch_autocomplete_fallbacks(
     monkeypatch,
-    responses: list[dict],
-    calls: list[str],
+    instant_calls: list[str],
 ) -> None:
-    payloads = iter(responses)
-
-    def _fake_urlopen(request, timeout=0):  # type: ignore[no-untyped-def]
-        del timeout
-        query = request.full_url.split("query=", 1)[1].split("&", 1)[0]
-        calls.append(geocode_services.urllib.parse.unquote_plus(query))
-        return _FakeResponse(next(payloads))
+    def _forbid_all_search(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("autocomplete warmup/backoff must not call allSearch")
 
     monkeypatch.setattr(
-        geocode_services.urllib.request,
-        "urlopen",
-        _fake_urlopen,
+        geocode_services,
+        "autocomplete_naver_map_raw",
+        _forbid_all_search,
+    )
+
+    def _instant_search(query: str, *, limit: int) -> tuple[dict, ...]:
+        del limit
+        instant_calls.append(query)
+        return ()
+
+    monkeypatch.setattr(
+        geocode_services,
+        "fetch_autocomplete_from_instant_search",
+        _instant_search,
     )
     monkeypatch.setattr(geocode_services, "warmup_naver_browser_pool", lambda: None)
     monkeypatch.setattr(
@@ -72,34 +60,10 @@ def _patch_autocomplete_fallbacks(
 
 
 def test_warmup_does_not_call_all_search_or_arm_global_backoff(monkeypatch) -> None:
-    calls: list[str] = []
+    instant_calls: list[str] = []
     _patch_autocomplete_fallbacks(
         monkeypatch,
-        responses=[
-            {
-                "result": {
-                    "ncaptcha": True,
-                    "place": {"list": []},
-                    "address": {"list": []},
-                }
-            },
-            {
-                "result": {
-                    "place": {"list": []},
-                    "address": {
-                        "list": [
-                            {
-                                "name": "세종대로 110",
-                                "roadAddress": "서울 중구 세종대로 110",
-                                "x": "126.9783882",
-                                "y": "37.5666103",
-                            }
-                        ]
-                    },
-                }
-            },
-        ],
-        calls=calls,
+        instant_calls=instant_calls,
     )
 
     geocode_services.clear_autocomplete_cache()
@@ -119,7 +83,7 @@ def test_warmup_does_not_call_all_search_or_arm_global_backoff(monkeypatch) -> N
         results = geocode_services.autocomplete_naver_map("세종대로 110", limit=5)
 
         assert results == ()
-        assert calls == []
+        assert instant_calls == ["세종대로 110"]
     finally:
         geocode_services.clear_autocomplete_cache()
 
@@ -127,34 +91,10 @@ def test_warmup_does_not_call_all_search_or_arm_global_backoff(monkeypatch) -> N
 def test_interactive_autocomplete_miss_does_not_call_all_search_backoff(
     monkeypatch,
 ) -> None:
-    calls: list[str] = []
+    instant_calls: list[str] = []
     _patch_autocomplete_fallbacks(
         monkeypatch,
-        responses=[
-            {
-                "result": {
-                    "ncaptcha": True,
-                    "place": {"list": []},
-                    "address": {"list": []},
-                }
-            },
-            {
-                "result": {
-                    "place": {"list": []},
-                    "address": {
-                        "list": [
-                            {
-                                "name": "세종대로 110",
-                                "roadAddress": "서울 중구 세종대로 110",
-                                "x": "126.9783882",
-                                "y": "37.5666103",
-                            }
-                        ]
-                    },
-                }
-            },
-        ],
-        calls=calls,
+        instant_calls=instant_calls,
     )
 
     geocode_services.clear_autocomplete_cache()
@@ -174,48 +114,16 @@ def test_interactive_autocomplete_miss_does_not_call_all_search_backoff(
         )
 
         assert geocode_services.autocomplete_naver_map("세종대로 110", limit=5) == ()
-        assert calls == []
+        assert instant_calls == ["경수대로680번길40", "세종대로 110"]
     finally:
         geocode_services.clear_autocomplete_cache()
 
 
 def test_warmup_skips_verbose_reverse_geocoded_address_queries(monkeypatch) -> None:
-    calls: list[str] = []
+    instant_calls: list[str] = []
     _patch_autocomplete_fallbacks(
         monkeypatch,
-        responses=[
-            {
-                "result": {
-                    "place": {"list": []},
-                    "address": {
-                        "list": [
-                            {
-                                "name": "세종대로 110",
-                                "roadAddress": "서울 중구 세종대로 110",
-                                "x": "126.9783882",
-                                "y": "37.5666103",
-                            }
-                        ]
-                    },
-                }
-            },
-            {
-                "result": {
-                    "place": {"list": []},
-                    "address": {
-                        "list": [
-                            {
-                                "name": "테스트",
-                                "roadAddress": "테스트",
-                                "x": "126.9783882",
-                                "y": "37.5666103",
-                            }
-                        ]
-                    },
-                }
-            },
-        ],
-        calls=calls,
+        instant_calls=instant_calls,
     )
 
     geocode_services.clear_autocomplete_cache()
@@ -229,6 +137,6 @@ def test_warmup_skips_verbose_reverse_geocoded_address_queries(monkeypatch) -> N
         )
 
         assert queued == 1
-        assert calls == []
+        assert instant_calls == []
     finally:
         geocode_services.clear_autocomplete_cache()
