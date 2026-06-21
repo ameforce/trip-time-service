@@ -748,7 +748,8 @@ test.describe('autocomplete unresolved poi display', () => {
       await page.fill('#origin', '서울역');
       await page.fill('#destination', '코엑스');
       await expect(page.locator('#dest-ac .ac-item')).toHaveCount(1);
-      await page.click('#search-btn');
+      // Keep the destination autocomplete open while the in-flight search starts.
+      await page.locator('#search-btn').dispatchEvent('click');
       await expect(page.locator('#loading')).not.toHaveClass(/hidden/);
       await expect
         .poll(() => baselineRequests.length, { timeout: 3000 })
