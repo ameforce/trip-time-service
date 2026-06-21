@@ -16,6 +16,7 @@ from functools import lru_cache
 from trip_time_service.api.e2e_fixtures import is_fixture_mode_enabled
 from trip_time_service.api.naver_browser_autocomplete import (
     autocomplete_naver_browser_pool,
+    fetch_autocomplete_from_instant_search,
     get_naver_browser_pool_metrics,
     reset_naver_browser_pool_runtime,
     shutdown_naver_browser_pool,
@@ -235,15 +236,25 @@ def _get_autocomplete_context_bool(name: str, default: bool) -> bool:
 def _autocomplete_call_context(
     *,
     record_ncaptcha_backoff: bool | None = None,
+    allow_instant_search_fallback: bool | None = None,
 ):
     previous_value = getattr(
         _AUTOCOMPLETE_CALL_CONTEXT,
         "record_ncaptcha_backoff",
         None,
     )
+    previous_instant_fallback_value = getattr(
+        _AUTOCOMPLETE_CALL_CONTEXT,
+        "allow_instant_search_fallback",
+        None,
+    )
     if record_ncaptcha_backoff is not None:
         _AUTOCOMPLETE_CALL_CONTEXT.record_ncaptcha_backoff = (
             record_ncaptcha_backoff
+        )
+    if allow_instant_search_fallback is not None:
+        _AUTOCOMPLETE_CALL_CONTEXT.allow_instant_search_fallback = (
+            allow_instant_search_fallback
         )
     try:
         yield
@@ -253,6 +264,19 @@ def _autocomplete_call_context(
                 delattr(_AUTOCOMPLETE_CALL_CONTEXT, "record_ncaptcha_backoff")
         else:
             _AUTOCOMPLETE_CALL_CONTEXT.record_ncaptcha_backoff = previous_value
+        if previous_instant_fallback_value is None:
+            if hasattr(
+                _AUTOCOMPLETE_CALL_CONTEXT,
+                "allow_instant_search_fallback",
+            ):
+                delattr(
+                    _AUTOCOMPLETE_CALL_CONTEXT,
+                    "allow_instant_search_fallback",
+                )
+        else:
+            _AUTOCOMPLETE_CALL_CONTEXT.allow_instant_search_fallback = (
+                previous_instant_fallback_value
+            )
 
 
 def _normalize_text(value: str) -> str:
@@ -1211,6 +1235,35 @@ def _autocomplete_naver_map_uncached(
         )
         return browser_results
 
+    if _get_autocomplete_context_bool("allow_instant_search_fallback", True):
+        try:
+            instant_results = _time_autocomplete_stage(
+                "instant_search_service_fallback",
+                lambda: fetch_autocomplete_from_instant_search(query, limit=limit),
+            )
+        except Exception:
+            instant_results = ()
+
+        if instant_results:
+            marked_instant_results = tuple(
+                {
+                    **candidate,
+                    "source": "naver_browser_suggest_instant_fallback",
+                }
+                for candidate in instant_results
+            )
+            _increment_runtime_counter(
+                _AUTOCOMPLETE_SOURCE_COUNTS,
+                "naver_browser_suggest_instant_fallback",
+            )
+            _log.info(
+                "autocomplete query=%s source=naver_browser_suggest_instant_fallback "
+                "fallback_count=%d",
+                _redact_query(query),
+                len(marked_instant_results),
+            )
+            return marked_instant_results
+
     _increment_runtime_counter(_AUTOCOMPLETE_SOURCE_COUNTS, "none")
     return ()
 
@@ -1396,7 +1449,10 @@ def warmup_autocomplete_cache(
             warmup_naver_browser_pool()
             if _is_autocomplete_runtime_disabled():
                 return
-            with _autocomplete_call_context(record_ncaptcha_backoff=False):
+            with _autocomplete_call_context(
+                record_ncaptcha_backoff=False,
+                allow_instant_search_fallback=False,
+            ):
                 for query in deduped_queries:
                     if _is_autocomplete_runtime_disabled():
                         return

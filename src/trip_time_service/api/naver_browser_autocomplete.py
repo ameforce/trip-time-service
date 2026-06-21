@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
 import os
 import re
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 
 from selenium import webdriver
@@ -14,6 +18,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 
+from trip_time_service.api.naver_geo import extract_coords_from_naver_url
 from trip_time_service.chrome_driver import (
     build_chrome_options,
     close_webdriver_with_timeout,
@@ -36,6 +41,17 @@ _BUSY = object()
 _CLOSE_LOCK_TIMEOUT_SECONDS = 1.0
 _DRIVER_QUIT_TIMEOUT_SECONDS = 2.0
 _POOL_CLOSE_TIMEOUT_SECONDS = 6.0
+_SUGGEST_COORD_ATTRS = (
+    "href",
+    "data-url",
+    "data-href",
+    "data-link",
+    "data-nclk",
+    "data-nclicks",
+)
+_INSTANT_SEARCH_TIMEOUT_MS = 1800
+_INSTANT_SEARCH_DIRECT_TIMEOUT_SECONDS = 1.8
+_INSTANT_SEARCH_DEFAULT_COORDS = "37.40607799999982,127.12057619212703"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -88,6 +104,39 @@ def _looks_like_query_match(query: str, *candidate_parts: str) -> bool:
     normalized_query = _normalize_text(query)
     normalized_candidate = _normalize_text(candidate_text)
     return normalized_query in normalized_candidate
+
+
+def _iter_option_coordinate_urls(option: object) -> tuple[str, ...]:
+    urls: list[str] = []
+    for attr in _SUGGEST_COORD_ATTRS:
+        try:
+            value = option.get_attribute(attr)
+        except Exception:
+            value = None
+        if value:
+            urls.append(str(value))
+
+    try:
+        anchors = option.find_elements(By.CSS_SELECTOR, "a[href]")
+    except Exception:
+        anchors = []
+    for anchor in anchors:
+        try:
+            href = anchor.get_attribute("href")
+        except Exception:
+            href = None
+        if href:
+            urls.append(str(href))
+    return tuple(urls)
+
+
+def _extract_option_link_coords(option: object) -> tuple[str, str] | None:
+    for url in _iter_option_coordinate_urls(option):
+        coords = extract_coords_from_naver_url(url)
+        if coords:
+            lat, lon = coords
+            return str(lat), str(lon)
+    return None
 
 
 def _read_host_logical_cpus() -> int:
@@ -443,15 +492,26 @@ class _BrowserAutocompleteWorker:
         search_input.send_keys(Keys.CONTROL, "a")
         search_input.send_keys(Keys.DELETE)
         search_input.send_keys(query)
-
         def _matching_suggestions(cur: webdriver.Chrome) -> tuple[dict, ...]:
             options = cur.find_elements(By.CSS_SELECTOR, _SUGGEST_OPTION_SELECTOR)
-            return _extract_suggestions_from_options(query, options, limit=limit)
+            suggestions = _extract_suggestions_from_options(query, options, limit=limit)
+            return suggestions
 
         try:
-            return WebDriverWait(driver, wait_seconds).until(_matching_suggestions)
+            suggestions = WebDriverWait(driver, wait_seconds).until(
+                _matching_suggestions
+            )
+            return _enrich_suggestions_from_instant_search(
+                driver,
+                query,
+                suggestions,
+            )
         except Exception:
-            return ()
+            return _synthesize_suggestions_from_instant_search(
+                driver,
+                query,
+                limit=limit,
+            )
 
 
 def _extract_suggestions_from_options(
@@ -460,7 +520,24 @@ def _extract_suggestions_from_options(
     *,
     limit: int,
 ) -> tuple[dict, ...]:
+    return tuple(
+        suggestion
+        for suggestion, _option in _extract_suggestion_records_from_options(
+            query,
+            options,
+            limit=limit,
+        )
+    )
+
+
+def _extract_suggestion_records_from_options(
+    query: str,
+    options: list[object],
+    *,
+    limit: int,
+) -> tuple[tuple[dict, object], ...]:
     results: list[dict] = []
+    records: list[tuple[dict, object]] = []
     seen_keys: set[str] = set()
     for index, option in enumerate(options):
         if len(results) >= limit:
@@ -502,18 +579,446 @@ def _extract_suggestions_from_options(
         seen_keys.add(dedupe_key)
 
         confidence = max(0.55, 0.9 - (index * 0.04))
+        coords = _extract_option_link_coords(option)
+        suggestion = {
+            "lat": coords[0] if coords else "",
+            "lon": coords[1] if coords else "",
+            "display_name": display_name,
+            "address": address,
+            "type": kind,
+            "source": "naver_browser_suggest",
+            "confidence": round(confidence, 2),
+        }
+        results.append(suggestion)
+        records.append((suggestion, option))
+    return tuple(records)
+
+
+def _suggestion_has_coords(suggestion: dict) -> bool:
+    try:
+        lat = float(str(suggestion.get("lat", "")).strip())
+        lon = float(str(suggestion.get("lon", "")).strip())
+    except (TypeError, ValueError):
+        return False
+    return 33 <= lat <= 43 and 124 <= lon <= 132
+
+
+def _fetch_instant_search_json(
+    driver: webdriver.Chrome,
+    query: str,
+) -> dict | list | None:
+    script = """
+const query = arguments[0];
+const defaultCoords = arguments[1];
+const timeoutMs = arguments[2];
+const done = arguments[arguments.length - 1];
+
+function readCenterCoords() {
+  try {
+    const naver = window.naver;
+    const maps = naver && naver.maps;
+    const map = window.map || window.__naver_map__ || window.__map;
+    if (maps && map && typeof map.getCenter === "function") {
+      const center = map.getCenter();
+      const lat = typeof center.lat === "function" ? center.lat() : center.y;
+      const lon = typeof center.lng === "function" ? center.lng() : center.x;
+      if (Number.isFinite(lat) && Number.isFinite(lon)) {
+        return `${lat},${lon}`;
+      }
+    }
+  } catch (_err) {
+  }
+  return defaultCoords;
+}
+
+const controller = new AbortController();
+const timer = setTimeout(() => controller.abort(), timeoutMs);
+const params = new URLSearchParams({query, coords: readCenterCoords()});
+fetch(`/p/api/search/instant-search?${params.toString()}`, {
+  credentials: "include",
+  signal: controller.signal,
+  headers: {"accept": "application/json,text/plain,*/*"},
+})
+  .then(async (response) => {
+    const text = await response.text();
+    if (!response.ok) {
+      done({ok: false, status: response.status, text});
+      return;
+    }
+    try {
+      done({ok: true, status: response.status, json: JSON.parse(text)});
+    } catch (err) {
+      done({ok: false, status: response.status, text});
+    }
+  })
+  .catch((err) => done({ok: false, error: String(err && err.message || err)}))
+  .finally(() => clearTimeout(timer));
+"""
+    fetch_status: object = "exception"
+    try:
+        payload = driver.execute_async_script(
+            script,
+            query,
+            _INSTANT_SEARCH_DEFAULT_COORDS,
+            _INSTANT_SEARCH_TIMEOUT_MS,
+        )
+    except Exception:
+        _log.debug(
+            "browser instant-search js fetch failed query=%s",
+            redact_text(query),
+        )
+        return _direct_fetch_instant_search_json(query)
+
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        if isinstance(payload, dict):
+            fetch_status = payload.get("status") or payload.get("error") or "non-ok"
+        _log.debug(
+            "browser instant-search js fetch non-ok status=%s query=%s",
+            fetch_status,
+            redact_text(query),
+        )
+        return _direct_fetch_instant_search_json(query)
+    data = payload.get("json")
+    if isinstance(data, dict | list):
+        return data
+    _log.debug("browser instant-search js fetch malformed query=%s", redact_text(query))
+    return _direct_fetch_instant_search_json(query)
+
+
+def _direct_fetch_instant_search_json(query: str) -> dict | list | None:
+    params = urllib.parse.urlencode(
+        {"query": query, "coords": _INSTANT_SEARCH_DEFAULT_COORDS}
+    )
+    request = urllib.request.Request(
+        f"https://map.naver.com/p/api/search/instant-search?{params}",
+        headers={
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": "https://map.naver.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+        },
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=_INSTANT_SEARCH_DIRECT_TIMEOUT_SECONDS,
+        ) as response:
+            status = getattr(response, "status", None) or response.getcode()
+            if status != 200:
+                _log.debug(
+                    "direct instant-search fallback non-ok status=%s query=%s",
+                    status,
+                    redact_text(query),
+                )
+                return None
+            content_type = response.headers.get("Content-Type", "")
+            if "json" not in content_type.lower():
+                _log.debug(
+                    "direct instant-search fallback non-json content-type=%s query=%s",
+                    content_type,
+                    redact_text(query),
+                )
+                return None
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        _log.debug(
+            "direct instant-search fallback http status=%s query=%s",
+            exc.code,
+            redact_text(query),
+        )
+        return None
+    except Exception:
+        _log.debug(
+            "direct instant-search fallback failed query=%s",
+            redact_text(query),
+        )
+        return None
+    if isinstance(data, dict | list):
+        return data
+    _log.debug(
+        "direct instant-search fallback malformed payload query=%s",
+        redact_text(query),
+    )
+    return None
+
+
+def _candidate_text_parts(candidate: dict) -> tuple[str, ...]:
+    parts: list[str] = []
+    for key in (
+        "name",
+        "displayName",
+        "title",
+        "label",
+        "address",
+        "roadAddress",
+        "fullAddress",
+        "newAddress",
+        "jibunAddress",
+    ):
+        value = candidate.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    return tuple(parts)
+
+
+def _parse_instant_candidate(candidate: object, *, kind: str) -> dict | None:
+    if not isinstance(candidate, dict):
+        return None
+    try:
+        lon = float(str(candidate.get("x", "")).strip())
+        lat = float(str(candidate.get("y", "")).strip())
+    except (TypeError, ValueError):
+        return None
+    if not (33 <= lat <= 43 and 124 <= lon <= 132):
+        return None
+    text_parts = _candidate_text_parts(candidate)
+    if not text_parts:
+        return None
+    display_name = next(
+        (
+            str(candidate.get(key, "")).strip()
+            for key in ("label", "name", "displayName", "title", "address")
+            if str(candidate.get(key, "")).strip()
+        ),
+        text_parts[0],
+    )
+    address = next(
+        (
+            str(candidate.get(key, "")).strip()
+            for key in (
+                "address",
+                "roadAddress",
+                "fullAddress",
+                "newAddress",
+                "jibunAddress",
+            )
+            if str(candidate.get(key, "")).strip()
+        ),
+        display_name,
+    )
+    return {
+        "lat": str(candidate.get("y", "")).strip(),
+        "lon": str(candidate.get("x", "")).strip(),
+        "text_parts": text_parts,
+        "display_name": display_name,
+        "address": address,
+        "type": "주소" if kind == "address" else "장소",
+        "kind": kind,
+    }
+
+
+def _iter_instant_search_candidates(payload: object) -> tuple[dict, ...]:
+    if not isinstance(payload, dict):
+        return ()
+
+    candidates: list[dict] = []
+
+    def _append(candidate: object, *, kind: str) -> None:
+        parsed = _parse_instant_candidate(candidate, kind=kind)
+        if parsed is not None:
+            candidates.append(parsed)
+
+    for key in ("address", "place"):
+        entries = payload.get(key)
+        if isinstance(entries, list):
+            for entry in entries:
+                _append(entry, kind=key)
+
+    all_entries = payload.get("all")
+    if isinstance(all_entries, list):
+        for entry in all_entries:
+            if not isinstance(entry, dict):
+                continue
+            for key in ("address", "place"):
+                nested = entry.get(key)
+                if isinstance(nested, list):
+                    for nested_entry in nested:
+                        _append(nested_entry, kind=key)
+                else:
+                    _append(nested, kind=key)
+
+    return tuple(candidates)
+
+
+def _instant_synthesis_match_score(*, query: str, candidate: dict) -> int:
+    candidate_parts = tuple(str(part) for part in candidate.get("text_parts", ()))
+    if not candidate_parts:
+        return 0
+    query_compact = _compact_text(query)
+    candidate_compacts = {_compact_text(part) for part in candidate_parts if part}
+    candidate_combined = _compact_text(" ".join(candidate_parts))
+    if not query_compact or not candidate_combined:
+        return 0
+    if query_compact in candidate_compacts:
+        return 130
+    if query_compact in candidate_combined:
+        return 110 if candidate.get("kind") == "address" else 105
+    if any(
+        candidate_compact in query_compact
+        for candidate_compact in candidate_compacts
+    ):
+        return 90
+    return 0
+
+
+def _synthesize_suggestions_from_instant_payload(
+    query: str,
+    payload: object,
+    *,
+    limit: int,
+) -> tuple[dict, ...]:
+    candidates = _iter_instant_search_candidates(payload)
+    if not candidates:
+        return ()
+
+    ranked: list[tuple[int, int, dict]] = []
+    seen_keys: set[str] = set()
+    for index, candidate in enumerate(candidates):
+        score = _instant_synthesis_match_score(query=query, candidate=candidate)
+        if score <= 0:
+            continue
+        dedupe_key = (
+            f"{_compact_text(str(candidate.get('display_name', '')))}|"
+            f"{_compact_text(str(candidate.get('address', '')))}"
+        )
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        ranked.append((score, index, candidate))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    results: list[dict] = []
+    for score, _index, candidate in ranked[: max(0, limit)]:
         results.append(
             {
-                "lat": "",
-                "lon": "",
-                "display_name": display_name,
-                "address": address,
-                "type": kind,
+                "lat": str(candidate["lat"]),
+                "lon": str(candidate["lon"]),
+                "display_name": str(candidate["display_name"]),
+                "address": str(candidate["address"]),
+                "type": str(candidate["type"]),
                 "source": "naver_browser_suggest",
-                "confidence": round(confidence, 2),
+                "confidence": round(min(0.94, max(0.7, score / 140)), 2),
             }
         )
     return tuple(results)
+
+
+def fetch_autocomplete_from_instant_search(
+    query: str,
+    *,
+    limit: int = 12,
+) -> tuple[dict, ...]:
+    payload = _direct_fetch_instant_search_json(query)
+    return _synthesize_suggestions_from_instant_payload(query, payload, limit=limit)
+
+
+def _synthesize_suggestions_from_instant_search(
+    driver: webdriver.Chrome,
+    query: str,
+    *,
+    limit: int,
+) -> tuple[dict, ...]:
+    try:
+        payload = _fetch_instant_search_json(driver, query)
+    except Exception:
+        return ()
+    return _synthesize_suggestions_from_instant_payload(query, payload, limit=limit)
+
+
+def _instant_candidate_match_score(
+    *,
+    query: str,
+    suggestion: dict,
+    candidate: dict,
+) -> int:
+    candidate_parts = tuple(str(part) for part in candidate.get("text_parts", ()))
+    candidate_compacts = {_compact_text(part) for part in candidate_parts if part}
+    candidate_combined = _compact_text(" ".join(candidate_parts))
+    if not candidate_combined:
+        return 0
+
+    display = str(suggestion.get("display_name", ""))
+    address = str(suggestion.get("address", ""))
+    display_compact = _compact_text(display)
+    address_compact = _compact_text(address)
+    combined_compact = _compact_text(f"{display} {address}")
+    suggestion_compacts = {
+        part
+        for part in (display_compact, address_compact, combined_compact)
+        if part
+    }
+    query_compact = _compact_text(query)
+
+    if display_compact and display_compact in candidate_compacts:
+        return 120
+    if address_compact and address_compact in candidate_compacts:
+        return 95
+    if candidate_compacts & suggestion_compacts:
+        return 90
+    if any(
+        part and part in suggestion_compact
+        for part in candidate_compacts
+        for suggestion_compact in suggestion_compacts
+    ):
+        if query_compact and query_compact not in candidate_combined:
+            return 0
+        return 80
+    if any(
+        suggestion_compact and suggestion_compact in candidate_combined
+        for suggestion_compact in suggestion_compacts
+    ):
+        return 70
+    return 0
+
+
+def _enrich_suggestions_from_instant_search(
+    driver: webdriver.Chrome,
+    query: str,
+    suggestions: tuple[dict, ...],
+) -> tuple[dict, ...]:
+    if not suggestions or all(
+        _suggestion_has_coords(suggestion) for suggestion in suggestions
+    ):
+        return suggestions
+
+    try:
+        payload = _fetch_instant_search_json(driver, query)
+    except Exception:
+        return suggestions
+
+    candidates = _iter_instant_search_candidates(payload)
+    if not candidates:
+        return suggestions
+
+    promoted = [dict(suggestion) for suggestion in suggestions]
+    used_candidate_indexes: set[int] = set()
+    for suggestion_index, suggestion in enumerate(suggestions):
+        if _suggestion_has_coords(suggestion):
+            continue
+        best_score = 0
+        best_candidate_index: int | None = None
+        for candidate_index, candidate in enumerate(candidates):
+            if candidate_index in used_candidate_indexes:
+                continue
+            score = _instant_candidate_match_score(
+                query=query,
+                suggestion=suggestion,
+                candidate=candidate,
+            )
+            if score > best_score:
+                best_score = score
+                best_candidate_index = candidate_index
+        if best_candidate_index is None or best_score < 70:
+            continue
+        candidate = candidates[best_candidate_index]
+        promoted[suggestion_index]["lat"] = str(candidate["lat"])
+        promoted[suggestion_index]["lon"] = str(candidate["lon"])
+        used_candidate_indexes.add(best_candidate_index)
+
+    return tuple(promoted)
 
 
 class NaverBrowserAutocompletePool:
