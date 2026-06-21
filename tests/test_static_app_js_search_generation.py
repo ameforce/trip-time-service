@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 APP_JS = Path("src/trip_time_service/static/js/app.js").read_text(encoding="utf-8")
+INDEX_HTML = Path("src/trip_time_service/static/index.html").read_text(
+    encoding="utf-8"
+)
 
 
 def _between(start: str, end: str) -> str:
@@ -29,7 +32,8 @@ def test_route_mutation_handlers_invalidate_search_generation() -> None:
         "/* Live marker update on input change */",
     )
 
-    assert "invalidateRouteInputState();" in autocomplete_selection
+    assert "invalidateRouteInputState(routeEndpoint);" in autocomplete_selection
+    assert "refreshMapMarkersLive(routeEndpoint);" in autocomplete_selection
     assert "invalidateRouteInputState();" in recent_click
     assert "invalidateRouteInputState();" in favorite_click
     assert "invalidateRouteInputState();" in swap_click
@@ -54,3 +58,22 @@ def test_search_cleanup_uses_full_current_snapshot_guard() -> None:
 
     assert "if (isSearchStillCurrent()) {" in finally_block
     assert "if (_routeInputRevision === searchRouteInputRevision)" not in finally_block
+
+
+def test_normal_page_omits_provider_copy_and_badge() -> None:
+    assert "데이터 제공자" not in INDEX_HTML
+    assert 'id="provider-badge"' not in INDEX_HTML
+    assert "provider-status" not in INDEX_HTML
+
+
+def test_autocomplete_dropdown_exposes_listbox_option_contract() -> None:
+    render_dropdown = _between(
+        "function renderACDropdown(",
+        "function closeACDropdown(",
+    )
+
+    assert 'role="listbox"' in INDEX_HTML
+    assert 'aria-haspopup="listbox"' in INDEX_HTML
+    assert 'role="option"' in render_dropdown
+    assert 'aria-selected="' in render_dropdown
+    assert 'tabindex="-1"' in render_dropdown

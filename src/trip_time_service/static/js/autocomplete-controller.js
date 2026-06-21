@@ -306,7 +306,7 @@
       }
       setSelected(null);
       if (typeof invalidateRouteInputState === "function") {
-        invalidateRouteInputState();
+        invalidateRouteInputState(timerKey);
       }
       if (!derived.trailingJamo && q.length >= AUTOCOMPLETE_MIN_QUERY_LENGTH) {
         state.lastStableQuery = q;
@@ -374,7 +374,7 @@
             currentItems = items;
             resetActiveIndex();
             renderACDropdown($dropdown, items, function (item) {
-              applyAutocompleteSelection($input, $dropdown, setSelected, item);
+              applyAutocompleteSelection($input, $dropdown, setSelected, item, timerKey);
             });
             state.lastRenderedQuery = queryAtRequest;
             transition("rendered", queryAtRequest, {
@@ -403,7 +403,7 @@
       if (state.phase === "loading" || state.phase === "scheduled") return;
       if (currentItems.length > 0 && state.lastRenderedQuery === q) {
         renderACDropdown($dropdown, currentItems, function (item) {
-          applyAutocompleteSelection($input, $dropdown, setSelected, item);
+          applyAutocompleteSelection($input, $dropdown, setSelected, item, timerKey);
         });
         transition("rendered", q, {
           reason: "focus-restore",
@@ -468,6 +468,7 @@
           _acActiveIdx[timerKey] = activeIdx;
           items.forEach(function (el, i) {
             el.classList.toggle("ac-active", i === activeIdx);
+            el.setAttribute("aria-selected", i === activeIdx ? "true" : "false");
           });
         } else if (event.key === "ArrowUp") {
           event.preventDefault();
@@ -476,11 +477,12 @@
           _acActiveIdx[timerKey] = activeIdx;
           items.forEach(function (el, i) {
             el.classList.toggle("ac-active", i === activeIdx);
+            el.setAttribute("aria-selected", i === activeIdx ? "true" : "false");
           });
         } else if (event.key === "Enter" && activeIdx >= 0 && currentItems[activeIdx]) {
           event.preventDefault();
           event.stopImmediatePropagation();
-          applyAutocompleteSelection($input, $dropdown, setSelected, currentItems[activeIdx]);
+          applyAutocompleteSelection($input, $dropdown, setSelected, currentItems[activeIdx], timerKey);
         } else if (event.key === "Escape") {
           event.stopImmediatePropagation();
           closeACDropdown($dropdown);

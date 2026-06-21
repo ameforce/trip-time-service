@@ -15,3 +15,16 @@ def test_mobile_toggle_stays_above_leaflet_controls() -> None:
 
     assert z_index_match is not None
     assert int(z_index_match.group("value")) > 1000
+
+
+def test_loading_status_is_not_full_sidebar_overlay() -> None:
+    css = Path("src/trip_time_service/static/css/style.css").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"\.loading\s*\{(?P<body>[^}]+)\}", css)
+
+    assert match is not None
+    loading_body = match.group("body")
+    assert "position: absolute" not in loading_body
+    assert "inset: 0" not in loading_body
+    assert "position: sticky" in loading_body or "position: relative" in loading_body

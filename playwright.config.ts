@@ -7,9 +7,9 @@ const e2ePort = process.env.E2E_PORT ?? '39080';
 const baseURL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${e2ePort}`;
 const e2eDebugToken =
   process.env.TTS_E2E_DEBUG_TOKEN ?? 'playwright-e2e-debug-token';
-const e2eProvider = process.env.TTS_PROVIDER ?? 'naver_selenium';
+const e2eProvider = process.env.TTS_PROVIDER ?? 'mock';
 const strictPort = process.env.TTS_PORT_STRICT ?? '1';
-const fixtureMode = process.env.TTS_E2E_FIXTURE_MODE ?? '0';
+const fixtureMode = process.env.TTS_E2E_FIXTURE_MODE ?? '1';
 const autocompleteBrowserEnable =
   process.env.TTS_AUTOCOMPLETE_BROWSER_ENABLE ?? (fixtureMode === '1' ? '0' : '1');
 const browserExecutablePath = process.env.TTS_E2E_BROWSER_EXECUTABLE_PATH?.trim();
