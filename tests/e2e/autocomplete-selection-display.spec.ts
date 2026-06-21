@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { expect, test } from '@playwright/test';
 
 function buildSseBody(events: Array<{ event: string; data: unknown }>): string {
@@ -29,6 +32,435 @@ function createDeferred<T>() {
 }
 
 test.describe('autocomplete unresolved poi display', () => {
+  test('keeps resolved origin marker while destination input is edited', async ({
+    page,
+  }) => {
+    const origin = {
+      lat: 37.554722,
+      lon: 126.970833,
+      display_name: '서울역',
+      address: '서울 중구 한강대로 405',
+      type: '역',
+      source: 'naver_map',
+      confidence: 0.99,
+      coords_ready: true,
+      selection_kind: 'station',
+      canonical_query: '서울역',
+    };
+
+    await page.route('**/api/autocomplete**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/autocomplete/warmup') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ queued: 0 }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(url.searchParams.get('q') === '서울역' ? [origin] : []),
+      });
+    });
+
+    await page.goto('/');
+    await page.fill('#origin', '서울역');
+    await expect(page.locator('#origin-ac .ac-item')).toHaveCount(1);
+    await page.locator('#origin-ac .ac-item').first().click();
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
+    await expect(page.locator('.leaflet-marker-icon').first()).toContainText('출발');
+
+    await page.fill('#destination', '광교역');
+
+    await expect(page.locator('#destination')).toHaveValue('광교역');
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
+    await expect(page.locator('.leaflet-marker-icon').first()).toContainText('출발');
+  });
+
+  test('keeps resolved origin marker when unresolved destination candidate is clicked', async ({
+    page,
+  }) => {
+    const geocodeQueries: string[] = [];
+    const origin = {
+      lat: 37.554722,
+      lon: 126.970833,
+      display_name: '서울역',
+      address: '서울 중구 한강대로 405',
+      type: '역',
+      source: 'naver_map',
+      confidence: 0.99,
+      coords_ready: true,
+      selection_kind: 'station',
+      canonical_query: '서울역',
+    };
+    const unresolvedDestination = {
+      lat: null,
+      lon: null,
+      display_name: '광교역(경기대)1번출구',
+      address: '경기 수원시 영통구 대학로 55',
+      type: '출입구',
+      source: 'naver_browser_suggest',
+      confidence: 0.9,
+      coords_ready: false,
+      selection_kind: 'poi',
+      canonical_query: '광교역 1번출구',
+    };
+
+    await page.route('**/api/autocomplete**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/autocomplete/warmup') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ queued: 0 }),
+        });
+        return;
+      }
+      const query = url.searchParams.get('q');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          query === '서울역' ? [origin] : query === '광교역' ? [unresolvedDestination] : [],
+        ),
+      });
+    });
+
+    await page.route('**/api/geocode?*', async (route) => {
+      const url = new URL(route.request().url());
+      geocodeQueries.push(url.searchParams.get('q') ?? '');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([]),
+      });
+    });
+
+    await page.goto('/');
+    await page.fill('#origin', '서울역');
+    await expect(page.locator('#origin-ac .ac-item')).toHaveCount(1);
+    await page.locator('#origin-ac .ac-item').first().click();
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
+
+    await page.fill('#destination', '광교역');
+    await expect(page.locator('#dest-ac .ac-item')).toHaveCount(1);
+    await page.locator('#dest-ac .ac-item').first().click();
+
+    await expect(page.locator('#destination')).toHaveValue(
+      '광교역(경기대)1번출구 (경기 수원시 영통구 대학로 55)',
+    );
+    await expect
+      .poll(() => geocodeQueries, { timeout: 3000 })
+      .toContain('광교역 1번출구');
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
+    await expect(page.locator('.leaflet-marker-icon').first()).toContainText('출발');
+  });
+
+  test('search waits for selected destination coords and never posts unresolved metadata', async ({
+    page,
+  }) => {
+    const destinationGeocode = createDeferred<void>();
+    const routeRequests: string[] = [];
+    const tripRequests: Array<{ path: string; payload: Record<string, unknown> }> = [];
+    const geocodeQueries: string[] = [];
+    const origin = {
+      lat: 37.554722,
+      lon: 126.970833,
+      display_name: '서울역',
+      address: '서울 중구 한강대로 405',
+      type: '역',
+      source: 'naver_map',
+      confidence: 0.99,
+      coords_ready: true,
+      selection_kind: 'station',
+      canonical_query: '서울역',
+    };
+    const unresolvedDestination = {
+      lat: null,
+      lon: null,
+      display_name: '광교역(경기대)1번출구',
+      address: '경기 수원시 영통구 대학로 55',
+      type: '출입구',
+      source: 'naver_browser_suggest',
+      confidence: 0.9,
+      coords_ready: false,
+      selection_kind: 'poi',
+      canonical_query: '광교역 1번출구',
+    };
+
+    await page.route('**/api/autocomplete**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/autocomplete/warmup') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ queued: 0 }),
+        });
+        return;
+      }
+      const query = url.searchParams.get('q');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          query === '서울역' ? [origin] : query === '광교역' ? [unresolvedDestination] : [],
+        ),
+      });
+    });
+
+    await page.route('**/api/geocode?*', async (route) => {
+      const url = new URL(route.request().url());
+      const query = url.searchParams.get('q') ?? '';
+      geocodeQueries.push(query);
+      if (query === '광교역 1번출구') {
+        await destinationGeocode.promise;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          query === '광교역 1번출구'
+            ? [
+                {
+                  lat: 37.300601,
+                  lon: 127.044201,
+                  source: 'test-geocode',
+                  confidence: 0.99,
+                },
+              ]
+            : [],
+        ),
+      });
+    });
+
+    await page.route('**/api/route?*', async (route) => {
+      routeRequests.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          routes: [
+            {
+              geometry: {
+                type: 'LineString',
+                coordinates: [
+                  [126.970833, 37.554722],
+                  [127.044201, 37.300601],
+                ],
+              },
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/trip/arrival-time-with-recommendation/stream', async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const payload = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
+      tripRequests.push({ path, payload });
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: buildSseBody([
+          {
+            event: 'arrival',
+            data: {
+              arrival: {
+                route: { origin: payload.origin, destination: payload.destination },
+                departure_time: payload.departure_time,
+                arrival_time: '2026-04-27T06:10:00+09:00',
+                duration_seconds: 2400,
+                provider: 'naver_selenium',
+                cache_hit: false,
+              },
+              immediate_safe_departure: null,
+              progress: {
+                checked: 0,
+                planned: 1,
+                remaining: 1,
+                total_candidates: 1,
+              },
+            },
+          },
+          {
+            event: 'recommendation',
+            data: {
+              route: { origin: payload.origin, destination: payload.destination },
+              desired_arrival_time: '2026-04-27T06:30:00+09:00',
+              recommended_departure_time: '2026-04-27T05:40:00+09:00',
+              expected_arrival_time: '2026-04-27T06:20:00+09:00',
+              duration_seconds: 2400,
+              meets_deadline: true,
+              provider: 'naver_selenium',
+              provider_calls: 1,
+              candidates_checked: 1,
+              planned_queries: 1,
+              total_candidates: 1,
+              candidate_evaluations: [],
+            },
+          },
+        ]),
+      });
+    });
+
+    await page.route('**/v1/trip/arrival-time', async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const payload = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
+      tripRequests.push({ path, payload });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          route: { origin: payload.origin, destination: payload.destination },
+          departure_time: payload.departure_time,
+          arrival_time: '2026-04-27T06:10:00+09:00',
+          duration_seconds: 2400,
+          provider: 'naver_selenium',
+          cache_hit: false,
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await page.fill('#origin', '서울역');
+    await expect(page.locator('#origin-ac .ac-item')).toHaveCount(1);
+    await page.locator('#origin-ac .ac-item').first().click();
+    await page.fill('#destination', '광교역');
+    await expect(page.locator('#dest-ac .ac-item')).toHaveCount(1);
+    await page.locator('#dest-ac .ac-item').first().click();
+    await page.click('#search-btn');
+
+    await expect.poll(() => geocodeQueries).toContain('광교역 1번출구');
+    await expect
+      .poll(() => ({ routes: routeRequests.length, trips: tripRequests.length }))
+      .toEqual({ routes: 0, trips: 0 });
+
+    destinationGeocode.resolve();
+    await expect
+      .poll(() => routeRequests.length, {
+        timeout: 5000,
+      })
+      .toBe(1);
+    await page.waitForTimeout(500);
+    for (const request of tripRequests) {
+      const destPlace = request.payload.dest_place as Record<string, unknown> | undefined;
+      if (!destPlace) {
+        continue;
+      }
+      expect(destPlace).toMatchObject({
+        query: '광교역(경기대)1번출구 (경기 수원시 영통구 대학로 55)',
+        display_name: '광교역(경기대)1번출구',
+        canonical_query: '광교역 1번출구',
+        selection_kind: 'poi',
+        coords_ready: true,
+        lat: 37.300601,
+        lon: 127.044201,
+        degraded_reason: null,
+      });
+      expect(Number.isFinite(destPlace.lat)).toBe(true);
+      expect(Number.isFinite(destPlace.lon)).toBe(true);
+    }
+    expect(
+      tripRequests.some((request) => {
+        const destPlace = request.payload.dest_place as Record<string, unknown> | undefined;
+        return destPlace?.coords_ready === false;
+      }),
+    ).toBe(false);
+  });
+
+  test('ignores stale destination geocode after input changes', async ({
+    page,
+  }) => {
+    const staleDestinationGeocode = createDeferred<void>();
+    const geocodeQueries: string[] = [];
+    const origin = {
+      lat: 37.554722,
+      lon: 126.970833,
+      display_name: '서울역',
+      address: '서울 중구 한강대로 405',
+      type: '역',
+      source: 'naver_map',
+      confidence: 0.99,
+      coords_ready: true,
+      selection_kind: 'station',
+      canonical_query: '서울역',
+    };
+    const unresolvedDestination = {
+      lat: null,
+      lon: null,
+      display_name: '광교역(경기대)1번출구',
+      address: '경기 수원시 영통구 대학로 55',
+      type: '출입구',
+      source: 'naver_browser_suggest',
+      confidence: 0.9,
+      coords_ready: false,
+      selection_kind: 'poi',
+      canonical_query: '광교역 1번출구',
+    };
+
+    await page.route('**/api/autocomplete**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/autocomplete/warmup') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ queued: 0 }),
+        });
+        return;
+      }
+      const query = url.searchParams.get('q');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          query === '서울역' ? [origin] : query === '광교역' ? [unresolvedDestination] : [],
+        ),
+      });
+    });
+
+    await page.route('**/api/geocode?*', async (route) => {
+      const url = new URL(route.request().url());
+      const query = url.searchParams.get('q') ?? '';
+      geocodeQueries.push(query);
+      if (query === '광교역 1번출구') {
+        await staleDestinationGeocode.promise;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            lat: 37.300601,
+            lon: 127.044201,
+            source: 'test-geocode',
+            confidence: 0.99,
+          },
+        ]),
+      });
+    });
+
+    await page.goto('/');
+    await page.fill('#origin', '서울역');
+    await expect(page.locator('#origin-ac .ac-item')).toHaveCount(1);
+    await page.locator('#origin-ac .ac-item').first().click();
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
+
+    await page.fill('#destination', '광교역');
+    await expect(page.locator('#dest-ac .ac-item')).toHaveCount(1);
+    await page.locator('#dest-ac .ac-item').first().click();
+    await expect.poll(() => geocodeQueries).toContain('광교역 1번출구');
+
+    await page.fill('#destination', '판교역');
+    staleDestinationGeocode.resolve();
+    await page.waitForTimeout(1000);
+
+    await expect(page.locator('#destination')).toHaveValue('판교역');
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
+    await expect(page.locator('.leaflet-marker-icon').first()).toContainText('출발');
+  });
+
   test('geocodes clicked unresolved poi candidate and shows a map marker', async ({
     page,
   }) => {
@@ -326,7 +758,8 @@ test.describe('autocomplete unresolved poi display', () => {
     await page.waitForTimeout(1500);
 
     await expect(page.locator('#destination')).toHaveValue('판교역');
-    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(0);
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
+    await expect(page.locator('.leaflet-marker-icon').first()).toContainText('출발');
     expect(routeRequests).toEqual([]);
     expect(tripRequests).toEqual([]);
   });
@@ -464,7 +897,8 @@ test.describe('autocomplete unresolved poi display', () => {
 
     await page.fill('#destination', '판교역');
     await expect(page.locator('#destination')).toHaveValue('판교역');
-    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(0);
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
+    await expect(page.locator('.leaflet-marker-icon').first()).toContainText('출발');
 
     delayedRoute.resolve();
     delayedBaseline.resolve();
@@ -472,7 +906,8 @@ test.describe('autocomplete unresolved poi display', () => {
     await page.waitForTimeout(1000);
 
     await expect(page.locator('#destination')).toHaveValue('판교역');
-    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(0);
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
+    await expect(page.locator('.leaflet-marker-icon').first()).toContainText('출발');
     await expect(page.locator('#results')).toHaveClass(/hidden/);
     expect(routeRequests.length).toBeGreaterThanOrEqual(1);
     expect(tripRequests.length).toBeGreaterThanOrEqual(1);
@@ -601,7 +1036,8 @@ test.describe('autocomplete unresolved poi display', () => {
     await expect(page.locator('.leaflet-marker-icon')).toHaveCount(2);
 
     await page.fill('#destination', '판교역');
-    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(0);
+    await expect(page.locator('.leaflet-marker-icon')).toHaveCount(1);
+    await expect(page.locator('.leaflet-marker-icon').first()).toContainText('출발');
     await page.click('#search-btn');
     await expect(page.locator('#loading')).not.toHaveClass(/hidden/);
 
@@ -932,5 +1368,179 @@ test.describe('autocomplete unresolved poi display', () => {
       .toEqual({ baseline: 0, stream: 0 });
     expect(geocodeQueries).toContain('삼성로 766');
     expect(geocodeQueries.every((query) => query === '삼성로 766')).toBeTruthy();
+  });
+
+  test('exposes option roles and keeps delayed lookup status non-blocking', async ({
+    page,
+  }, testInfo) => {
+    const delayedGeocode = createDeferred<void>();
+    const delayedRoute = createDeferred<void>();
+    const artifactsDir = testInfo.outputPath('task-4-contract');
+    mkdirSync(artifactsDir, { recursive: true });
+    const origin = {
+      lat: null,
+      lon: null,
+      display_name: '서울역 1번출구',
+      address: '서울 중구 세종대로 지하 2',
+      type: '출입구',
+      source: 'naver_browser_suggest',
+      confidence: 0.9,
+      coords_ready: false,
+      selection_kind: 'poi',
+      canonical_query: '서울역 1번출구',
+    };
+    const destination = {
+      lat: 37.394761,
+      lon: 127.111217,
+      display_name: '판교역',
+      address: '경기 성남시 분당구 판교역로 지하 160',
+      type: '역',
+      source: 'naver_map',
+      confidence: 0.98,
+      coords_ready: true,
+      selection_kind: 'station',
+      canonical_query: '판교역',
+    };
+
+    await page.route('**/api/autocomplete**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/autocomplete/warmup') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ queued: 0 }),
+        });
+        return;
+      }
+      const query = url.searchParams.get('q') ?? '';
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(query.includes('서울역') ? [origin] : [destination]),
+      });
+    });
+
+    await page.route('**/api/geocode?*', async (route) => {
+      const url = new URL(route.request().url());
+      if ((url.searchParams.get('q') ?? '').includes('서울역')) {
+        await delayedGeocode.promise;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([{ lat: 37.554722, lon: 126.970833 }]),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([{ lat: destination.lat, lon: destination.lon }]),
+      });
+    });
+
+    await page.route('**/v1/trip/arrival-time', async (route) => {
+      await delayedRoute.promise;
+      const payload = JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          route: {
+            origin: payload.origin,
+            destination: payload.destination,
+          },
+          departure_time: '2026-04-27T05:30:00+09:00',
+          arrival_time: '2026-04-27T06:10:00+09:00',
+          duration_seconds: 2400,
+          provider: 'naver_selenium',
+          cache_hit: false,
+        }),
+      });
+    });
+
+    await page.route('**/v1/trip/recommended-departure-time/stream', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: buildSseBody([]),
+      });
+    });
+
+    await page.goto('/');
+    await expect(page.locator('text=데이터 제공자')).toHaveCount(0);
+    await expect(page.locator('#provider-badge')).toHaveCount(0);
+
+    await page.fill('#origin', '서울역');
+    await expect(page.locator('#origin-ac')).toHaveAttribute('role', 'listbox');
+    const originOptions = page.locator('#origin-ac [role="option"]');
+    await expect(originOptions).toHaveCount(1);
+    await expect(originOptions.first()).toContainText('서울역 1번출구');
+    await originOptions.first().click();
+    await expect(page.locator('#origin-ac')).toHaveClass(/hidden/);
+
+    await page.fill('#destination', '판교역');
+    const destOptions = page.locator('#dest-ac [role="option"]');
+    await expect(destOptions).toHaveCount(1);
+    await destOptions.first().click();
+    await expect(page.locator('#dest-ac')).toHaveClass(/hidden/);
+
+    await page.fill('#datetime-input', futureLocalDatetime('06:30'));
+    await page.click('#search-btn');
+    await expect(page.locator('#loading')).toBeVisible();
+
+    const geometry = await page.evaluate(() => {
+      const rect = (selector: string) => {
+        const element = document.querySelector(selector);
+        if (!element) return null;
+        const box = element.getBoundingClientRect();
+        return {
+          left: box.left,
+          top: box.top,
+          right: box.right,
+          bottom: box.bottom,
+          width: box.width,
+          height: box.height,
+        };
+      };
+      const overlap = (
+        left: ReturnType<typeof rect>,
+        right: ReturnType<typeof rect>,
+      ) => {
+        if (!left || !right) return 0;
+        const x = Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left));
+        const y = Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top));
+        return x * y;
+      };
+      const loadingStyle = window.getComputedStyle(document.querySelector('#loading')!);
+      return {
+        optionRoleCount: document.querySelectorAll('[role="option"]').length,
+        providerTextVisible: document.body.innerText.includes('데이터 제공자'),
+        loadingPosition: loadingStyle.position,
+        loadingSearchOverlap: overlap(rect('#loading'), rect('#search-btn')),
+        loadingSidebarRatio:
+          (rect('#loading')!.width * rect('#loading')!.height) /
+          (rect('#sidebar')!.width * rect('#sidebar')!.height),
+        searchButtonTop: rect('#search-btn')!.top,
+        loadingBottom: rect('#loading')!.bottom,
+      };
+    });
+
+    await page.screenshot({ path: join(artifactsDir, 'non-blocking-status.png'), fullPage: true });
+    writeFileSync(
+      join(artifactsDir, 'observables.json'),
+      `${JSON.stringify(geometry, null, 2)}\n`,
+      'utf-8',
+    );
+
+    expect(geometry.providerTextVisible).toBe(false);
+    expect(geometry.optionRoleCount).toBeGreaterThan(0);
+    expect(geometry.loadingPosition).not.toBe('absolute');
+    expect(geometry.loadingSearchOverlap).toBe(0);
+    expect(geometry.loadingSidebarRatio).toBeLessThan(0.25);
+    expect(geometry.loadingBottom).toBeGreaterThan(geometry.searchButtonTop);
+
+    delayedGeocode.resolve();
+    delayedRoute.resolve();
+    await expect(page.locator('#loading')).toHaveClass(/hidden/);
   });
 });
