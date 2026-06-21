@@ -12,6 +12,10 @@ def _between(start: str, end: str) -> str:
 
 
 def test_route_mutation_handlers_invalidate_search_generation() -> None:
+    autocomplete_selection = _between(
+        "function applyAutocompleteSelection(",
+        "function withDisplayRoute(",
+    )
     recent_click = _between(
         '$list.querySelectorAll(".recent-item").forEach(function (el) {',
         "function renderFavorites()",
@@ -25,6 +29,7 @@ def test_route_mutation_handlers_invalidate_search_generation() -> None:
         "/* Live marker update on input change */",
     )
 
+    assert "invalidateRouteInputState();" in autocomplete_selection
     assert "invalidateRouteInputState();" in recent_click
     assert "invalidateRouteInputState();" in favorite_click
     assert "invalidateRouteInputState();" in swap_click

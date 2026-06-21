@@ -617,6 +617,158 @@ test.describe('autocomplete unresolved poi display', () => {
     firstStream.resolve();
   });
 
+  test('clears in-flight search state when selecting an autocomplete item', async ({
+    page,
+  }) => {
+    const delayedBaseline = createDeferred<void>();
+    const baselineRequests: string[] = [];
+    const station = {
+      lat: 37.511823,
+      lon: 127.059159,
+      display_name: '코엑스',
+      address: '서울 강남구 영동대로 513',
+      type: '장소',
+      source: 'naver_map',
+      confidence: 0.99,
+      coords_ready: true,
+      selection_kind: 'poi',
+      canonical_query: '코엑스',
+    };
+
+    await page.route('**/api/autocomplete**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/autocomplete/warmup') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ queued: 0 }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(url.searchParams.get('q') === '코엑스' ? [station] : []),
+      });
+    });
+
+    await page.route('**/api/geocode?*', async (route) => {
+      const url = new URL(route.request().url());
+      const query = url.searchParams.get('q') ?? '';
+      const coords =
+        query === '서울역'
+          ? { lat: 37.554722, lon: 126.970833 }
+          : { lat: 37.511823, lon: 127.059159 };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          {
+            ...coords,
+            source: 'test-geocode',
+            confidence: 0.99,
+          },
+        ]),
+      });
+    });
+
+    await page.route('**/api/route?*', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          routes: [
+            {
+              geometry: {
+                type: 'LineString',
+                coordinates: [
+                  [126.970833, 37.554722],
+                  [127.059159, 37.511823],
+                ],
+              },
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.route('**/v1/trip/arrival-time', async (route) => {
+      baselineRequests.push(route.request().url());
+      await delayedBaseline.promise;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          route: {
+            origin: '서울역',
+            destination: '코엑스',
+          },
+          departure_time: '2026-04-27T05:30:00+09:00',
+          arrival_time: '2026-04-27T06:10:00+09:00',
+          duration_seconds: 2400,
+          provider: 'naver_selenium',
+          cache_hit: false,
+        }),
+      });
+    });
+
+    await page.route('**/v1/trip/recommended-departure-time/stream', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: buildSseBody([
+          {
+            event: 'recommendation',
+            data: {
+              route: {
+                origin: '서울역',
+                destination: '코엑스',
+              },
+              desired_arrival_time: '2026-04-27T06:30:00+09:00',
+              recommended_departure_time: '2026-04-27T05:40:00+09:00',
+              expected_arrival_time: '2026-04-27T06:20:00+09:00',
+              duration_seconds: 2400,
+              meets_deadline: true,
+              provider: 'naver_selenium',
+              provider_calls: 1,
+              candidates_checked: 1,
+              planned_queries: 1,
+              total_candidates: 1,
+              candidate_evaluations: [],
+            },
+          },
+        ]),
+      });
+    });
+
+    try {
+      await page.goto('/');
+      await page.click('#tab-departure');
+      await page.fill('#datetime-input', futureLocalDatetime('06:30'));
+      await page.fill('#origin', '서울역');
+      await page.fill('#destination', '코엑스');
+      await expect(page.locator('#dest-ac .ac-item')).toHaveCount(1);
+      await page.click('#search-btn');
+      await expect(page.locator('#loading')).not.toHaveClass(/hidden/);
+      await expect
+        .poll(() => baselineRequests.length, { timeout: 3000 })
+        .toBeGreaterThanOrEqual(1);
+
+      await page.locator('#destination').focus();
+      await expect(page.locator('#dest-ac .ac-item')).toHaveCount(1);
+      await page.locator('#dest-ac .ac-item').first().dispatchEvent('mousedown', {
+        button: 0,
+        bubbles: true,
+        cancelable: true,
+      });
+
+      await expect(page.locator('#loading')).toHaveClass(/hidden/);
+      await expect(page.locator('#search-btn')).toBeEnabled();
+    } finally {
+      delayedBaseline.resolve();
+    }
+  });
+
   test('keeps poi label but blocks stream request when coordinates stay unresolved', async ({
     page,
   }) => {
