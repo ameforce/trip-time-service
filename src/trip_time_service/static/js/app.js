@@ -1343,14 +1343,23 @@ function clearMarkers() {
   }
 }
 
-function invalidateRouteInputState() {
+function invalidateSearchState(options) {
+  var clearMapMarkers = !options || options.clearMarkers !== false;
   _routeInputRevision += 1;
   _searchInProgress = false;
-  if (_map) {
+  if (clearMapMarkers && _map) {
     clearMarkers();
   }
   $results.classList.add("hidden");
   hideLoading();
+}
+
+function invalidateRouteInputState() {
+  invalidateSearchState({ clearMarkers: true });
+}
+
+function invalidateSearchOnlyState() {
+  invalidateSearchState({ clearMarkers: false });
 }
 
 function addMarker(latlng, opts) {
@@ -3607,6 +3616,7 @@ function renderRecentSearches() {
         address: r.destination,
         canonical_query: r.destination,
       });
+      invalidateRouteInputState();
       refreshMapMarkersLive();
     });
   });
@@ -3678,6 +3688,7 @@ function renderFavorites() {
         $origin.value = f.address;
         _selectedOrigin = coords;
       }
+      invalidateRouteInputState();
       refreshMapMarkersLive();
     });
   });
@@ -3695,6 +3706,9 @@ function renderFavorites() {
 /* ── Events ───────────────────────────────────────── */
 
 function switchMode(mode) {
+  if (_currentMode !== mode) {
+    invalidateSearchOnlyState();
+  }
   _currentMode = mode;
   if (mode === "arrival") {
     $tabArrival.classList.add("active");
@@ -3724,6 +3738,7 @@ $swapBtn.addEventListener("click", function () {
   var tmpCoords = _selectedOrigin;
   _selectedOrigin = _selectedDest;
   _selectedDest = tmpCoords;
+  invalidateRouteInputState();
   refreshMapMarkersLive();
 });
 
@@ -4347,7 +4362,7 @@ async function handleSearch() {
     if (!isSearchStillCurrent()) return;
     showError(err.message || "알 수 없는 오류가 발생했습니다.");
   } finally {
-    if (_routeInputRevision === searchRouteInputRevision) {
+    if (isSearchStillCurrent()) {
       _searchInProgress = false;
       hideLoading();
     }
@@ -4359,6 +4374,7 @@ $searchBtn.addEventListener("click", handleSearch);
 // 시간 변경 시 입력값만 동기화 (강제 보정은 검색 시점 수행)
 $datetimeInput.addEventListener("change", function () {
   if (syncDatetimeStateFromInputValue()) {
+    invalidateSearchOnlyState();
     hideDatetimeInputTooltip();
     hideError();
   }
