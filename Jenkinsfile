@@ -23,6 +23,7 @@ pipeline {
       description: "Docker registry username/password credential ID"
     )
     string(name: "IMAGE_REPOSITORY", defaultValue: "trip-time-service", description: "이미지 저장소 이름")
+    string(name: "IMAGE_RETENTION_COUNT", defaultValue: "5", description: "배포 성공 후 같은 이미지 저장소에서 보존할 최신 태그 수")
     string(name: "REMOTE_APP_ROOT", defaultValue: "/opt/triptime", description: "원격 배포 루트 경로")
     string(name: "NETWORK_NAME", defaultValue: "", description: "컨테이너 연결 Docker network (선택)")
     string(name: "HOST_PORT_PROD", defaultValue: "18500", description: "prod host port -> container 8500")
@@ -228,6 +229,7 @@ pipeline {
           withEnv([
             "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}",
             "IMAGE_REF=${env.REMOTE_IMAGE_REF}",
+            "IMAGE_RETENTION_COUNT=${params.IMAGE_RETENTION_COUNT}",
             "APP_VERSION=${env.DEPLOY_APP_VERSION}",
             "SOURCE_ARCHIVE_PATH=${env.DEPLOY_BUNDLE_PATH}",
             "ENM_HOST=${env.EFFECTIVE_ENM_HOST}",
