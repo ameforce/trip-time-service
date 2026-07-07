@@ -41,6 +41,7 @@ SSH_KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${HOME}/.ssh/known_hosts}"
 APP_VERSION="${APP_VERSION:-${IMAGE_REF##*:}}"
 SOURCE_ARCHIVE_PATH="${SOURCE_ARCHIVE_PATH:-}"
 TTS_CHROME_NO_SANDBOX="${TTS_CHROME_NO_SANDBOX:-1}"
+IMAGE_RETENTION_COUNT="${IMAGE_RETENTION_COUNT:-5}"
 
 if [[ "${DEPLOY_ENV}" == "prod" ]]; then
   DEPLOY_DOMAIN="${DOMAIN_PROD}"
@@ -99,6 +100,7 @@ APP_VERSION="$(printf '%q' "${APP_VERSION}")"
 SOURCE_ARCHIVE_REMOTE="$(printf '%q' "${SOURCE_ARCHIVE_REMOTE}")"
 REMOTE_APP_ROOT="$(printf '%q' "${REMOTE_APP_ROOT}")"
 TTS_CHROME_NO_SANDBOX="$(printf '%q' "${TTS_CHROME_NO_SANDBOX}")"
+IMAGE_RETENTION_COUNT="$(printf '%q' "${IMAGE_RETENTION_COUNT}")"
 
 normalize_optional() {
   local value="\$1"
@@ -112,6 +114,11 @@ normalize_optional() {
 NETWORK_NAME="\$(normalize_optional "\${NETWORK_NAME}")"
 TRAEFIK_TLS_CERTRESOLVER="\$(normalize_optional "\${TRAEFIK_TLS_CERTRESOLVER}")"
 SOURCE_ARCHIVE_REMOTE="\$(normalize_optional "\${SOURCE_ARCHIVE_REMOTE}")"
+
+if ! [[ "\${IMAGE_RETENTION_COUNT}" =~ ^[0-9]+$ ]]; then
+  echo "[deploy] IMAGE_RETENTION_COUNT must be a non-negative integer" >&2
+  exit 1
+fi
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "[deploy] docker command not found on remote host" >&2
@@ -129,6 +136,59 @@ if [[ ! -f "\${ENV_FILE}" ]]; then
 fi
 
 mkdir -p "\${ROLLBACK_DIR}"
+
+image_repository_for_ref() {
+  local image_ref="\$1" image_name="\${1##*/}"
+  if [[ "\${image_name}" != *:* ]]; then
+    return 1
+  fi
+  printf '%s\n' "\${image_ref%:*}"
+}
+
+collect_protected_images() {
+  printf '%s\n' "\${IMAGE_REF}"
+  for marker in current-image.txt previous-image.txt; do
+    [[ -f "\${ROLLBACK_DIR}/\${marker}" ]] && cat "\${ROLLBACK_DIR}/\${marker}" || true
+  done
+  docker ps --format '{{.Image}}' || true
+}
+
+cleanup_deploy_images() {
+  local image_repository
+  if ! image_repository="\$(image_repository_for_ref "\$1")"; then
+    echo "[deploy] image retention skipped for untagged image ref=\$1"
+    return
+  fi
+
+  local image_list
+  if ! image_list="\$(docker image ls --format '{{.Repository}}:{{.Tag}}' "\${image_repository}")"; then
+    echo "[deploy] image retention skipped because docker image ls failed"
+    return
+  fi
+
+  local candidate_image protected_images retained_count=0
+  protected_images="\$(collect_protected_images)"
+  while IFS= read -r candidate_image; do
+    [[ -z "\${candidate_image}" ]] && continue
+    [[ "\${candidate_image}" == "<none>:<none>" ]] && continue
+    [[ "\${candidate_image%:*}" == "\${image_repository}" ]] || continue
+    grep -Fxq "\${candidate_image}" <<< "\${protected_images}" && continue
+    if (( retained_count < IMAGE_RETENTION_COUNT )); then
+      retained_count=\$((retained_count + 1))
+      continue
+    fi
+    docker image rm "\${candidate_image}" >/dev/null 2>&1 \
+      && echo "[deploy] removed old image tag=\${candidate_image}" \
+      || echo "[deploy] skipped image removal tag=\${candidate_image}"
+  done <<< "\${image_list}"
+}
+
+cleanup_deploy_build_dir() {
+  local build_dir="\${REMOTE_APP_ROOT}/build/\${DEPLOY_ENV}"
+  if [[ -d "\${build_dir}" ]] && ! rm -rf "\${build_dir}"; then
+    echo "[deploy] skipped build directory cleanup=\${build_dir}"
+  fi
+}
 
 previous_image=""
 if docker container inspect "\${CONTAINER_NAME}" >/dev/null 2>&1; then
@@ -212,6 +272,8 @@ for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
     printf '%s\n' "\${IMAGE_REF}" > "\${ROLLBACK_DIR}/current-image.txt"
     date -u +"%Y-%m-%dT%H:%M:%SZ" > "\${ROLLBACK_DIR}/last-deployed-at.txt"
     echo "[deploy] health check passed (\${i}/\${HEALTHCHECK_RETRIES})"
+    cleanup_deploy_build_dir
+    cleanup_deploy_images "\${IMAGE_REF}"
     exit 0
   fi
   sleep "\${HEALTHCHECK_DELAY_SECONDS}"

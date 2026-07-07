@@ -10,6 +10,10 @@ def _read_repo_text(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def _deploy_success_block(script: str) -> str:
+    return script.split("if check_health; then", 1)[1].split("exit 0", 1)[0]
+
+
 def test_dockerfile_runs_as_non_root_and_does_not_force_chrome_no_sandbox() -> None:
     dockerfile = _read_repo_text("Dockerfile")
     dev_env_example = _read_repo_text("deploy/enm/env/dev.env.example")
@@ -109,6 +113,72 @@ def test_jenkins_dev_runtime_version_uses_deploy_image_tag() -> None:
     assert "env.DEPLOY_APP_VERSION = env.IMAGE_TAG" in jenkinsfile
     assert '"APP_VERSION=${env.DEPLOY_APP_VERSION}"' in deploy_stage
     assert '"APP_VERSION=${env.APP_VERSION}"' not in deploy_stage
+
+
+def test_jenkins_passes_enm_image_retention_count_to_deploy() -> None:
+    # Given: Jenkins owns the operator-facing retention knob.
+    jenkinsfile = _read_repo_text("Jenkinsfile")
+    deploy_stage = jenkinsfile.split('stage("Deploy To ENM")', 1)[1].split(
+        'stage("Smoke Verify")', 1
+    )[0]
+
+    # Then: deploy.sh receives the same bounded policy as an environment value.
+    assert 'string(name: "IMAGE_RETENTION_COUNT", defaultValue: "5"' in jenkinsfile
+    assert '"IMAGE_RETENTION_COUNT=${params.IMAGE_RETENTION_COUNT}"' in deploy_stage
+
+
+def test_enm_deploy_image_retention_runs_only_after_successful_health_check() -> None:
+    # Given: deploy.sh has separate success and failure paths.
+    script = _read_repo_text("deploy/enm/deploy.sh")
+    success_block = _deploy_success_block(script)
+    failure_block = script.split(
+        'echo "[deploy] health check failed for image=\\${IMAGE_REF}"', 1
+    )[1]
+
+    # Then: cleanup runs after current-image.txt is updated, never on failed deploys.
+    current_marker_write = (
+        'printf \'%s\\n\' "\\${IMAGE_REF}" '
+        '> "\\${ROLLBACK_DIR}/current-image.txt"'
+    )
+    assert current_marker_write in success_block
+    assert 'cleanup_deploy_images "\\${IMAGE_REF}"' in success_block
+    assert "cleanup_deploy_build_dir" in success_block
+    assert "cleanup_deploy_images" not in failure_block
+    assert "cleanup_deploy_build_dir" not in failure_block
+
+
+def test_enm_deploy_image_retention_policy_is_bounded_and_explicit() -> None:
+    # Given: only same-repository deployed image tags may be cleanup candidates.
+    script = _read_repo_text("deploy/enm/deploy.sh")
+
+    # Then: the policy preserves rollback and live images and avoids broad prune APIs.
+    assert 'IMAGE_RETENTION_COUNT="${IMAGE_RETENTION_COUNT:-5}"' in script
+    retention_count_export = (
+        'IMAGE_RETENTION_COUNT="$(printf \'%q\' "${IMAGE_RETENTION_COUNT}")"'
+    )
+    assert retention_count_export in script
+    assert "image_repository_for_ref()" in script
+    assert "collect_protected_images()" in script
+    assert 'docker ps --format \'{{.Image}}\'' in script
+    assert "previous-image.txt" in script
+    assert "current-image.txt" in script
+    assert 'docker image ls --format \'{{.Repository}}:{{.Tag}}\'' in script
+    assert 'docker image rm "\\${candidate_image}"' in script
+    assert "docker image prune" not in script
+    assert "docker system prune" not in script
+
+
+def test_enm_runbook_documents_post_success_image_retention_policy() -> None:
+    # Given: operators need to know what the deploy cleanup can and cannot delete.
+    runbook = _read_repo_text("docs/deploy/enm-triptime-runbook.md")
+
+    # Then: the runbook documents the bounded post-success retention policy.
+    assert "배포 성공 후" in runbook
+    assert "IMAGE_RETENTION_COUNT" in runbook
+    assert "`current-image.txt`" in runbook
+    assert "`previous-image.txt`" in runbook
+    assert "실행 중인 컨테이너" in runbook
+    assert "`docker image prune`" in runbook
 
 
 def test_jenkins_live_e2e_stage_exports_uv_path() -> None:
