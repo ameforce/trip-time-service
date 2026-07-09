@@ -37,7 +37,20 @@ fix/hotfix 또는 feature/release 성격의 작업에서 `main`과 `develop`에 
 커밋을 남기지 않는다. 이미 push된 Git-flow 그래프를 사용자 지시에 따라 고칠 때만
 `--force-with-lease`로 갱신한다.
 
-## Completion gate for code/config changes
+## Codex review gate for PR merges
+
+feature/hotfix를 PR로 통합할 때 `@codex review` 결과는 단순 sleep/대기만으로
+완료 판단하지 않는다. 아래 주기 폴링 게이트를 따른다.
+
+1. PR에 `@codex review` 코멘트를 남긴 시각 `T0`와 대상 커밋 SHA를 기록한다.
+2. 최소 30초 간격으로 PR review/inline/issue comment를 다시 조회한다.
+   - `chatgpt-codex-connector` 등 Codex bot의 **새** review 또는 finding comment
+   - 또는 Codex의 완료 신호(👍 반응, "no findings" 요약, follow-up verification)
+3. `T0` 이전 결과만 보고 merge하지 않는다. 현재 HEAD 커밋 기준 결과가 올 때까지
+   폴링한다. 장시간 미응답이면 계속 폴링하고, 완료 전에 merge하지 않는다.
+4. finding severity가 `low` 이상(P1/P2 또는 critical/high/medium/low)이면 수정 →
+   push → 다시 `@codex review` → 2번부터 반복한다.
+5. 현재 HEAD에 대해 low 이상 finding이 없음을 폴링으로 확인한 뒤에만 merge한다.
 
 이 프로젝트에서 코드, 설정, 배포 스크립트, E2E/운영 정책을 변경한 작업은
 로컬 검증만으로 완료 보고하지 않는다.
