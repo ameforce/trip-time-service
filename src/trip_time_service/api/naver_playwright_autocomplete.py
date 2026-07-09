@@ -1,3 +1,12 @@
+"""Playwright 기반 Naver 지도 browser autocomplete pool.
+
+pool API, suggestion payload, dynamic upper bound / idle TTL / metrics
+계약을 유지하면서 브라우저 자동화는 Playwright로 수행한다. instant-search
+enrichment/synthesis 헬퍼는 대부분 브라우저 무관하므로 그대로 유지하고,
+DOM 조회 경로만 Playwright locator를 쓴다. 좌표 파싱은 `naver_playwright_geo`
+에서 공유한다.
+"""
+
 from __future__ import annotations
 
 import ctypes
@@ -12,17 +21,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from typing import Any
 
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-
-from trip_time_service.api.naver_geo import extract_coords_from_naver_url
-from trip_time_service.chrome_driver import (
-    build_chrome_options,
-    close_webdriver_with_timeout,
-    force_kill_webdriver_process,
+from trip_time_service.api.naver_playwright_geo import extract_coords_from_naver_url
+from trip_time_service.browser.playwright_runtime import (
+    PlaywrightBrowserSession,
+    PlaywrightLaunchOptions,
+    PlaywrightOwnerThread,
+    force_kill_playwright_process,
+    launch_browser_session,
 )
 from trip_time_service.privacy import redact_text
 
@@ -31,16 +38,20 @@ _log = logging.getLogger(__name__)
 _NAVER_MAP_URL = "https://map.naver.com/"
 _MIN_QUERY_LEN = 2
 _SUGGEST_WAIT_SECONDS = 5.0
+_SUGGEST_POLL_SECONDS = 0.05
 _LOCK_WAIT_SECONDS = 0.0
 _SCALE_COOLDOWN_SECONDS = 20.0
 _DEFAULT_SCALE_INTERVAL_SECONDS = 10.0
 _SUGGEST_OPTION_SELECTOR = ".scroll_box [role='option']"
+_INPUT_WAIT_MS = 2500
 _WS_RE = re.compile(r"\s+")
 _HANGUL_RE = re.compile(r"[가-힣]")
 _BUSY = object()
 _CLOSE_LOCK_TIMEOUT_SECONDS = 1.0
-_DRIVER_QUIT_TIMEOUT_SECONDS = 2.0
+_SESSION_CLOSE_TIMEOUT_SECONDS = 2.0
 _POOL_CLOSE_TIMEOUT_SECONDS = 6.0
+_PAGE_NAVIGATION_TIMEOUT_MS = 12000
+_PAGE_DEFAULT_TIMEOUT_MS = 4000
 _SUGGEST_COORD_ATTRS = (
     "href",
     "data-url",
@@ -52,6 +63,55 @@ _SUGGEST_COORD_ATTRS = (
 _INSTANT_SEARCH_TIMEOUT_MS = 1800
 _INSTANT_SEARCH_DIRECT_TIMEOUT_SECONDS = 1.8
 _INSTANT_SEARCH_DEFAULT_COORDS = "37.40607799999982,127.12057619212703"
+
+_INSTANT_SEARCH_JS = """
+async ({query, defaultCoords, timeoutMs}) => {
+  function readCenterCoords() {
+    try {
+      const naver = window.naver;
+      const maps = naver && naver.maps;
+      const map = window.map || window.__naver_map__ || window.__map;
+      if (maps && map && typeof map.getCenter === "function") {
+        const center = map.getCenter();
+        const lat = typeof center.lat === "function" ? center.lat() : center.y;
+        const lon = typeof center.lng === "function" ? center.lng() : center.x;
+        if (Number.isFinite(lat) && Number.isFinite(lon)) {
+          return `${lat},${lon}`;
+        }
+      }
+    } catch (_err) {
+    }
+    return defaultCoords;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const params = new URLSearchParams({query, coords: readCenterCoords()});
+    const response = await fetch(
+      `/p/api/search/instant-search?${params.toString()}`,
+      {
+        credentials: "include",
+        signal: controller.signal,
+        headers: {"accept": "application/json,text/plain,*/*"},
+      },
+    );
+    const text = await response.text();
+    if (!response.ok) {
+      return {ok: false, status: response.status, text};
+    }
+    try {
+      return {ok: true, status: response.status, json: JSON.parse(text)};
+    } catch (err) {
+      return {ok: false, status: response.status, text};
+    }
+  } catch (err) {
+    return {ok: false, error: String(err && err.message || err)};
+  } finally {
+    clearTimeout(timer);
+  }
+}
+"""
 
 
 def _env_int(name: str, default: int) -> int:
@@ -77,6 +137,37 @@ def _env_bool(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _wait_until(
+    predicate: Callable[[], bool],
+    *,
+    timeout: float,
+    poll: float = _SUGGEST_POLL_SECONDS,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if predicate():
+                return True
+        except Exception:
+            pass
+        _sleep(poll)
+    try:
+        return bool(predicate())
+    except Exception:
+        return False
+
+
+def _query_all(page: Any, selector: str) -> list:
+    try:
+        return list(page.query_selector_all(selector))
+    except Exception:
+        return []
 
 
 def _normalize_text(value: str) -> str:
@@ -106,7 +197,15 @@ def _looks_like_query_match(query: str, *candidate_parts: str) -> bool:
     return normalized_query in normalized_candidate
 
 
-def _iter_option_coordinate_urls(option: object) -> tuple[str, ...]:
+def _option_inner_text(option: Any) -> str:
+    try:
+        value = option.inner_text()
+    except Exception:
+        return ""
+    return str(value or "")
+
+
+def _iter_option_coordinate_urls(option: Any) -> tuple[str, ...]:
     urls: list[str] = []
     for attr in _SUGGEST_COORD_ATTRS:
         try:
@@ -117,7 +216,7 @@ def _iter_option_coordinate_urls(option: object) -> tuple[str, ...]:
             urls.append(str(value))
 
     try:
-        anchors = option.find_elements(By.CSS_SELECTOR, "a[href]")
+        anchors = option.query_selector_all("a[href]")
     except Exception:
         anchors = []
     for anchor in anchors:
@@ -130,7 +229,7 @@ def _iter_option_coordinate_urls(option: object) -> tuple[str, ...]:
     return tuple(urls)
 
 
-def _extract_option_link_coords(option: object) -> tuple[str, str] | None:
+def _extract_option_link_coords(option: Any) -> tuple[str, str] | None:
     for url in _iter_option_coordinate_urls(option):
         coords = extract_coords_from_naver_url(url)
         if coords:
@@ -272,7 +371,10 @@ class _BrowserAutocompleteWorker:
     def __init__(self, worker_index: int) -> None:
         self._worker_index = worker_index
         self._lock = threading.Lock()
-        self._driver: webdriver.Chrome | None = None
+        self._owner = PlaywrightOwnerThread(
+            name=f"naver-ac-playwright-{worker_index}",
+        )
+        self._session: PlaywrightBrowserSession | None = None
         self._last_used_monotonic = 0.0
         self._terminal_close_requested = False
         self._profile_dir: str | None = None
@@ -294,12 +396,12 @@ class _BrowserAutocompleteWorker:
 
         try:
             self._last_used_monotonic = time.monotonic()
-            driver = self._ensure_driver_locked()
-            return self._query_locked(
-                driver,
-                query,
-                limit=limit,
-                wait_seconds=wait_seconds,
+            return self._owner.call(
+                lambda: self._try_query_on_owner(
+                    query,
+                    limit=limit,
+                    wait_seconds=wait_seconds,
+                )
             )
         except Exception:
             _log.debug(
@@ -308,30 +410,59 @@ class _BrowserAutocompleteWorker:
                 redact_text(query),
                 exc_info=True,
             )
-            self._close_driver_locked()
+            try:
+                self._owner.call(self._close_session_locked)
+            except Exception:
+                pass
             return ()
         finally:
             self._last_used_monotonic = time.monotonic()
             self._lock.release()
+
+    def _try_query_on_owner(
+        self,
+        query: str,
+        *,
+        limit: int,
+        wait_seconds: float,
+    ) -> tuple[dict, ...]:
+        session = self._ensure_session_locked()
+        return self._query_locked(
+            session.page,
+            query,
+            limit=limit,
+            wait_seconds=wait_seconds,
+        )
 
     def close(self, *, terminal: bool = False) -> None:
         if terminal:
             self._terminal_close_requested = True
         acquired = self._lock.acquire(timeout=_CLOSE_LOCK_TIMEOUT_SECONDS)
         if not acquired:
-            driver = self._driver
+            session = self._session
             if terminal:
-                if driver is not None:
-                    self._force_kill_driver_process(driver)
-                    self._driver = None
+                if session is not None:
+                    self._force_kill_session(session)
+                    self._session = None
                 self._force_kill_profile_processes()
+            self._owner.close(join_timeout_seconds=_CLOSE_LOCK_TIMEOUT_SECONDS)
             return
         try:
-            self._close_driver_locked()
+            try:
+                self._owner.call(
+                    self._close_session_locked,
+                    timeout=_SESSION_CLOSE_TIMEOUT_SECONDS + 1.0,
+                )
+            except Exception:
+                session = self._session
+                if session is not None:
+                    self._force_kill_session(session)
+                    self._session = None
             if terminal:
                 self._force_kill_profile_processes()
         finally:
             self._lock.release()
+            self._owner.close(join_timeout_seconds=_CLOSE_LOCK_TIMEOUT_SECONDS)
 
     def warmup(self) -> None:
         acquired = self._lock.acquire(timeout=_CLOSE_LOCK_TIMEOUT_SECONDS)
@@ -339,19 +470,22 @@ class _BrowserAutocompleteWorker:
             return
         try:
             self._last_used_monotonic = time.monotonic()
-            self._ensure_driver_locked()
+            self._owner.call(self._ensure_session_locked)
         except Exception:
             _log.debug(
                 "browser autocomplete warmup failed idx=%d",
                 self._worker_index,
                 exc_info=True,
             )
-            self._close_driver_locked()
+            try:
+                self._owner.call(self._close_session_locked)
+            except Exception:
+                pass
         finally:
             self._lock.release()
 
     def close_if_idle(self, *, idle_seconds: float) -> None:
-        if self._driver is None:
+        if self._session is None:
             return
         if (time.monotonic() - self._last_used_monotonic) < idle_seconds:
             return
@@ -359,20 +493,18 @@ class _BrowserAutocompleteWorker:
         if not acquired:
             return
         try:
-            if self._driver is not None and (
+            if self._session is not None and (
                 time.monotonic() - self._last_used_monotonic
             ) >= idle_seconds:
-                self._close_driver_locked()
+                self._owner.call(self._close_session_locked)
         finally:
             self._lock.release()
 
-    def _ensure_driver_locked(self) -> webdriver.Chrome:
+    def _ensure_session_locked(self) -> PlaywrightBrowserSession:
         if self._should_abort_locked():
             raise RuntimeError("browser autocomplete worker is shutting down")
-        if self._driver is not None:
-            return self._driver
-
-        chrome_binary_path = os.getenv("TTS_CHROME_BINARY_PATH")
+        if self._session is not None:
+            return self._session
 
         self._profile_dir = None
         chrome_user_data_dir = os.getenv("TTS_CHROME_USER_DATA_DIR")
@@ -385,65 +517,63 @@ class _BrowserAutocompleteWorker:
             os.makedirs(worker_dir, exist_ok=True)
             self._profile_dir = worker_dir
 
-        opts = build_chrome_options(
+        options = PlaywrightLaunchOptions(
             headless=_env_bool("TTS_HEADLESS", True),
-            window_size="1280,960",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
-            chrome_binary_path=chrome_binary_path,
-            chrome_user_data_dir=worker_dir,
-            no_sandbox=_env_bool("TTS_CHROME_NO_SANDBOX", False),
+            user_data_dir=worker_dir,
+            chrome_no_sandbox=_env_bool("TTS_CHROME_NO_SANDBOX", False),
         )
 
-        driver = webdriver.Chrome(options=opts)
+        session = launch_browser_session(options)
         try:
-            driver.set_page_load_timeout(12)
-            driver.set_script_timeout(4)
-            driver.get(_NAVER_MAP_URL)
+            session.page.set_default_navigation_timeout(
+                _PAGE_NAVIGATION_TIMEOUT_MS,
+            )
+            session.page.set_default_timeout(_PAGE_DEFAULT_TIMEOUT_MS)
+            session.page.goto(
+                _NAVER_MAP_URL,
+                wait_until="domcontentloaded",
+                timeout=_PAGE_NAVIGATION_TIMEOUT_MS,
+            )
             if self._should_abort_locked():
                 raise RuntimeError("browser autocomplete worker shutdown during init")
-            self._driver = driver
-            return driver
+            self._session = session
+            return session
         except Exception:
-            self._close_driver_instance(driver)
+            self._close_session_instance(session)
             raise
 
     def _should_abort_locked(self) -> bool:
         return self._terminal_close_requested or _pool_runtime_disabled()
 
-    def _close_driver_locked(self) -> None:
-        if self._driver is None:
+    def _close_session_locked(self) -> None:
+        if self._session is None:
             return
-        driver = self._driver
-        self._driver = None
-        self._close_driver_instance(driver)
+        session = self._session
+        self._session = None
+        self._close_session_instance(session)
 
-    def _close_driver_instance(self, driver: webdriver.Chrome) -> None:
-        result = close_webdriver_with_timeout(
-            driver,
-            quit_timeout_seconds=_DRIVER_QUIT_TIMEOUT_SECONDS,
-            quit_thread_name=f"browser-autocomplete-quit-{self._worker_index}",
-        )
+    def _close_session_instance(self, session: PlaywrightBrowserSession) -> None:
+        result = session.close(close_timeout_seconds=_SESSION_CLOSE_TIMEOUT_SECONDS)
         if result.timed_out:
             self._force_kill_profile_processes()
             _log.warning(
-                "browser autocomplete driver quit timeout idx=%d after %.1fs",
+                "browser autocomplete session close timeout idx=%d after %.1fs",
                 self._worker_index,
-                _DRIVER_QUIT_TIMEOUT_SECONDS,
+                _SESSION_CLOSE_TIMEOUT_SECONDS,
             )
-        elif result.quit_error is not None:
+        elif result.close_error is not None:
             _log.debug(
-                "browser autocomplete driver quit failed idx=%d: %s",
+                "browser autocomplete session close failed idx=%d: %s",
                 self._worker_index,
-                result.quit_error,
+                result.close_error,
             )
 
-    def _force_kill_driver_process(self, driver: webdriver.Chrome) -> None:
+    def _force_kill_session(self, session: PlaywrightBrowserSession) -> None:
         try:
-            force_kill_webdriver_process(driver)
+            target = (
+                session.browser if session.browser is not None else session.context
+            )
+            force_kill_playwright_process(target)
         except Exception:
             pass
         finally:
@@ -477,38 +607,64 @@ class _BrowserAutocompleteWorker:
         except Exception:
             pass
 
+    def _prepare_search_input(self, page: Any, query: str) -> None:
+        search_input = page.wait_for_selector(
+            "input.input_search",
+            timeout=_INPUT_WAIT_MS,
+        )
+        if search_input is None:
+            raise RuntimeError("Naver autocomplete search input not found")
+        search_input.click()
+        try:
+            search_input.fill("")
+        except Exception:
+            pass
+        search_input.type(query)
+
     def _query_locked(
         self,
-        driver: webdriver.Chrome,
+        page: Any,
         query: str,
         *,
         limit: int,
         wait_seconds: float,
     ) -> tuple[dict, ...]:
-        search_input = WebDriverWait(driver, 2.5).until(
-            lambda cur: cur.find_element(By.CSS_SELECTOR, "input.input_search")
-        )
-        search_input.click()
-        search_input.send_keys(Keys.CONTROL, "a")
-        search_input.send_keys(Keys.DELETE)
-        search_input.send_keys(query)
-        def _matching_suggestions(cur: webdriver.Chrome) -> tuple[dict, ...]:
-            options = cur.find_elements(By.CSS_SELECTOR, _SUGGEST_OPTION_SELECTOR)
-            suggestions = _extract_suggestions_from_options(query, options, limit=limit)
-            return suggestions
+        self._prepare_search_input(page, query)
+
+        matched: list[dict] = []
+
+        def _has_suggestions() -> bool:
+            options = _query_all(page, _SUGGEST_OPTION_SELECTOR)
+            suggestions = _extract_suggestions_from_options(
+                query,
+                options,
+                limit=limit,
+            )
+            if suggestions:
+                matched.clear()
+                matched.extend(suggestions)
+                return True
+            return False
 
         try:
-            suggestions = WebDriverWait(driver, wait_seconds).until(
-                _matching_suggestions
-            )
-            return _enrich_suggestions_from_instant_search(
-                driver,
+            if _wait_until(
+                _has_suggestions,
+                timeout=wait_seconds,
+                poll=_SUGGEST_POLL_SECONDS,
+            ):
+                return _enrich_suggestions_from_instant_search(
+                    page,
+                    query,
+                    tuple(matched),
+                )
+            return _synthesize_suggestions_from_instant_search(
+                page,
                 query,
-                suggestions,
+                limit=limit,
             )
         except Exception:
             return _synthesize_suggestions_from_instant_search(
-                driver,
+                page,
                 query,
                 limit=limit,
             )
@@ -516,7 +672,7 @@ class _BrowserAutocompleteWorker:
 
 def _extract_suggestions_from_options(
     query: str,
-    options: list[object],
+    options: list[Any],
     *,
     limit: int,
 ) -> tuple[dict, ...]:
@@ -532,18 +688,18 @@ def _extract_suggestions_from_options(
 
 def _extract_suggestion_records_from_options(
     query: str,
-    options: list[object],
+    options: list[Any],
     *,
     limit: int,
-) -> tuple[tuple[dict, object], ...]:
+) -> tuple[tuple[dict, Any], ...]:
     results: list[dict] = []
-    records: list[tuple[dict, object]] = []
+    records: list[tuple[dict, Any]] = []
     seen_keys: set[str] = set()
     for index, option in enumerate(options):
         if len(results) >= limit:
             break
 
-        raw_text = str(getattr(option, "text", "") or "").strip()
+        raw_text = _option_inner_text(option).strip()
         if not raw_text:
             continue
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
@@ -604,63 +760,18 @@ def _suggestion_has_coords(suggestion: dict) -> bool:
 
 
 def _fetch_instant_search_json(
-    driver: webdriver.Chrome,
+    page: Any,
     query: str,
 ) -> dict | list | None:
-    script = """
-const query = arguments[0];
-const defaultCoords = arguments[1];
-const timeoutMs = arguments[2];
-const done = arguments[arguments.length - 1];
-
-function readCenterCoords() {
-  try {
-    const naver = window.naver;
-    const maps = naver && naver.maps;
-    const map = window.map || window.__naver_map__ || window.__map;
-    if (maps && map && typeof map.getCenter === "function") {
-      const center = map.getCenter();
-      const lat = typeof center.lat === "function" ? center.lat() : center.y;
-      const lon = typeof center.lng === "function" ? center.lng() : center.x;
-      if (Number.isFinite(lat) && Number.isFinite(lon)) {
-        return `${lat},${lon}`;
-      }
-    }
-  } catch (_err) {
-  }
-  return defaultCoords;
-}
-
-const controller = new AbortController();
-const timer = setTimeout(() => controller.abort(), timeoutMs);
-const params = new URLSearchParams({query, coords: readCenterCoords()});
-fetch(`/p/api/search/instant-search?${params.toString()}`, {
-  credentials: "include",
-  signal: controller.signal,
-  headers: {"accept": "application/json,text/plain,*/*"},
-})
-  .then(async (response) => {
-    const text = await response.text();
-    if (!response.ok) {
-      done({ok: false, status: response.status, text});
-      return;
-    }
-    try {
-      done({ok: true, status: response.status, json: JSON.parse(text)});
-    } catch (err) {
-      done({ok: false, status: response.status, text});
-    }
-  })
-  .catch((err) => done({ok: false, error: String(err && err.message || err)}))
-  .finally(() => clearTimeout(timer));
-"""
     fetch_status: object = "exception"
     try:
-        payload = driver.execute_async_script(
-            script,
-            query,
-            _INSTANT_SEARCH_DEFAULT_COORDS,
-            _INSTANT_SEARCH_TIMEOUT_MS,
+        payload = page.evaluate(
+            _INSTANT_SEARCH_JS,
+            {
+                "query": query,
+                "defaultCoords": _INSTANT_SEARCH_DEFAULT_COORDS,
+                "timeoutMs": _INSTANT_SEARCH_TIMEOUT_MS,
+            },
         )
     except Exception:
         _log.debug(
@@ -916,13 +1027,13 @@ def fetch_autocomplete_from_instant_search(
 
 
 def _synthesize_suggestions_from_instant_search(
-    driver: webdriver.Chrome,
+    page: Any,
     query: str,
     *,
     limit: int,
 ) -> tuple[dict, ...]:
     try:
-        payload = _fetch_instant_search_json(driver, query)
+        payload = _fetch_instant_search_json(page, query)
     except Exception:
         return ()
     return _synthesize_suggestions_from_instant_payload(query, payload, limit=limit)
@@ -975,7 +1086,7 @@ def _instant_candidate_match_score(
 
 
 def _enrich_suggestions_from_instant_search(
-    driver: webdriver.Chrome,
+    page: Any,
     query: str,
     suggestions: tuple[dict, ...],
 ) -> tuple[dict, ...]:
@@ -985,7 +1096,7 @@ def _enrich_suggestions_from_instant_search(
         return suggestions
 
     try:
-        payload = _fetch_instant_search_json(driver, query)
+        payload = _fetch_instant_search_json(page, query)
     except Exception:
         return suggestions
 

@@ -19,7 +19,7 @@ from trip_time_service.api.geocode_services import (
     startup_autocomplete_runtime,
     warmup_autocomplete_runtime,
 )
-from trip_time_service.api.naver_geo import shutdown_naver_driver
+from trip_time_service.api.naver_playwright_geo import shutdown_naver_driver
 from trip_time_service.api.routes import router
 from trip_time_service.api.routes_trip import (
     RouteInputContractError,
@@ -58,7 +58,7 @@ def _versioned_index_html() -> str:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     settings = load_settings()
     provider = create_provider(settings)
     _log.info(

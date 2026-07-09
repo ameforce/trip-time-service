@@ -5,10 +5,6 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass
-from typing import Generic, TypeVar
-
-K = TypeVar("K", bound=Hashable)
-V = TypeVar("V")
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +16,7 @@ class CacheStats:
     expirations: int
 
 
-class LruTtlCache(Generic[K, V]):
+class LruTtlCache[K: Hashable, V]:
     __slots__ = (
         "_data",
         "_lock",

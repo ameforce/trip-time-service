@@ -14,18 +14,26 @@ def _deploy_success_block(script: str) -> str:
     return script.split("if check_health; then", 1)[1].split("exit 0", 1)[0]
 
 
-def test_dockerfile_runs_as_non_root_and_does_not_force_chrome_no_sandbox() -> None:
+def test_dockerfile_runs_as_non_root_with_playwright_chromium() -> None:
     dockerfile = _read_repo_text("Dockerfile")
     dev_env_example = _read_repo_text("deploy/enm/env/dev.env.example")
     prod_env_example = _read_repo_text("deploy/enm/env/prod.env.example")
 
+    assert "FROM python:3.14-slim" in dockerfile
     assert "USER appuser" in dockerfile
     assert "useradd --create-home" in dockerfile
-    assert "chromium-sandbox" in dockerfile
+    assert "playwright install --with-deps chromium" in dockerfile
+    assert "apt chromium" not in dockerfile.replace("\n", " ")
+    assert "chromium-sandbox" not in dockerfile
+    assert "TTS_CHROME_BINARY_PATH" not in dockerfile
     assert "TTS_CHROME_NO_SANDBOX" not in dockerfile
     assert "TTS_CHROME_USER_DATA_DIR" not in dockerfile
-    assert "TTS_CHROME_NO_SANDBOX=1" in dev_env_example
-    assert "TTS_CHROME_NO_SANDBOX=1" in prod_env_example
+    assert "TTS_PROVIDER=naver_playwright" in dev_env_example
+    assert "TTS_PROVIDER=naver_playwright" in prod_env_example
+    assert "TTS_CHROME_NO_SANDBOX" not in dev_env_example
+    assert "TTS_CHROME_NO_SANDBOX" not in prod_env_example
+    assert "TTS_CHROME_BINARY_PATH" not in dev_env_example
+    assert "TTS_CHROME_BINARY_PATH" not in prod_env_example
 
 
 def test_enm_deploy_scripts_pass_chrome_no_sandbox_to_runtime() -> None:
@@ -38,6 +46,35 @@ def test_enm_deploy_scripts_pass_chrome_no_sandbox_to_runtime() -> None:
             in script
         )
         assert '--env "TTS_CHROME_NO_SANDBOX=\\${TTS_CHROME_NO_SANDBOX}"' in script
+
+
+def test_enm_deploy_scripts_override_tts_provider_to_playwright() -> None:
+    deploy = _read_repo_text("deploy/enm/deploy.sh")
+    rollback = _read_repo_text("deploy/enm/rollback.sh")
+
+    # New deploys still override provider to naver_playwright by default.
+    assert 'TTS_PROVIDER="${TTS_PROVIDER:-naver_playwright}"' in deploy
+    assert 'TTS_PROVIDER="$(printf \'%q\' "${TTS_PROVIDER}")"' in deploy
+    assert 'run_container "\\${IMAGE_REF}" "\\${TTS_PROVIDER}"' in deploy
+    assert 'args+=(--env "TTS_PROVIDER=\\${override_provider}")' in deploy
+
+    # Rollback / auto-rollback must NOT force TTS_PROVIDER (old images may reject it).
+    assert 'TTS_PROVIDER="${TTS_PROVIDER' not in rollback
+    assert 'TTS_PROVIDER="$(printf' not in rollback
+    assert '--env "TTS_PROVIDER=' not in rollback
+    assert 'run_container "\\${previous_image}"' in deploy
+    assert 'run_container "\\${previous_image}" "\\${TTS_PROVIDER}"' not in deploy
+    assert "must NOT force" in deploy
+
+
+def test_live_e2e_installs_python_playwright_chromium() -> None:
+    run_live = _read_repo_text("tests/e2e/run-live.mjs")
+    jenkinsfile = _read_repo_text("Jenkinsfile")
+
+    assert "uv run playwright install chromium" in run_live or (
+        "['run', 'playwright', 'install', 'chromium']" in run_live
+    )
+    assert jenkinsfile.count("uv run playwright install chromium") == 2
 
 
 def test_deploy_scripts_verify_host_keys_by_default() -> None:
@@ -56,7 +93,10 @@ def test_playwright_web_server_command_is_posix_compatible() -> None:
 
     assert "cmd /c" not in config
     assert "powershell -NoProfile" not in config
-    assert "const e2eProvider = process.env.TTS_PROVIDER ?? 'naver_selenium'" in config
+    assert (
+        "const e2eProvider = process.env.TTS_PROVIDER ?? 'naver_playwright'"
+        in config
+    )
     assert "TTS_PROVIDER: e2eProvider" in config
     assert "command: 'uv run trip-time-service'" in config
     assert "env: serverEnv" in config
@@ -188,12 +228,14 @@ def test_jenkins_live_e2e_stage_exports_uv_path() -> None:
     assert re.search(
         r'export PATH="\$HOME/\.local/bin:\$PATH"\s+'
         r"export TTS_CHROME_NO_SANDBOX=1\s+"
+        r"uv run playwright install chromium\s+"
         r"LIVE_E2E_POLICY=advisory npm run e2e:live:smoke",
         jenkinsfile,
     )
     assert re.search(
         r'export PATH="\$HOME/\.local/bin:\$PATH"\s+'
         r"export TTS_CHROME_NO_SANDBOX=1\s+"
+        r"uv run playwright install chromium\s+"
         r"LIVE_E2E_POLICY=blocking npm run e2e:live:smoke",
         jenkinsfile,
     )
@@ -205,11 +247,13 @@ def test_jenkins_live_e2e_stage_uses_agent_chrome_sandbox_override() -> None:
     assert jenkinsfile.count("export TTS_CHROME_NO_SANDBOX=1") == 2
     assert (
         "export TTS_CHROME_NO_SANDBOX=1\n"
+        "                  uv run playwright install chromium\n"
         "                  LIVE_E2E_POLICY=advisory npm run e2e:live:smoke"
         in jenkinsfile
     )
     assert (
         "export TTS_CHROME_NO_SANDBOX=1\n"
+        "                uv run playwright install chromium\n"
         "                LIVE_E2E_POLICY=blocking npm run e2e:live:smoke"
         in jenkinsfile
     )

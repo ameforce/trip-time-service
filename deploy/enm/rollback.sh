@@ -38,6 +38,8 @@ HEALTHCHECK_DELAY_SECONDS="${HEALTHCHECK_DELAY_SECONDS:-2}"
 ROLLBACK_IMAGE_REF="${ROLLBACK_IMAGE_REF:-}"
 SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-yes}"
 SSH_KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${HOME}/.ssh/known_hosts}"
+# Do not force TTS_PROVIDER on rollback: previous images may only accept
+# naver / naver_selenium. Let the image + env file choose the provider.
 TTS_CHROME_NO_SANDBOX="${TTS_CHROME_NO_SANDBOX:-1}"
 
 if [[ "${DEPLOY_ENV}" == "prod" ]]; then

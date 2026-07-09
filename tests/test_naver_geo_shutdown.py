@@ -1,38 +1,31 @@
 from __future__ import annotations
 
-from trip_time_service.api import naver_geo
-from trip_time_service.chrome_driver import ChromeDriverCloseResult
+from trip_time_service.api import naver_playwright_geo
+from trip_time_service.browser.playwright_runtime import PlaywrightCloseResult
 
 
-class _FakeDriver:
-    pass
+class _FakeSession:
+    def __init__(self) -> None:
+        self.close_calls: list[float] = []
+
+    def close(self, *, close_timeout_seconds: float = 5.0) -> PlaywrightCloseResult:
+        self.close_calls.append(close_timeout_seconds)
+        return PlaywrightCloseResult(timed_out=False)
 
 
-def test_shutdown_naver_driver_closes_global_driver(monkeypatch) -> None:
-    driver = _FakeDriver()
-    closed: list[object] = []
-    monkeypatch.setattr(naver_geo, "_naver_driver", driver)
+def test_shutdown_naver_driver_closes_global_session(monkeypatch) -> None:
+    session = _FakeSession()
+    monkeypatch.setattr(naver_playwright_geo, "_naver_session", session)
 
-    def close_driver(current_driver, **_kwargs):
-        closed.append(current_driver)
-        return ChromeDriverCloseResult(timed_out=False)
+    naver_playwright_geo.shutdown_naver_driver()
 
-    monkeypatch.setattr(naver_geo, "close_webdriver_with_timeout", close_driver)
-
-    naver_geo.shutdown_naver_driver()
-
-    assert closed == [driver]
-    assert naver_geo._naver_driver is None
+    assert len(session.close_calls) == 1
+    assert naver_playwright_geo._naver_session is None
 
 
-def test_shutdown_naver_driver_is_noop_without_driver(monkeypatch) -> None:
-    monkeypatch.setattr(naver_geo, "_naver_driver", None)
-    monkeypatch.setattr(
-        naver_geo,
-        "close_webdriver_with_timeout",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
-    )
+def test_shutdown_naver_driver_is_noop_without_session(monkeypatch) -> None:
+    monkeypatch.setattr(naver_playwright_geo, "_naver_session", None)
 
-    naver_geo.shutdown_naver_driver()
+    naver_playwright_geo.shutdown_naver_driver()
 
-    assert naver_geo._naver_driver is None
+    assert naver_playwright_geo._naver_session is None

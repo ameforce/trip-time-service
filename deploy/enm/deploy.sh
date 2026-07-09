@@ -40,6 +40,7 @@ SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-yes}"
 SSH_KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${HOME}/.ssh/known_hosts}"
 APP_VERSION="${APP_VERSION:-${IMAGE_REF##*:}}"
 SOURCE_ARCHIVE_PATH="${SOURCE_ARCHIVE_PATH:-}"
+TTS_PROVIDER="${TTS_PROVIDER:-naver_playwright}"
 TTS_CHROME_NO_SANDBOX="${TTS_CHROME_NO_SANDBOX:-1}"
 IMAGE_RETENTION_COUNT="${IMAGE_RETENTION_COUNT:-5}"
 
@@ -99,6 +100,7 @@ HEALTHCHECK_DELAY_SECONDS="$(printf '%q' "${HEALTHCHECK_DELAY_SECONDS}")"
 APP_VERSION="$(printf '%q' "${APP_VERSION}")"
 SOURCE_ARCHIVE_REMOTE="$(printf '%q' "${SOURCE_ARCHIVE_REMOTE}")"
 REMOTE_APP_ROOT="$(printf '%q' "${REMOTE_APP_ROOT}")"
+TTS_PROVIDER="$(printf '%q' "${TTS_PROVIDER}")"
 TTS_CHROME_NO_SANDBOX="$(printf '%q' "${TTS_CHROME_NO_SANDBOX}")"
 IMAGE_RETENTION_COUNT="$(printf '%q' "${IMAGE_RETENTION_COUNT}")"
 
@@ -223,6 +225,7 @@ fi
 
 run_container() {
   local image_ref="\$1"
+  local override_provider="\${2:-}"
   local -a args
   args=(
     --detach
@@ -236,6 +239,13 @@ run_container() {
     --label "service=\${CONTAINER_PREFIX}"
     --label "deploy_env=\${DEPLOY_ENV}"
   )
+
+  # New deploys may override a stale remote env (e.g. naver_selenium).
+  # Auto-rollback to previous_image must NOT force naver_playwright — older
+  # images may only accept naver / naver_selenium from the env file.
+  if [[ -n "\${override_provider}" ]]; then
+    args+=(--env "TTS_PROVIDER=\${override_provider}")
+  fi
 
   if [[ -n "\${NETWORK_NAME}" ]]; then
     args+=(--network "\${NETWORK_NAME}")
@@ -265,7 +275,7 @@ check_health() {
   curl --fail --silent --show-error "http://127.0.0.1:\${HOST_PORT}/healthz" >/dev/null
 }
 
-run_container "\${IMAGE_REF}"
+run_container "\${IMAGE_REF}" "\${TTS_PROVIDER}"
 
 for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
   if check_health; then
@@ -287,6 +297,7 @@ if [[ -n "\${previous_image}" ]]; then
   if ! docker image inspect "\${previous_image}" >/dev/null 2>&1; then
     docker pull "\${previous_image}" >/dev/null 2>&1 || true
   fi
+  # Omit provider override so previous image uses env-file / image defaults.
   run_container "\${previous_image}"
   for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
     if check_health; then

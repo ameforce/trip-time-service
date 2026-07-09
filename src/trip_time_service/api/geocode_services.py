@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from functools import lru_cache
 
 from trip_time_service.api.e2e_fixtures import is_fixture_mode_enabled
-from trip_time_service.api.naver_browser_autocomplete import (
+from trip_time_service.api.naver_playwright_autocomplete import (
     autocomplete_naver_browser_pool,
     fetch_autocomplete_from_instant_search,
     get_naver_browser_pool_metrics,
@@ -22,7 +22,7 @@ from trip_time_service.api.naver_browser_autocomplete import (
     shutdown_naver_browser_pool,
     warmup_naver_browser_pool,
 )
-from trip_time_service.api.naver_geo import geocode_naver
+from trip_time_service.api.naver_playwright_geo import geocode_naver
 from trip_time_service.privacy import redact_text
 from trip_time_service.providers.base import CoordinateAwareProvider
 from trip_time_service.services.trip_time_service import TripTimeService

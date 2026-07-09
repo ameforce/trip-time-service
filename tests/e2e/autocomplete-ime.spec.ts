@@ -479,7 +479,7 @@ test.describe('autocomplete ime composition', () => {
           departure_time: '2026-04-27T05:30:00+09:00',
           arrival_time: '2026-04-27T06:10:00+09:00',
           duration_seconds: 2400,
-          provider: 'naver_selenium',
+          provider: 'naver_playwright',
           cache_hit: false,
         }),
       });
@@ -508,7 +508,7 @@ test.describe('autocomplete ime composition', () => {
             expected_arrival_time: '2026-04-27T06:20:00+09:00',
             duration_seconds: 2400,
             meets_deadline: true,
-            provider: 'naver_selenium',
+            provider: 'naver_playwright',
             provider_calls: 1,
             candidates_checked: 1,
             planned_queries: 1,
