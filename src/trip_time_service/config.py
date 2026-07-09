@@ -106,13 +106,13 @@ def load_settings() -> Settings:
     lookback_hours = _getenv_int("TTS_LOOKBACK_HOURS", 3)
     max_queries = _getenv_int("TTS_MAX_QUERIES", 120)
     recommend_min_samples = _getenv_int("TTS_RECOMMEND_MIN_SAMPLES", 12)
-    provider = (_getenv_stripped("TTS_PROVIDER") or "naver_selenium").lower()
+    provider = (_getenv_stripped("TTS_PROVIDER") or "naver_playwright").lower()
     logical_cpus = max(1, os.cpu_count() or 1)
     cpu_parallel_target = _cpu_parallel_target(logical_cpus)
 
     default_pool_size = (
         cpu_parallel_target
-        if provider in {"naver", "naver_selenium"}
+        if provider in {"naver", "naver_playwright"}
         else 1
     )
     naver_session_pool_size = _getenv_int(
@@ -124,7 +124,7 @@ def load_settings() -> Settings:
         naver_session_pool_size,
     )
 
-    if provider in {"naver", "naver_selenium"}:
+    if provider in {"naver", "naver_playwright"}:
         # 운영자가 지정한 값은 존중하되, 과도한 병렬도만 CPU 목표치로 상한 제한한다.
         naver_session_pool_size = min(
             naver_session_pool_size,

@@ -7,11 +7,11 @@ name = "trip-time-service"
 version = "0.1.0"
 description = "네이버 지도(차량) 기반 소요시간/추천 출발시각 서비스"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
   "fastapi>=0.110",
   "pydantic>=2.6",
-  "selenium>=4.16",
+  "playwright>=1.49",
   "tzdata>=2024.1; platform_system == 'Windows'",
   "uvicorn>=0.27",
 ]
@@ -34,7 +34,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]

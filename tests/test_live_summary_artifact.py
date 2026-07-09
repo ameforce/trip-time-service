@@ -33,7 +33,7 @@ def test_passing_live_summary_does_not_count_success_reports_as_failures(
                 "live": True,
                 "fixture": False,
                 "strict": True,
-                "TTS_PROVIDER": "naver_selenium",
+                "TTS_PROVIDER": "naver_playwright",
             }
         )
     )
@@ -67,7 +67,7 @@ def test_failed_live_summary_classifies_only_failed_tests(
                 "live": True,
                 "fixture": False,
                 "strict": True,
-                "TTS_PROVIDER": "naver_selenium",
+                "TTS_PROVIDER": "naver_playwright",
             }
         )
     )
@@ -113,7 +113,7 @@ def test_failed_live_summary_uses_error_contexts_for_opaque_last_run_ids(
                 "live": True,
                 "fixture": False,
                 "strict": True,
-                "TTS_PROVIDER": "naver_selenium",
+                "TTS_PROVIDER": "naver_playwright",
             }
         )
     )
@@ -163,7 +163,7 @@ def test_live_summary_uses_runtime_mode_and_policy_without_parent_env(
                 "live": True,
                 "fixture": False,
                 "strict": True,
-                "TTS_PROVIDER": "naver_selenium",
+                "TTS_PROVIDER": "naver_playwright",
                 "TTS_LIVE_MODE": "diagnose",
                 "LIVE_E2E_POLICY": "blocking",
             }

@@ -154,7 +154,7 @@ def test_graceful_shutdown_cleans_up_chromium_processes(tmp_path: Path) -> None:
     env = os.environ.copy()
     env.update(
         {
-            "TTS_PROVIDER": "naver_selenium",
+            "TTS_PROVIDER": "naver_playwright",
             "TTS_RELOAD": "false",
             "TTS_HEADLESS": "true",
             "TTS_PORT": str(port),

@@ -15,6 +15,16 @@ def test_deploy_script_overrides_runtime_tts_version() -> None:
     assert '--env "TTS_VERSION=\\${APP_VERSION}"' in script
 
 
+def test_deploy_script_overrides_runtime_tts_provider() -> None:
+    script = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert 'TTS_PROVIDER="${TTS_PROVIDER:-naver_playwright}"' in script
+    # New deploys pass provider override; auto-rollback omits it.
+    assert 'args+=(--env "TTS_PROVIDER=\\${override_provider}")' in script
+    assert 'run_container "\\${IMAGE_REF}" "\\${TTS_PROVIDER}"' in script
+    assert 'run_container "\\${previous_image}"' in script
+    assert 'run_container "\\${previous_image}" "\\${TTS_PROVIDER}"' not in script
+
+
 def test_env_examples_do_not_pin_tts_version_placeholder() -> None:
     for env_file in ENV_EXAMPLES:
         lines = env_file.read_text(encoding="utf-8").splitlines()

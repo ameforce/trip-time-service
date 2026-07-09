@@ -1,29 +1,46 @@
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trip_time_service.config import Settings
-from trip_time_service.providers.naver_selenium import NaverMapsSeleniumProvider
+from trip_time_service.providers import naver_playwright
+from trip_time_service.providers.naver_playwright import NaverMapsPlaywrightProvider
 
 
-@dataclass
 class _FakeCalendarButton:
-    text: str
-    displayed: bool = True
-    enabled: bool = True
-    clicked: bool = False
+    def __init__(
+        self,
+        text: str,
+        *,
+        visible: bool = True,
+        enabled: bool = True,
+    ) -> None:
+        self.text = text
+        self._visible = visible
+        self._enabled = enabled
+        self.clicked = False
+        self._page: _FakePage | None = None
 
-    def is_displayed(self) -> bool:
-        return self.displayed
+    def is_visible(self) -> bool:
+        return self._visible
 
     def is_enabled(self) -> bool:
-        return self.enabled
+        return self._enabled
+
+    def inner_text(self) -> str:
+        return self.text
+
+    def click(self) -> None:
+        self.clicked = True
+        if self._page is not None:
+            self._page._handle_click(self)
 
 
-class _FakeDriver:
+class _FakePage:
     def __init__(
         self,
         buttons: list[_FakeCalendarButton] | None = None,
@@ -51,25 +68,32 @@ class _FakeDriver:
             return month_state[self.expanded]
         return month_state.get(False, [])
 
-    def find_elements(self, by: object, selector: str) -> list[_FakeCalendarButton]:
+    def _attach(
+        self,
+        buttons: list[_FakeCalendarButton],
+    ) -> list[_FakeCalendarButton]:
+        for button in buttons:
+            button._page = self
+        return buttons
+
+    def query_selector_all(self, selector: str) -> list[_FakeCalendarButton]:
         if selector == "button.calendar_day_btn":
-            return self._current_day_buttons()
+            return self._attach(self._current_day_buttons())
         if selector == "button.calendar_date_btn":
-            return [self.calendar_month_button]
+            return self._attach([self.calendar_month_button])
         if selector == "button.list_item_btn":
-            return self.month_options if self.dropdown_open else []
+            return self._attach(self.month_options) if self.dropdown_open else []
         if (
             selector == "button.calendar_expand_btn"
             and self.month_views
             and True in self.month_views.get(self.calendar_month_button.text, {})
         ):
-            return [self.expand_button]
+            return self._attach([self.expand_button])
         return []
 
-    def execute_script(self, script: str, button: _FakeCalendarButton) -> None:
+    def _handle_click(self, button: _FakeCalendarButton) -> None:
         self.clicked_button = button
         self.click_history.append(button)
-        button.clicked = True
         if button is self.calendar_month_button:
             self.dropdown_open = True
             return
@@ -91,7 +115,7 @@ def _make_settings() -> Settings:
         step_minutes=10,
         lookback_hours=3,
         max_queries=120,
-        provider="naver_selenium",
+        provider="naver_playwright",
         chrome_binary_path=None,
         chrome_user_data_dir=None,
         naver_map_client_id=None,
@@ -102,12 +126,17 @@ def _make_settings() -> Settings:
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_sleep(monkeypatch) -> None:
+    monkeypatch.setattr(naver_playwright, "_sleep", lambda _seconds: None)
+
+
 def test_set_calendar_date_prefers_enabled_next_month_button_for_rollover(
     monkeypatch,
 ) -> None:
     real_date = dt.date
-    provider = NaverMapsSeleniumProvider(_make_settings())
-    driver = _FakeDriver(
+    provider = NaverMapsPlaywrightProvider(_make_settings())
+    page = _FakePage(
         [
             _FakeCalendarButton(text="31", enabled=True),
             _FakeCalendarButton(text="1", enabled=False),
@@ -124,19 +153,19 @@ def test_set_calendar_date_prefers_enabled_next_month_button_for_rollover(
     monkeypatch.setattr(dt, "date", _FakeDate)
 
     provider._set_calendar_date(
-        driver,
+        page,
         datetime(2026, 4, 1, 9, 0, 0),
     )
 
-    assert driver.clicked_button is driver.buttons[2]
+    assert page.clicked_button is page.buttons[2]
 
 
 def test_set_calendar_date_tracks_next_month_plain_day_after_month_label(
     monkeypatch,
 ) -> None:
     real_date = dt.date
-    provider = NaverMapsSeleniumProvider(_make_settings())
-    driver = _FakeDriver(
+    provider = NaverMapsPlaywrightProvider(_make_settings())
+    page = _FakePage(
         [
             _FakeCalendarButton(text="31", enabled=True),
             _FakeCalendarButton(text="1", enabled=True),
@@ -155,18 +184,18 @@ def test_set_calendar_date_tracks_next_month_plain_day_after_month_label(
     monkeypatch.setattr(dt, "date", _FakeDate)
 
     provider._set_calendar_date(
-        driver,
+        page,
         datetime(2026, 4, 2, 9, 0, 0),
     )
 
-    assert driver.clicked_button is driver.buttons[4]
+    assert page.clicked_button is page.buttons[4]
 
 
 def test_set_calendar_date_selects_month_then_expands_for_future_day(
     monkeypatch,
 ) -> None:
     real_date = dt.date
-    provider = NaverMapsSeleniumProvider(_make_settings())
+    provider = NaverMapsPlaywrightProvider(_make_settings())
     target_day_button = _FakeCalendarButton(text="19", enabled=True)
     april_expanded_buttons = [
         _FakeCalendarButton(text="29", enabled=False),
@@ -194,7 +223,7 @@ def test_set_calendar_date_selects_month_then_expands_for_future_day(
     ]
     april_option = _FakeCalendarButton(text="2026.04")
     expand_button = _FakeCalendarButton(text="펼치기", enabled=True)
-    driver = _FakeDriver(
+    page = _FakePage(
         calendar_month_text="2026.03",
         month_views={
             "2026.03": {
@@ -250,11 +279,11 @@ def test_set_calendar_date_selects_month_then_expands_for_future_day(
     monkeypatch.setattr(dt, "date", _FakeDate)
 
     provider._set_calendar_date(
-        driver,
+        page,
         datetime(2026, 4, 19, 6, 30, 0),
     )
 
     assert april_option.clicked is True
     assert expand_button.clicked is True
-    assert driver.calendar_month_button.text == "2026.04"
-    assert driver.clicked_button is target_day_button
+    assert page.calendar_month_button.text == "2026.04"
+    assert page.clicked_button is target_day_button

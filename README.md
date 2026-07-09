@@ -5,8 +5,8 @@
 - **출발 시각 입력 → 도착 시각 계산 + 출발 시각 분석(추천 포함)**
 - **도착 시각 입력 → “덜 막히는(쾌적한)” 출발 시각 추천**
 
-을 제공하는 Python 서비스입니다. 초기 구현은 Selenium/Chromium 자동화 기반(Provider)으로 진행하며,
-향후 웹 페이지 제공을 위해 FastAPI HTTP API를 중심에 둡니다.
+을 제공하는 Python 서비스입니다. 네이버 지도 연동은 Playwright Chromium
+런타임(`naver_playwright`)을 사용하며, FastAPI HTTP API를 중심에 둡니다.
 
 ## 빠른 시작 (uv)
 
@@ -22,7 +22,7 @@ uv sync --extra dev
 
 ## 실행
 
-`TTS_PROVIDER`를 비우면 기본은 `naver_selenium`입니다(`src/trip_time_service/config.py`). 브라우저 없이 돌리려면 `mock`을 명시하세요.
+`TTS_PROVIDER`를 비우면 기본은 `naver_playwright`입니다(`src/trip_time_service/config.py`). 브라우저 없이 돌리려면 `mock`을 명시하세요.
 
 ```cmd
 uv run trip-time-service
@@ -54,15 +54,16 @@ curl -X POST http://127.0.0.1:8500/v1/trip/recommended-departure-time -H "Conten
 
 환경변수 `TTS_PROVIDER`로 provider를 바꿀 수 있습니다.
 
-- `naver_selenium`(미설정 시 기본): 네이버 지도 Selenium/Chromium 기반
+- `naver_playwright`(미설정 시 기본): 네이버 지도 Playwright/Chromium 기반
 - `mock`: 브라우저 없이 동작하는 개발 전용
+- `naver_selenium`: 더 이상 지원하지 않음(factory에서 거부)
 
 ```cmd
 set TTS_PROVIDER=mock
 uv run trip-time-service
 ```
 
-> 참고: Selenium 4.x는 Selenium Manager를 통해 ChromeDriver를 자동으로 준비할 수 있습니다(최초 실행 시 네트워크 필요).
+> 참고: Playwright는 번들 Chromium을 사용합니다. 최초 설치 시 `uv run playwright install chromium`이 필요할 수 있습니다.
 
 ## 웹 UI
 
@@ -117,13 +118,13 @@ npm run e2e:report
 - `e2e:ci`는 `.artifacts/e2e-ci/`를 쓰며 `TTS_PROVIDER=mock`, `TTS_E2E_FIXTURE_MODE=1`, `TTS_PORT_STRICT=1`로 서버를 자동 기동합니다. Live summary를 덮어쓰지 않습니다.
 - fixture mode에서는 `/api/autocomplete`, `/api/geocode`, `/api/route`가 test fixture를 사용하고 debug runtime에 `external_provider_calls=0` 및 provider별 zero-call breakdown을 기록합니다.
 - route smoke는 mock lane에서도 `.recommendation-card`를 요구합니다. provider-degraded branch로 green 처리하지 않습니다.
-- `e2e:live`/`e2e:live:smoke`는 fixture를 끄고 `naver_selenium` provider로 실제 Naver drift를 검증합니다. Captcha/private UI drift/provider-degraded는 테스트 내부에서 skip/pass하지 않고 classified failure artifact로 남깁니다. Jenkins에서는 `LIVE_E2E_POLICY=off|advisory|blocking`으로만 blocking 여부를 제어합니다.
+- `e2e:live`/`e2e:live:smoke`는 fixture를 끄고 `naver_playwright` provider로 실제 Naver drift를 검증합니다. Captcha/private UI drift/provider-degraded는 테스트 내부에서 skip/pass하지 않고 classified failure artifact로 남깁니다. Jenkins에서는 `LIVE_E2E_POLICY=off|advisory|blocking`으로만 blocking 여부를 제어합니다.
 - live wrapper/teardown은 Playwright 종료 후 기본 archive-safe summary인 `.artifacts/live/e2e-live-summary.json`을 다시 씁니다. 실패한 live run도 `failed_count`와 bucket count를 남기며, 이 summary는 bucket/count/report id만 포함하고 raw DOM, full request body, origin/destination query, clicked label, selected value, env secret은 포함하지 않습니다.
 - 각 smoke case는 `test-results` 아래 스크린샷 3장(초기/입력완료/최종)과 JSON report를 남기며, suite manifest는 `.artifacts/live/suite-artifacts.json`에 기록됩니다.
 - 종료 후 temp `TTS_CHROME_USER_DATA_DIR` 기준 Chromium residual probe 결과는 `.artifacts/live/shutdown-leak-report.json`에 기록됩니다.
 - prerequisite:
   - `e2e:ci`: Playwright Chromium 실행 가능
-  - `e2e:live`: 외부 네트워크 접근 가능, Selenium Manager 또는 Chrome/Chromium 실행 가능
+  - `e2e:live`: 외부 네트워크 접근 가능, Playwright Chromium 실행 가능
 - live lane:
 
 ```sh
@@ -161,13 +162,15 @@ uv run --no-sync python scripts/benchmark_autocomplete_latency.py --base-url htt
 
 ## 수동 UI 검증 (live-only)
 
-```cmd
-uv run --no-sync python scripts/verify_ui_departure_search.py
-uv run --no-sync python scripts/verify_ui_departure_search.py --headed --case-index 1
+Selenium 기반 `scripts/verify_ui_departure_search.py`는 제거되었습니다.
+수동 live 검증은 Playwright E2E live lane을 사용하세요.
+
+```sh
+npm run e2e:live:smoke -- --reporter=list
 ```
 
-- 기본 dataset: `tests/live/data/routes-blocking.json`의 departure scenario
-- 산출물: `.artifacts/live/manual-ui/` 아래 스크린샷 4장과 `verify-ui-departure-search.json`
+- 기본 dataset: `tests/live/data/routes-blocking.json`의 departure/arrival scenario
+- 산출물: `.artifacts/live/` 아래 스크린샷과 JSON report
 
 ## 버전 표기 규칙
 
