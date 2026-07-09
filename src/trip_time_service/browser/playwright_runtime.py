@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import threading
+from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from playwright.sync_api import (
     Browser,
@@ -22,6 +25,8 @@ DEFAULT_USER_AGENT = (
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
+_T = TypeVar("_T")
+
 
 @dataclass(frozen=True)
 class PlaywrightLaunchOptions:
@@ -30,6 +35,7 @@ class PlaywrightLaunchOptions:
     viewport: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_VIEWPORT))
     user_agent: str = DEFAULT_USER_AGENT
     user_data_dir: str | None = None
+    chrome_no_sandbox: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,10 +55,14 @@ class PlaywrightBrowserSession:
         timed_out = False
         close_error: Exception | None = None
 
-        try:
-            self.page.close()
-        except Exception as exc:  # noqa: BLE001 - best-effort cleanup
-            close_error = close_error or exc
+        # Prefer context/browser close for pages; only attempt a bounded page close.
+        page_result = close_page_with_timeout(
+            self.page,
+            close_timeout_seconds=close_timeout_seconds,
+            close_thread_name="playwright-page-close",
+        )
+        timed_out = timed_out or page_result.timed_out
+        close_error = close_error or page_result.close_error
 
         context_result = close_context_with_timeout(
             self.context,
@@ -79,17 +89,47 @@ class PlaywrightBrowserSession:
         return PlaywrightCloseResult(timed_out=timed_out, close_error=close_error)
 
 
+def _chromium_launch_args(*, chrome_no_sandbox: bool) -> list[str] | None:
+    if not chrome_no_sandbox:
+        return None
+    return ["--no-sandbox", "--disable-dev-shm-usage"]
+
+
 def launch_browser_session(
     options: PlaywrightLaunchOptions | None = None,
 ) -> PlaywrightBrowserSession:
     opts = options or PlaywrightLaunchOptions()
     manager = sync_playwright()
     playwright = manager.start()
+    launch_args = _chromium_launch_args(chrome_no_sandbox=opts.chrome_no_sandbox)
 
-    if opts.user_data_dir:
-        context = playwright.chromium.launch_persistent_context(
-            opts.user_data_dir,
-            headless=opts.headless,
+    try:
+        if opts.user_data_dir:
+            launch_kwargs: dict[str, Any] = {
+                "headless": opts.headless,
+                "locale": opts.locale,
+                "viewport": opts.viewport,
+                "user_agent": opts.user_agent,
+            }
+            if launch_args is not None:
+                launch_kwargs["args"] = launch_args
+            context = playwright.chromium.launch_persistent_context(
+                opts.user_data_dir,
+                **launch_kwargs,
+            )
+            page = context.new_page()
+            return PlaywrightBrowserSession(
+                playwright=playwright,
+                browser=None,
+                context=context,
+                page=page,
+            )
+
+        launch_kwargs = {"headless": opts.headless}
+        if launch_args is not None:
+            launch_kwargs["args"] = launch_args
+        browser = playwright.chromium.launch(**launch_kwargs)
+        context = browser.new_context(
             locale=opts.locale,
             viewport=opts.viewport,
             user_agent=opts.user_agent,
@@ -97,24 +137,72 @@ def launch_browser_session(
         page = context.new_page()
         return PlaywrightBrowserSession(
             playwright=playwright,
-            browser=None,
+            browser=browser,
             context=context,
             page=page,
         )
+    except Exception:
+        try:
+            playwright.stop()
+        except Exception:  # noqa: BLE001 - best-effort cleanup
+            pass
+        raise
 
-    browser = playwright.chromium.launch(headless=opts.headless)
-    context = browser.new_context(
-        locale=opts.locale,
-        viewport=opts.viewport,
-        user_agent=opts.user_agent,
-    )
-    page = context.new_page()
-    return PlaywrightBrowserSession(
-        playwright=playwright,
-        browser=browser,
-        context=context,
-        page=page,
-    )
+
+class PlaywrightOwnerThread:
+    """Serialize Playwright create/use/close onto one dedicated thread.
+
+    Playwright's sync API is greenlet-bound to the thread that started it.
+    Callers from FastAPI/thread pools must submit work here instead of touching
+    a cached session directly.
+    """
+
+    def __init__(self, name: str = "playwright-owner") -> None:
+        self._jobs: queue.Queue[
+            tuple[Callable[[], Any], Future[Any]] | None
+        ] = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=name,
+            daemon=True,
+        )
+        self._closed = False
+        self._thread_ident: int | None = None
+        self._thread.start()
+
+    @property
+    def thread_ident(self) -> int | None:
+        return self._thread_ident
+
+    def call(self, fn: Callable[[], _T], *, timeout: float | None = None) -> _T:
+        if self._closed:
+            raise RuntimeError("Playwright owner thread is closed")
+        if threading.get_ident() == self._thread_ident:
+            return fn()
+
+        future: Future[_T] = Future()
+        self._jobs.put((fn, future))
+        return future.result(timeout=timeout)
+
+    def close(self, *, join_timeout_seconds: float = 5.0) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._jobs.put(None)
+        self._thread.join(timeout=join_timeout_seconds)
+
+    def _run(self) -> None:
+        self._thread_ident = threading.get_ident()
+        while True:
+            item = self._jobs.get()
+            if item is None:
+                return
+            fn, future = item
+            if future.set_running_or_notify_cancel():
+                try:
+                    future.set_result(fn())
+                except Exception as exc:  # noqa: BLE001 - propagate to caller
+                    future.set_exception(exc)
 
 
 def _taskkill_pid_tree(pid: int) -> None:
@@ -172,32 +260,53 @@ def _close_with_timeout(
     close_timeout_seconds: float,
     close_thread_name: str,
 ) -> PlaywrightCloseResult:
-    close_errors: list[Exception] = []
+    """Close on the calling (owner) thread; force-kill only as hang fallback.
+
+    Playwright close/stop must not run on a helper thread. The watchdog thread
+    only force-kills the OS process and never calls Playwright APIs.
+    """
     close_done = threading.Event()
+    timed_out = threading.Event()
+    close_errors: list[Exception] = []
+    close_thread_ident = threading.get_ident()
 
-    def _run_close() -> None:
-        try:
-            target.close()
-        except Exception as exc:
-            close_errors.append(exc)
-        finally:
-            close_done.set()
+    def _watchdog() -> None:
+        if not close_done.wait(timeout=close_timeout_seconds):
+            timed_out.set()
+            force_kill_playwright_process(target)
 
-    close_thread = threading.Thread(
-        target=_run_close,
+    watchdog = threading.Thread(
+        target=_watchdog,
         name=close_thread_name,
         daemon=True,
     )
-    close_thread.start()
-    if not close_done.wait(timeout=close_timeout_seconds):
-        force_kill_playwright_process(target)
-        return PlaywrightCloseResult(timed_out=True)
-    if close_errors:
-        return PlaywrightCloseResult(
-            timed_out=False,
-            close_error=close_errors[0],
-        )
-    return PlaywrightCloseResult(timed_out=False)
+    watchdog.start()
+    try:
+        # Playwright API must run on the owner/caller thread (not the watchdog).
+        assert threading.get_ident() == close_thread_ident
+        target.close()
+    except Exception as exc:
+        close_errors.append(exc)
+    finally:
+        close_done.set()
+
+    return PlaywrightCloseResult(
+        timed_out=timed_out.is_set(),
+        close_error=close_errors[0] if close_errors else None,
+    )
+
+
+def close_page_with_timeout(
+    page: Any,
+    *,
+    close_timeout_seconds: float,
+    close_thread_name: str,
+) -> PlaywrightCloseResult:
+    return _close_with_timeout(
+        page,
+        close_timeout_seconds=close_timeout_seconds,
+        close_thread_name=close_thread_name,
+    )
 
 
 def close_browser_with_timeout(

@@ -21,6 +21,7 @@ from typing import Any
 from trip_time_service.browser.playwright_runtime import (
     PlaywrightBrowserSession,
     PlaywrightLaunchOptions,
+    PlaywrightOwnerThread,
     force_kill_playwright_process,
     launch_browser_session,
 )
@@ -884,6 +885,7 @@ class NaverMapsPlaywrightProvider:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._lock = threading.Lock()
+        self._owner = PlaywrightOwnerThread(name="naver-playwright-owner")
         self._session: PlaywrightBrowserSession | None = None
         self._current_route: Route | None = None
         self._modal_open = False
@@ -896,7 +898,8 @@ class NaverMapsPlaywrightProvider:
     # ── public API ──
 
     def set_coords(self, place: str, lat: float, lon: float) -> None:
-        self._coords[place] = (lat, lon)
+        with self._lock:
+            self._coords[place] = (lat, lon)
 
     def get_drive_duration(
         self, route: Route, departure_time: datetime,
@@ -910,6 +913,29 @@ class NaverMapsPlaywrightProvider:
             m10,
         )
 
+        with self._lock:
+            if cache_key in self._dur_cache:
+                secs = self._dur_cache[cache_key]
+                return DriveDuration(
+                    duration_seconds=secs,
+                    fetched_at=datetime.now(tz=departure_time.tzinfo),
+                    raw_text=f"네이버 지도 (캐시): {secs // 60}분",
+                )
+
+        # Playwright create/use must stay on the dedicated owner thread.
+        return self._owner.call(
+            lambda: self._get_drive_duration_on_owner(
+                route, departure_time, m10, cache_key
+            )
+        )
+
+    def _get_drive_duration_on_owner(
+        self,
+        route: Route,
+        departure_time: datetime,
+        m10: int,
+        cache_key: tuple,
+    ) -> DriveDuration:
         with self._lock:
             if cache_key in self._dur_cache:
                 secs = self._dur_cache[cache_key]
@@ -975,42 +1001,48 @@ class NaverMapsPlaywrightProvider:
             self.release_session()
 
     def release_session(self) -> None:
-        self._lock.acquire()
         try:
-            self._close_session_locked()
-        finally:
-            self._lock.release()
+            self._owner.call(self._close_session_locked)
+        except Exception:
+            _log.debug("Naver release_session failed", exc_info=True)
 
     def close(self) -> None:
-        acquired = self._lock.acquire(timeout=_CLOSE_LOCK_TIMEOUT_SECONDS)
-        if not acquired:
+        try:
+            self._owner.call(
+                self._close_session_locked,
+                timeout=_CLOSE_LOCK_TIMEOUT_SECONDS
+                + _SESSION_CLOSE_TIMEOUT_SECONDS,
+            )
+        except Exception:
             _log.warning(
-                "Naver provider close skipped after %.1fs (busy query lock)",
-                _CLOSE_LOCK_TIMEOUT_SECONDS,
+                "Naver provider close timed out or failed; force-killing session",
+                exc_info=True,
             )
             session = self._session
             if session is not None:
                 self._force_kill_session(session)
-            return
-        try:
-            self._close_session_locked()
+                self._session = None
+                self._current_route = None
+                self._modal_open = False
         finally:
-            self._lock.release()
+            self._owner.close(
+                join_timeout_seconds=_CLOSE_LOCK_TIMEOUT_SECONDS,
+            )
 
     def terminate_session(self) -> None:
-        acquired = self._lock.acquire(timeout=_CLOSE_LOCK_TIMEOUT_SECONDS)
-        if not acquired:
+        try:
+            self._owner.call(
+                self._close_session_locked,
+                timeout=_CLOSE_LOCK_TIMEOUT_SECONDS
+                + _SESSION_CLOSE_TIMEOUT_SECONDS,
+            )
+        except Exception:
             session = self._session
             if session is not None:
                 self._force_kill_session(session)
             self._session = None
             self._current_route = None
             self._modal_open = False
-            return
-        try:
-            self._close_session_locked()
-        finally:
-            self._lock.release()
 
     # ── session 관리 ──
 
@@ -1021,6 +1053,7 @@ class NaverMapsPlaywrightProvider:
         options = PlaywrightLaunchOptions(
             headless=self._settings.headless,
             user_data_dir=self._settings.chrome_user_data_dir,
+            chrome_no_sandbox=self._settings.chrome_no_sandbox,
         )
         session = launch_browser_session(options)
         try:

@@ -42,6 +42,21 @@ if (mode === 'extended') {
   env.TTS_LIVE_EXTENDED = '1';
 }
 
+// Python provider needs Chromium browsers installed separately from Node Playwright.
+const pythonBrowserInstall = spawnSync(
+  process.platform === 'win32' ? 'uv.cmd' : 'uv',
+  ['run', 'playwright', 'install', 'chromium'],
+  {
+    env,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  },
+);
+if (pythonBrowserInstall.status !== 0) {
+  console.error('Failed to install Python Playwright Chromium browsers');
+  process.exit(pythonBrowserInstall.status ?? 1);
+}
+
 const playwrightBin =
   process.platform === 'win32'
     ? resolve('node_modules/.bin/playwright.cmd')

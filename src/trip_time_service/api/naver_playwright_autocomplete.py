@@ -27,6 +27,7 @@ from trip_time_service.api.naver_playwright_geo import extract_coords_from_naver
 from trip_time_service.browser.playwright_runtime import (
     PlaywrightBrowserSession,
     PlaywrightLaunchOptions,
+    PlaywrightOwnerThread,
     force_kill_playwright_process,
     launch_browser_session,
 )
@@ -370,6 +371,9 @@ class _BrowserAutocompleteWorker:
     def __init__(self, worker_index: int) -> None:
         self._worker_index = worker_index
         self._lock = threading.Lock()
+        self._owner = PlaywrightOwnerThread(
+            name=f"naver-ac-playwright-{worker_index}",
+        )
         self._session: PlaywrightBrowserSession | None = None
         self._last_used_monotonic = 0.0
         self._terminal_close_requested = False
@@ -392,12 +396,12 @@ class _BrowserAutocompleteWorker:
 
         try:
             self._last_used_monotonic = time.monotonic()
-            session = self._ensure_session_locked()
-            return self._query_locked(
-                session.page,
-                query,
-                limit=limit,
-                wait_seconds=wait_seconds,
+            return self._owner.call(
+                lambda: self._try_query_on_owner(
+                    query,
+                    limit=limit,
+                    wait_seconds=wait_seconds,
+                )
             )
         except Exception:
             _log.debug(
@@ -406,11 +410,29 @@ class _BrowserAutocompleteWorker:
                 redact_text(query),
                 exc_info=True,
             )
-            self._close_session_locked()
+            try:
+                self._owner.call(self._close_session_locked)
+            except Exception:
+                pass
             return ()
         finally:
             self._last_used_monotonic = time.monotonic()
             self._lock.release()
+
+    def _try_query_on_owner(
+        self,
+        query: str,
+        *,
+        limit: int,
+        wait_seconds: float,
+    ) -> tuple[dict, ...]:
+        session = self._ensure_session_locked()
+        return self._query_locked(
+            session.page,
+            query,
+            limit=limit,
+            wait_seconds=wait_seconds,
+        )
 
     def close(self, *, terminal: bool = False) -> None:
         if terminal:
@@ -423,13 +445,24 @@ class _BrowserAutocompleteWorker:
                     self._force_kill_session(session)
                     self._session = None
                 self._force_kill_profile_processes()
+            self._owner.close(join_timeout_seconds=_CLOSE_LOCK_TIMEOUT_SECONDS)
             return
         try:
-            self._close_session_locked()
+            try:
+                self._owner.call(
+                    self._close_session_locked,
+                    timeout=_SESSION_CLOSE_TIMEOUT_SECONDS + 1.0,
+                )
+            except Exception:
+                session = self._session
+                if session is not None:
+                    self._force_kill_session(session)
+                    self._session = None
             if terminal:
                 self._force_kill_profile_processes()
         finally:
             self._lock.release()
+            self._owner.close(join_timeout_seconds=_CLOSE_LOCK_TIMEOUT_SECONDS)
 
     def warmup(self) -> None:
         acquired = self._lock.acquire(timeout=_CLOSE_LOCK_TIMEOUT_SECONDS)
@@ -437,14 +470,17 @@ class _BrowserAutocompleteWorker:
             return
         try:
             self._last_used_monotonic = time.monotonic()
-            self._ensure_session_locked()
+            self._owner.call(self._ensure_session_locked)
         except Exception:
             _log.debug(
                 "browser autocomplete warmup failed idx=%d",
                 self._worker_index,
                 exc_info=True,
             )
-            self._close_session_locked()
+            try:
+                self._owner.call(self._close_session_locked)
+            except Exception:
+                pass
         finally:
             self._lock.release()
 
@@ -460,7 +496,7 @@ class _BrowserAutocompleteWorker:
             if self._session is not None and (
                 time.monotonic() - self._last_used_monotonic
             ) >= idle_seconds:
-                self._close_session_locked()
+                self._owner.call(self._close_session_locked)
         finally:
             self._lock.release()
 
@@ -484,6 +520,7 @@ class _BrowserAutocompleteWorker:
         options = PlaywrightLaunchOptions(
             headless=_env_bool("TTS_HEADLESS", True),
             user_data_dir=worker_dir,
+            chrome_no_sandbox=_env_bool("TTS_CHROME_NO_SANDBOX", False),
         )
 
         session = launch_browser_session(options)

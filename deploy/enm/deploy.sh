@@ -225,6 +225,7 @@ fi
 
 run_container() {
   local image_ref="\$1"
+  local override_provider="\${2:-}"
   local -a args
   args=(
     --detach
@@ -233,13 +234,18 @@ run_container() {
     --env-file "\${ENV_FILE}"
     # Runtime version must come from the deployed image/tag, not a stale env file.
     --env "TTS_VERSION=\${APP_VERSION}"
-    # Provider must not be pinned by a stale remote env (e.g. naver_selenium).
-    --env "TTS_PROVIDER=\${TTS_PROVIDER}"
     --env "TTS_CHROME_NO_SANDBOX=\${TTS_CHROME_NO_SANDBOX}"
     --publish "127.0.0.1:\${HOST_PORT}:\${CONTAINER_PORT}"
     --label "service=\${CONTAINER_PREFIX}"
     --label "deploy_env=\${DEPLOY_ENV}"
   )
+
+  # New deploys may override a stale remote env (e.g. naver_selenium).
+  # Auto-rollback to previous_image must NOT force naver_playwright — older
+  # images may only accept naver / naver_selenium from the env file.
+  if [[ -n "\${override_provider}" ]]; then
+    args+=(--env "TTS_PROVIDER=\${override_provider}")
+  fi
 
   if [[ -n "\${NETWORK_NAME}" ]]; then
     args+=(--network "\${NETWORK_NAME}")
@@ -269,7 +275,7 @@ check_health() {
   curl --fail --silent --show-error "http://127.0.0.1:\${HOST_PORT}/healthz" >/dev/null
 }
 
-run_container "\${IMAGE_REF}"
+run_container "\${IMAGE_REF}" "\${TTS_PROVIDER}"
 
 for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
   if check_health; then
@@ -291,6 +297,7 @@ if [[ -n "\${previous_image}" ]]; then
   if ! docker image inspect "\${previous_image}" >/dev/null 2>&1; then
     docker pull "\${previous_image}" >/dev/null 2>&1 || true
   fi
+  # Omit provider override so previous image uses env-file / image defaults.
   run_container "\${previous_image}"
   for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
     if check_health; then

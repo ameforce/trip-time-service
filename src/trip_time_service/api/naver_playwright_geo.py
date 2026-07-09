@@ -22,6 +22,7 @@ from typing import Any
 from trip_time_service.browser.playwright_runtime import (
     PlaywrightBrowserSession,
     PlaywrightLaunchOptions,
+    PlaywrightOwnerThread,
     launch_browser_session,
 )
 from trip_time_service.privacy import redact_text
@@ -30,6 +31,7 @@ _log = logging.getLogger(__name__)
 
 _naver_lock = threading.Lock()
 _naver_session: PlaywrightBrowserSession | None = None
+_naver_owner: PlaywrightOwnerThread | None = None
 
 _NAVER_MAP_URL = "https://map.naver.com/"
 _PAGE_NAVIGATION_TIMEOUT_MS = 20000
@@ -69,6 +71,13 @@ def _sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
+def _get_or_create_owner_locked() -> PlaywrightOwnerThread:
+    global _naver_owner
+    if _naver_owner is None:
+        _naver_owner = PlaywrightOwnerThread(name="naver-geo-playwright-owner")
+    return _naver_owner
+
+
 def _ensure_naver_session() -> PlaywrightBrowserSession:
     global _naver_session
     if _naver_session is not None:
@@ -77,6 +86,7 @@ def _ensure_naver_session() -> PlaywrightBrowserSession:
     options = PlaywrightLaunchOptions(
         headless=_env_bool("TTS_HEADLESS", True),
         user_data_dir=os.getenv("TTS_CHROME_USER_DATA_DIR"),
+        chrome_no_sandbox=_env_bool("TTS_CHROME_NO_SANDBOX", False),
     )
     session = launch_browser_session(options)
     try:
@@ -88,11 +98,10 @@ def _ensure_naver_session() -> PlaywrightBrowserSession:
     return session
 
 
-def shutdown_naver_driver() -> None:
+def _close_naver_session_on_owner() -> None:
     global _naver_session
-    with _naver_lock:
-        session = _naver_session
-        _naver_session = None
+    session = _naver_session
+    _naver_session = None
     if session is None:
         return
     result = session.close(close_timeout_seconds=_SESSION_CLOSE_TIMEOUT_SECONDS)
@@ -103,6 +112,39 @@ def shutdown_naver_driver() -> None:
             "Naver geo session close failed: %s",
             result.close_error,
         )
+
+
+def shutdown_naver_driver() -> None:
+    global _naver_owner, _naver_session
+    with _naver_lock:
+        owner = _naver_owner
+        session = _naver_session
+        _naver_owner = None
+        if owner is None:
+            _naver_session = None
+    if owner is not None:
+        try:
+            owner.call(
+                _close_naver_session_on_owner,
+                timeout=_SESSION_CLOSE_TIMEOUT_SECONDS + 1.0,
+            )
+        except Exception:
+            _log.warning("Naver geo shutdown failed", exc_info=True)
+        finally:
+            owner.close(join_timeout_seconds=_SESSION_CLOSE_TIMEOUT_SECONDS)
+        return
+    if session is None:
+        return
+    # Session without owner (tests / edge): close on this thread.
+    result = session.close(close_timeout_seconds=_SESSION_CLOSE_TIMEOUT_SECONDS)
+    if result.timed_out:
+        _log.warning("Naver geo session close timed out and was force-killed")
+    elif result.close_error is not None:
+        _log.warning(
+            "Naver geo session close failed: %s",
+            result.close_error,
+        )
+
 
 
 def _extract_road_addr_from_body(body: str) -> str | None:
@@ -242,82 +284,96 @@ def _click_first_search_result(page: Any) -> None:
             _log.debug("Naver search result click failed", exc_info=True)
 
 
+def _geocode_naver_on_owner(
+    query: str,
+    *,
+    fallback_geocode: Callable[[str], dict | None] | None,
+) -> dict | None:
+    try:
+        session = _ensure_naver_session()
+    except Exception:
+        _log.warning("Naver session init failed", exc_info=True)
+        return None
+
+    page = session.page
+    try:
+        _naver_search(page, query)
+        _sleep(3)
+
+        road_addr = _naver_read_entry_detail(page)
+        if not road_addr:
+            _click_first_search_result(page)
+            _sleep(3)
+            road_addr = _naver_read_entry_detail(page)
+
+        coords = extract_coords_from_naver_url(page.url)
+        if coords:
+            lat, lon = coords
+            if not road_addr:
+                road_addr = extract_addr_from_naver_url(page.url)
+            display_name = f"{query} ({road_addr})" if road_addr else query
+            _log.info(
+                "Naver geocode query=%s source=url_coords",
+                redact_text(query),
+            )
+            return {
+                "lat": str(lat),
+                "lon": str(lon),
+                "display_name": display_name,
+            }
+
+        entry_coords = _naver_extract_entry_coords(page)
+        if entry_coords:
+            display_name = f"{query} ({road_addr})" if road_addr else query
+            entry_coords["display_name"] = display_name
+            _log.info(
+                "Naver geocode query=%s source=entry_coords",
+                redact_text(query),
+            )
+            return entry_coords
+
+        if not road_addr:
+            _log.info(
+                "Naver geocode query=%s road_address=false",
+                redact_text(query),
+            )
+            return None
+
+        _log.info(
+            "Naver geocode query=%s road_address=%s fallback=true",
+            redact_text(query),
+            redact_text(road_addr),
+        )
+        if fallback_geocode is None:
+            return None
+
+        result = fallback_geocode(road_addr)
+        if result:
+            result["display_name"] = f"{query} ({road_addr})"
+            return result
+        _log.info(
+            "Naver geocode failed address=%s",
+            redact_text(road_addr),
+        )
+    except Exception:
+        _log.debug(
+            "Naver geocode failed query=%s",
+            redact_text(query),
+            exc_info=True,
+        )
+    return None
+
+
 def geocode_naver(
     query: str,
     *,
     fallback_geocode: Callable[[str], dict | None] | None = None,
 ) -> dict | None:
     with _naver_lock:
-        try:
-            session = _ensure_naver_session()
-        except Exception:
-            _log.warning("Naver session init failed", exc_info=True)
-            return None
-
-        page = session.page
-        try:
-            _naver_search(page, query)
-            _sleep(3)
-
-            road_addr = _naver_read_entry_detail(page)
-            if not road_addr:
-                _click_first_search_result(page)
-                _sleep(3)
-                road_addr = _naver_read_entry_detail(page)
-
-            coords = extract_coords_from_naver_url(page.url)
-            if coords:
-                lat, lon = coords
-                if not road_addr:
-                    road_addr = extract_addr_from_naver_url(page.url)
-                display_name = f"{query} ({road_addr})" if road_addr else query
-                _log.info(
-                    "Naver geocode query=%s source=url_coords",
-                    redact_text(query),
-                )
-                return {
-                    "lat": str(lat),
-                    "lon": str(lon),
-                    "display_name": display_name,
-                }
-
-            entry_coords = _naver_extract_entry_coords(page)
-            if entry_coords:
-                display_name = f"{query} ({road_addr})" if road_addr else query
-                entry_coords["display_name"] = display_name
-                _log.info(
-                    "Naver geocode query=%s source=entry_coords",
-                    redact_text(query),
-                )
-                return entry_coords
-
-            if not road_addr:
-                _log.info(
-                    "Naver geocode query=%s road_address=false",
-                    redact_text(query),
-                )
-                return None
-
-            _log.info(
-                "Naver geocode query=%s road_address=%s fallback=true",
-                redact_text(query),
-                redact_text(road_addr),
+        owner = _get_or_create_owner_locked()
+        return owner.call(
+            lambda: _geocode_naver_on_owner(
+                query,
+                fallback_geocode=fallback_geocode,
             )
-            if fallback_geocode is None:
-                return None
-
-            result = fallback_geocode(road_addr)
-            if result:
-                result["display_name"] = f"{query} ({road_addr})"
-                return result
-            _log.info(
-                "Naver geocode failed address=%s",
-                redact_text(road_addr),
-            )
-        except Exception:
-            _log.debug(
-                "Naver geocode failed query=%s",
-                redact_text(query),
-                exc_info=True,
-            )
-    return None
+        )

@@ -105,6 +105,7 @@ pipeline {
                   set +e
                   export PATH="$HOME/.local/bin:$PATH"
                   export TTS_CHROME_NO_SANDBOX=1
+                  uv run playwright install chromium
                   LIVE_E2E_POLICY=advisory npm run e2e:live:smoke -- --reporter=list
                   SMOKE_STATUS=$?
                   LIVE_E2E_POLICY=advisory npm run e2e:live:diagnose -- --reporter=list
@@ -119,6 +120,7 @@ pipeline {
               sh '''
                 export PATH="$HOME/.local/bin:$PATH"
                 export TTS_CHROME_NO_SANDBOX=1
+                uv run playwright install chromium
                 LIVE_E2E_POLICY=blocking npm run e2e:live:smoke -- --reporter=list
               '''
             }
