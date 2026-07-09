@@ -83,6 +83,10 @@ pipeline {
           uv run --no-sync --extra dev ruff check .
           uv run --no-sync --extra dev pytest
           npm ci
+          # Free stale Playwright webServer from prior failed builds on this agent.
+          fuser -k 39080/tcp || true
+          export E2E_PORT=$((39080 + (${BUILD_NUMBER:-0} % 1000)))
+          fuser -k "${E2E_PORT}/tcp" || true
           npm run e2e:ci -- --reporter=list
         '''
       }
