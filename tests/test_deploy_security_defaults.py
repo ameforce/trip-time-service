@@ -14,18 +14,26 @@ def _deploy_success_block(script: str) -> str:
     return script.split("if check_health; then", 1)[1].split("exit 0", 1)[0]
 
 
-def test_dockerfile_runs_as_non_root_and_does_not_force_chrome_no_sandbox() -> None:
+def test_dockerfile_runs_as_non_root_with_playwright_chromium() -> None:
     dockerfile = _read_repo_text("Dockerfile")
     dev_env_example = _read_repo_text("deploy/enm/env/dev.env.example")
     prod_env_example = _read_repo_text("deploy/enm/env/prod.env.example")
 
+    assert "FROM python:3.14-slim" in dockerfile
     assert "USER appuser" in dockerfile
     assert "useradd --create-home" in dockerfile
-    assert "chromium-sandbox" in dockerfile
+    assert "playwright install --with-deps chromium" in dockerfile
+    assert "apt chromium" not in dockerfile.replace("\n", " ")
+    assert "chromium-sandbox" not in dockerfile
+    assert "TTS_CHROME_BINARY_PATH" not in dockerfile
     assert "TTS_CHROME_NO_SANDBOX" not in dockerfile
     assert "TTS_CHROME_USER_DATA_DIR" not in dockerfile
-    assert "TTS_CHROME_NO_SANDBOX=1" in dev_env_example
-    assert "TTS_CHROME_NO_SANDBOX=1" in prod_env_example
+    assert "TTS_PROVIDER=naver_playwright" in dev_env_example
+    assert "TTS_PROVIDER=naver_playwright" in prod_env_example
+    assert "TTS_CHROME_NO_SANDBOX" not in dev_env_example
+    assert "TTS_CHROME_NO_SANDBOX" not in prod_env_example
+    assert "TTS_CHROME_BINARY_PATH" not in dev_env_example
+    assert "TTS_CHROME_BINARY_PATH" not in prod_env_example
 
 
 def test_enm_deploy_scripts_pass_chrome_no_sandbox_to_runtime() -> None:
