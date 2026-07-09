@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import queue
 import subprocess
@@ -55,15 +56,8 @@ class PlaywrightBrowserSession:
         timed_out = False
         close_error: Exception | None = None
 
-        # Prefer context/browser close for pages; only attempt a bounded page close.
-        page_result = close_page_with_timeout(
-            self.page,
-            close_timeout_seconds=close_timeout_seconds,
-            close_thread_name="playwright-page-close",
-        )
-        timed_out = timed_out or page_result.timed_out
-        close_error = close_error or page_result.close_error
-
+        # Skip explicit page.close(); context/browser close covers pages and
+        # avoids an unbounded hang before the timeout-protected paths run.
         context_result = close_context_with_timeout(
             self.context,
             close_timeout_seconds=close_timeout_seconds,
@@ -254,16 +248,37 @@ def force_kill_playwright_process(target: Any) -> None:
         pass
 
 
+def _interrupt_thread(thread_ident: int, exc_type: type[BaseException]) -> None:
+    """Best-effort interrupt for a hung owner-thread close during shutdown."""
+    try:
+        result = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(thread_ident),
+            ctypes.py_object(exc_type),
+        )
+        if result > 1:
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_ulong(thread_ident),
+                None,
+            )
+    except Exception:
+        pass
+
+
+class _PlaywrightCloseTimeout(TimeoutError):
+    """Raised into the owner thread when close exceeds the shutdown budget."""
+
+
 def _close_with_timeout(
     target: Any,
     *,
     close_timeout_seconds: float,
     close_thread_name: str,
 ) -> PlaywrightCloseResult:
-    """Close on the calling (owner) thread; force-kill only as hang fallback.
+    """Close on the calling (owner) thread; force-kill + interrupt on hang.
 
     Playwright close/stop must not run on a helper thread. The watchdog thread
-    only force-kills the OS process and never calls Playwright APIs.
+    only force-kills the OS process and interrupts the hung owner-thread close
+    so callers can return within ``close_timeout_seconds``.
     """
     close_done = threading.Event()
     timed_out = threading.Event()
@@ -274,6 +289,7 @@ def _close_with_timeout(
         if not close_done.wait(timeout=close_timeout_seconds):
             timed_out.set()
             force_kill_playwright_process(target)
+            _interrupt_thread(close_thread_ident, _PlaywrightCloseTimeout)
 
     watchdog = threading.Thread(
         target=_watchdog,
@@ -285,6 +301,8 @@ def _close_with_timeout(
         # Playwright API must run on the owner/caller thread (not the watchdog).
         assert threading.get_ident() == close_thread_ident
         target.close()
+    except _PlaywrightCloseTimeout:
+        pass
     except Exception as exc:
         close_errors.append(exc)
     finally:
