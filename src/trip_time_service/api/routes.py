@@ -5,10 +5,10 @@ from collections.abc import Iterator
 
 from fastapi import APIRouter
 
-from trip_time_service.api.naver_geo import (
+from trip_time_service.api.naver_playwright_geo import (
     extract_addr_from_naver_url as _extract_addr_from_naver_url,
 )
-from trip_time_service.api.naver_geo import (
+from trip_time_service.api.naver_playwright_geo import (
     extract_coords_from_naver_url as _extract_coords_from_naver_url,
 )
 from trip_time_service.api.routes_geo import router as geo_router
