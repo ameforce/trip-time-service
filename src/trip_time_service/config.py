@@ -112,7 +112,7 @@ def load_settings() -> Settings:
 
     default_pool_size = (
         cpu_parallel_target
-        if provider in {"naver", "naver_playwright", "naver_selenium"}
+        if provider in {"naver", "naver_playwright"}
         else 1
     )
     naver_session_pool_size = _getenv_int(
@@ -124,7 +124,7 @@ def load_settings() -> Settings:
         naver_session_pool_size,
     )
 
-    if provider in {"naver", "naver_playwright", "naver_selenium"}:
+    if provider in {"naver", "naver_playwright"}:
         # 운영자가 지정한 값은 존중하되, 과도한 병렬도만 CPU 목표치로 상한 제한한다.
         naver_session_pool_size = min(
             naver_session_pool_size,

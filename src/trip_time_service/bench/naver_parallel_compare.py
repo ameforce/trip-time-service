@@ -22,7 +22,7 @@ def _run_case(
 ) -> dict[str, float | int]:
     settings = replace(
         base_settings,
-        provider="naver_selenium",
+        provider="naver_playwright",
         recommend_workers=recommend_workers,
         naver_session_pool_size=session_pool_size,
         step_minutes=10,

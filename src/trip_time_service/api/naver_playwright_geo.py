@@ -1,10 +1,9 @@
 """Playwright 기반 Naver 지도 geocode fallback.
 
-`naver_geo.py`의 공개 계약(`geocode_naver`, `shutdown_naver_driver`,
-`extract_coords_from_naver_url`, `extract_addr_from_naver_url`)을 보존하면서
-브라우저 자동화만 Selenium에서 Playwright로 이식한다. 좌표/주소 파싱 헬퍼는
-Selenium에 의존하지 않으므로 그대로 유지하고, autocomplete 모듈이 여기서
-import해 selenium 없이 재사용할 수 있게 한다.
+`geocode_naver`, `shutdown_naver_driver`, `extract_coords_from_naver_url`,
+`extract_addr_from_naver_url` 공개 계약을 유지하면서 브라우저 자동화는
+Playwright로 수행한다. 좌표/주소 파싱 헬퍼는 브라우저 무관하므로 그대로
+유지하고, autocomplete 모듈이 여기서 import해 재사용할 수 있게 한다.
 """
 
 from __future__ import annotations

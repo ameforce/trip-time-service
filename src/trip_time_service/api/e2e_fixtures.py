@@ -192,7 +192,7 @@ def fixture_runtime_metrics(*, trip_provider: str | None = None) -> dict[str, ob
         "osrm_route": 0,
     }
     if (trip_provider or "").strip().lower() == "mock":
-        external_provider_call_breakdown["selenium_route_provider"] = 0
+        external_provider_call_breakdown["playwright_route_provider"] = 0
     return {
         "fixture_mode": True,
         "mode": "fixture",

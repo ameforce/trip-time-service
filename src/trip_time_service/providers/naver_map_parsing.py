@@ -1,8 +1,8 @@
 """Naver 지도 소요시간 provider의 순수 파싱/좌표 헬퍼.
 
-Selenium/Playwright provider가 공유하는 DOM-비의존 로직만 모은다.
+Playwright provider가 공유하는 DOM-비의존 로직만 모은다.
 좌표 변환, 소요시간 텍스트 파싱, directions URL 조립, 패널 텍스트 매칭 등
-브라우저 드라이버와 무관한 함수만 둔다.
+브라우저 런타임과 무관한 함수만 둔다.
 """
 
 from __future__ import annotations

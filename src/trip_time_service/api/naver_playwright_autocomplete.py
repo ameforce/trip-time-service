@@ -1,11 +1,10 @@
 """Playwright 기반 Naver 지도 browser autocomplete pool.
 
-`naver_browser_autocomplete.py`의 공개 계약(pool API, suggestion payload,
-dynamic upper bound / idle TTL / metrics)을 보존하면서 브라우저 자동화만
-Selenium에서 Playwright로 이식한다. instant-search enrichment/synthesis
-헬퍼는 대부분 브라우저 무관하므로 그대로 유지하고, DOM 조회 경로만 Playwright
-locator로 바꾼다. 좌표 파싱은 `naver_playwright_geo`에서 공유해 selenium을
-import하지 않는다.
+pool API, suggestion payload, dynamic upper bound / idle TTL / metrics
+계약을 유지하면서 브라우저 자동화는 Playwright로 수행한다. instant-search
+enrichment/synthesis 헬퍼는 대부분 브라우저 무관하므로 그대로 유지하고,
+DOM 조회 경로만 Playwright locator를 쓴다. 좌표 파싱은 `naver_playwright_geo`
+에서 공유한다.
 """
 
 from __future__ import annotations

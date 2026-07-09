@@ -64,7 +64,7 @@ def test_playwright_web_server_command_is_posix_compatible() -> None:
 
     assert "cmd /c" not in config
     assert "powershell -NoProfile" not in config
-    assert "const e2eProvider = process.env.TTS_PROVIDER ?? 'naver_selenium'" in config
+    assert "const e2eProvider = process.env.TTS_PROVIDER ?? 'naver_playwright'" in config
     assert "TTS_PROVIDER: e2eProvider" in config
     assert "command: 'uv run trip-time-service'" in config
     assert "env: serverEnv" in config

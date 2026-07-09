@@ -46,7 +46,7 @@ test.describe('deterministic ci lane', () => {
     });
     if (process.env.TTS_PROVIDER === 'mock') {
       expect(payload.external_provider_call_breakdown).toMatchObject({
-        selenium_route_provider: 0,
+        playwright_route_provider: 0,
       });
     }
 

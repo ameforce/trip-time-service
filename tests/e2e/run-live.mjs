@@ -32,7 +32,7 @@ const artifactRoot = resolve(
 );
 const env = {
   ...process.env,
-  TTS_PROVIDER: 'naver_selenium',
+  TTS_PROVIDER: 'naver_playwright',
   TTS_E2E_FIXTURE_MODE: '0',
   TTS_PORT_STRICT: '1',
   TTS_LIVE_MODE: mode,

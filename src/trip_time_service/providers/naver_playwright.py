@@ -1,8 +1,8 @@
 """Playwright 기반 Naver 지도(차량) 소요시간 provider.
 
-`naver_selenium.py`의 외부 계약(공개 API, 캐시, 좌표 duck typing,
-pool round-robin)을 보존하면서 브라우저 자동화만 Selenium에서 Playwright로
-이식한다. 순수 파싱/좌표 헬퍼는 `naver_map_parsing`에서 공유한다.
+공개 API, 캐시, 좌표 duck typing, pool round-robin 계약을 유지하면서
+브라우저 자동화는 Playwright Chromium으로 수행한다. 순수 파싱/좌표 헬퍼는
+`naver_map_parsing`에서 공유한다.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ _PAGE_DEFAULT_TIMEOUT_MS = 30000
 # ── low-level element/page helpers ──
 #
 # Playwright ElementHandle / Page 호출은 요소가 detach되면 예외를 던질 수 있어,
-# Selenium의 관용적 방어 패턴(`is_displayed()` try/except)과 동일하게 감싼다.
+# Playwright element visibility 조회를 try/except로 감싸 방어적으로 처리한다.
 
 
 def _sleep(seconds: float) -> None:
@@ -201,9 +201,8 @@ class _NaverDirectionsSearchAdapter:
         _sleep(1)
 
     def select_place_ac(self, page: Any, input_el: Any, place_name: str) -> None:
-        # Selenium 버전은 결과 확인 후에도 ARROW_DOWN×2 + ENTER를 blind로 보냈다.
-        # Playwright 버전은 실제로 보이는 DOM item을 클릭해 "무엇을 선택했는지"를
-        # 명시적으로 만들고, 보이는 item이 없을 때만 Enter fallback을 쓴다.
+        # 보이는 DOM item을 클릭해 "무엇을 선택했는지"를 명시적으로 만들고,
+        # 보이는 item이 없을 때만 Enter fallback을 쓴다.
         try:
             input_el.focus()
         except Exception:
