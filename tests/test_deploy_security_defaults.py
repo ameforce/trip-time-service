@@ -48,6 +48,15 @@ def test_enm_deploy_scripts_pass_chrome_no_sandbox_to_runtime() -> None:
         assert '--env "TTS_CHROME_NO_SANDBOX=\\${TTS_CHROME_NO_SANDBOX}"' in script
 
 
+def test_enm_deploy_scripts_override_tts_provider_to_playwright() -> None:
+    for script_name in ("deploy/enm/deploy.sh", "deploy/enm/rollback.sh"):
+        script = _read_repo_text(script_name)
+
+        assert 'TTS_PROVIDER="${TTS_PROVIDER:-naver_playwright}"' in script
+        assert 'TTS_PROVIDER="$(printf \'%q\' "${TTS_PROVIDER}")"' in script
+        assert '--env "TTS_PROVIDER=\\${TTS_PROVIDER}"' in script
+
+
 def test_deploy_scripts_verify_host_keys_by_default() -> None:
     for script_name in ("deploy/enm/deploy.sh", "deploy/enm/rollback.sh"):
         script = _read_repo_text(script_name)
