@@ -58,7 +58,7 @@ def _versioned_index_html() -> str:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     settings = load_settings()
     provider = create_provider(settings)
     _log.info(
