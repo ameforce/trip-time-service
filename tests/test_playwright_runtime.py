@@ -30,6 +30,7 @@ class _FakeCloseable:
         self.close_behavior = close_behavior
         self.close_calls = 0
         self.close_started = threading.Event()
+        self.force_killed = threading.Event()
         self.close_thread_ids: list[int] = []
 
     def close(self) -> None:
@@ -40,6 +41,12 @@ class _FakeCloseable:
             raise RuntimeError("close failed")
         if self.close_behavior == "slow":
             time.sleep(0.1)
+        if self.close_behavior == "hang":
+            # Model a wedged Playwright close that only unblocks after the OS
+            # process is force-killed (broken pipe / driver disconnect).
+            if not self.force_killed.wait(timeout=3600):
+                return
+            raise RuntimeError("browser process killed")
 
 
 def test_default_launch_options_match_naver_flow() -> None:
@@ -210,25 +217,32 @@ def test_launch_browser_session_uses_persistent_context_for_user_data_dir(
 
 
 def test_close_browser_with_timeout_force_kills_hung_browser(monkeypatch) -> None:
-    browser = _FakeCloseable(close_behavior="slow")
+    browser = _FakeCloseable(close_behavior="hang")
     killed: list[object] = []
+
+    def _fake_force_kill(target: object) -> None:
+        killed.append(target)
+        assert target is browser
+        browser.force_killed.set()
 
     monkeypatch.setattr(
         "trip_time_service.browser.playwright_runtime.force_kill_playwright_process",
-        lambda target: killed.append(target),
+        _fake_force_kill,
     )
 
+    started = time.monotonic()
     result = close_browser_with_timeout(
         browser,
-        close_timeout_seconds=0.01,
+        close_timeout_seconds=0.05,
         close_thread_name="test-hung-browser-close",
     )
+    elapsed = time.monotonic() - started
 
     assert isinstance(result, PlaywrightCloseResult)
     assert result.timed_out is True
-    assert result.close_error is None
     assert killed == [browser]
     assert browser.close_thread_ids == [threading.get_ident()]
+    assert elapsed < 1.0
 
 
 def test_close_does_not_invoke_playwright_api_on_helper_thread(monkeypatch) -> None:
@@ -291,7 +305,9 @@ def test_force_kill_playwright_process_kills_browser_process(monkeypatch) -> Non
     assert killed_pids == [4321]
 
 
-def test_session_close_closes_page_context_browser_and_playwright(monkeypatch) -> None:
+def test_session_close_skips_page_and_closes_context_browser_playwright(
+    monkeypatch,
+) -> None:
     page = MagicMock()
     context = MagicMock()
     browser = MagicMock()
@@ -327,7 +343,8 @@ def test_session_close_closes_page_context_browser_and_playwright(monkeypatch) -
     result = session.close(close_timeout_seconds=0.05)
 
     assert result.timed_out is False
-    assert close_calls == ["page", "context", "browser"]
+    assert close_calls == ["context", "browser"]
+    page.close.assert_not_called()
     playwright.stop.assert_called_once_with()
 
 
