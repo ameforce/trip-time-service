@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 from trip_time_service.api import geocode_services, routes_geo
 from trip_time_service.privacy import redact_route, redact_text
 from trip_time_service.providers import osrm
@@ -100,8 +102,10 @@ def test_osrm_route_logs_omit_raw_route(monkeypatch, caplog) -> None:
     monkeypatch.setattr(provider, "_geocode", lambda *_args: None)
 
     with caplog.at_level(logging.WARNING, logger=osrm.__name__):
-        assert provider._get_base_duration(route) == 1800.0
+        with pytest.raises(osrm.ProviderError) as exc_info:
+            provider._get_base_duration(route)
 
+    assert exc_info.value.is_retryable is True
     assert "강남역" not in caplog.text
     assert "판교역" not in caplog.text
     assert caplog.text.count("sha256=") == 2

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -36,6 +37,19 @@ from trip_time_service.versioning import resolve_display_version
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 _log = logging.getLogger(__name__)
+
+# Windows 레지스트리 등 OS 설정 오염으로 .js가 text/plain으로 잡히면
+# 브라우저의 strict MIME 검사(X-Content-Type-Options: nosniff)에 의해
+# 프론트엔드 스크립트 전체가 실행 거부된다. OS 상태와 무관하게
+# 서빙 MIME을 고정한다(정상 환경에서는 no-op).
+for _ext, _mime in (
+    (".js", "text/javascript"),
+    (".mjs", "text/javascript"),
+    (".css", "text/css"),
+    (".html", "text/html"),
+    (".svg", "image/svg+xml"),
+):
+    mimetypes.add_type(_mime, _ext)
 
 
 def _static_cache_needs_revalidation(path: str) -> bool:
