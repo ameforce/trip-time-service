@@ -9,6 +9,7 @@ from threading import Lock
 
 from trip_time_service.core.models import DriveDuration, Route
 from trip_time_service.privacy import redact_route, redact_text
+from trip_time_service.providers.base import ProviderError
 
 _log = logging.getLogger(__name__)
 
@@ -159,16 +160,26 @@ class OsrmTravelTimeProvider:
         o = self._geocode(route.origin)
         d = self._geocode(route.destination)
         if o is None or d is None:
+            # 실패를 가짜 값(30분)으로 위장하면 캐시에 저장되어
+            # 잘못된 소요시간이 서비스된다. 재시도 가능 에러로 승격.
             _log.warning(
                 "OSRM: geocode failed route=%s",
                 redact_route(route.origin, route.destination),
             )
-            return 1800.0
+            raise ProviderError(
+                "OSRM 지오코딩 실패",
+                is_retryable=True,
+                code="osrm_geocode_failed",
+            )
 
         dur = _osrm_duration(o[0], o[1], d[0], d[1])
         if dur is None:
-            _log.warning("OSRM: route query failed, using fallback")
-            return 1800.0
+            _log.warning("OSRM: route query failed")
+            raise ProviderError(
+                "OSRM 경로 조회 실패",
+                is_retryable=True,
+                code="osrm_route_failed",
+            )
 
         with self._lock:
             self._base_cache[route] = dur

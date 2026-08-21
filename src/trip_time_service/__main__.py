@@ -74,7 +74,9 @@ def main() -> None:
 
     host = os.getenv("TTS_HOST", "127.0.0.1")
     port = _getenv_int("TTS_PORT", _DEFAULT_PORT)
-    reload = _getenv_bool("TTS_RELOAD", True)
+    # 프로덕션 기본값: reload 비활성(Dockerfile/배포 env도 false 명시).
+    # 개발 시에만 TTS_RELOAD=true 로 켠다.
+    reload = _getenv_bool("TTS_RELOAD", False)
 
     port = _find_available_port(host, port)
 
