@@ -48,9 +48,12 @@ feature/hotfix를 PR로 통합할 때 `@codex review` 결과는 단순 sleep/대
    - 또는 Codex의 완료 신호(👍 반응, "no findings" 요약, follow-up verification)
 3. `T0` 이전 결과만 보고 merge하지 않는다. 현재 HEAD 커밋 기준 결과가 올 때까지
    폴링한다. 장시간 미응답이면 계속 폴링하고, 완료 전에 merge하지 않는다.
-4. finding severity가 `low` 이상(P1/P2 또는 critical/high/medium/low)이면 수정 →
-   push → 다시 `@codex review` → 2번부터 반복한다.
-5. 현재 HEAD에 대해 low 이상 finding이 없음을 폴링으로 확인한 뒤에만 merge한다.
+4. finding 처리와 merge 판정, 자동 fix-재검증 반복 상한은 글로벌 agents.md
+   (`~/.codex/AGENTS.md`)의 Review And Quality Gates 계약을 따른다.
+   - 본문에서 자체 정의하던 "low 이상 전부 merge 보류" 기준과
+     무제한 fix→push→재리뷰 반복 절차는 폐기한다(위 계약과 충돌).
+5. 현재 HEAD에 대해 위 글로벌 계약상 차단 해당 finding이 없음을 폴링으로
+   확인한 뒤에만 merge한다.
 
 이 프로젝트에서 코드, 설정, 배포 스크립트, E2E/운영 정책을 변경한 작업은
 로컬 검증만으로 완료 보고하지 않는다.

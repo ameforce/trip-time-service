@@ -36,6 +36,9 @@ set TTS_PORT=9000
 uv run trip-time-service
 ```
 
+자동 리로드는 기본 비활성입니다(`TTS_RELOAD=false` 기본). 개발 시에만
+`set TTS_RELOAD=true`로 켜세요.
+
 ## API 예시
 
 ### 1) 출발 시각 입력 → 도착 시각

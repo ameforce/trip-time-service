@@ -198,6 +198,10 @@ class OsrmTravelTimeProvider:
                 return cached
 
         result = _geocode_place(query)
+        if result is None:
+            # 실패(None)는 캐시하지 않는다. 음성 캐시하면 retryable 에러임에도
+            # 재시도가 항상 같은 실패를 재생산한다.
+            return None
         with self._lock:
             self._coord_cache[query] = result
         return result

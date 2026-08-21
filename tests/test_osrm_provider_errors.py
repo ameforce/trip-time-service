@@ -86,3 +86,28 @@ def test_osrm_failure_result_is_not_cached(
         datetime(2026, 1, 24, 9, 0, tzinfo=KST),
     )
     assert duration.duration_seconds > 0
+
+
+def test_osrm_geocode_failure_is_retryable_not_poisoned(
+    provider: OsrmTravelTimeProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """지오코딩 실패가 음성 캐시되어 재시도를 막지 않는다."""
+    # 1차 요청: origin 지오코딩 실패 → 즉시 ProviderError
+    # 2차 요청: origin/destination 모두 성공
+    responses = iter([None, (37.5, 127.0), (37.39, 127.11)])
+    monkeypatch.setattr(
+        osrm_module, "_geocode_place", lambda query: next(responses)
+    )
+    monkeypatch.setattr(osrm_module, "_osrm_duration", lambda *args: 900.0)
+    route = Route.of("강남역", "판교역")
+
+    with pytest.raises(ProviderError):
+        provider.get_drive_duration(
+            route, datetime(2026, 1, 24, 9, 0, tzinfo=KST)
+        )
+
+    duration = provider.get_drive_duration(
+        route, datetime(2026, 1, 24, 9, 0, tzinfo=KST)
+    )
+    assert duration.duration_seconds > 0
