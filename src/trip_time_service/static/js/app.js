@@ -3870,20 +3870,138 @@ $destination.addEventListener("change", function () {
 
 function setSidebarOpen(open) {
   $sidebar.classList.toggle("open", open);
+  if (open) {
+    $sidebar.classList.remove("sheet-hidden");
+  }
   if ($mobileToggle) {
     $mobileToggle.setAttribute("aria-expanded", open ? "true" : "false");
   }
   if ($sidebarBackdrop) {
-    $sidebarBackdrop.classList.toggle("is-visible", open);
+    $sidebarBackdrop.classList.toggle(
+      "is-visible",
+      open && !$sidebar.classList.contains("sheet-hidden")
+    );
   }
   if (!open && _datetimePickerState.isOpen) {
     closeDatetimePanel();
   }
 }
 
-$mobileToggle.addEventListener("click", function () {
-  setSidebarOpen(!$sidebar.classList.contains("open"));
-});
+function setSheetHidden(hidden) {
+  $sidebar.classList.toggle("sheet-hidden", hidden);
+  if (hidden) {
+    setSidebarOpen(false);
+    if ($sidebarBackdrop) {
+      $sidebarBackdrop.classList.remove("is-visible");
+    }
+    if (_datetimePickerState.isOpen) {
+      closeDatetimePanel();
+    }
+  }
+}
+
+function isMobileViewport() {
+  return window.matchMedia && window.matchMedia("(max-width: 768px)").matches;
+}
+
+(function () {
+  var $sheetHeader = document.querySelector(".sidebar-header");
+  if (!$sheetHeader) return;
+
+  var drag = null;
+
+  function pointerY(e) {
+    return e.touches && e.touches.length ? e.touches[0].clientY : e.clientY;
+  }
+
+  function dismissToHidden() {
+    $sidebar.classList.remove("open");
+    $sidebar.classList.add("sheet-hidden");
+    if ($sidebarBackdrop) {
+      $sidebarBackdrop.classList.remove("is-visible");
+    }
+    if ($mobileToggle) {
+      $mobileToggle.setAttribute("aria-expanded", "false");
+    }
+    if (_datetimePickerState.isOpen) {
+      closeDatetimePanel();
+    }
+  }
+
+  $sheetHeader.addEventListener("pointerdown", function (e) {
+    if (!isMobileViewport() || $sidebar.classList.contains("sheet-hidden")) {
+      return;
+    }
+    drag = {
+      id: e.pointerId,
+      startY: pointerY(e),
+      dy: 0,
+      moved: false,
+      wasOpen: $sidebar.classList.contains("open"),
+    };
+    try {
+      $sheetHeader.setPointerCapture(e.pointerId);
+    } catch (err) {}
+  });
+
+  window.addEventListener(
+    "pointermove",
+    function (e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      var dy = Math.max(0, pointerY(e) - drag.startY);
+      drag.dy = dy;
+      if (!drag.moved && dy > 4) {
+        drag.moved = true;
+        $sidebar.classList.add("dragging");
+      }
+      if (drag.moved) {
+        $sidebar.style.transform = "translateY(" + Math.round(dy) + "px)";
+        if (e.cancelable) {
+          e.preventDefault();
+        }
+      }
+    },
+    { passive: false }
+  );
+
+  function endDrag(e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    var state = drag;
+    drag = null;
+    try {
+      $sheetHeader.releasePointerCapture(e.pointerId);
+    } catch (err) {}
+    $sidebar.classList.remove("dragging");
+    $sidebar.style.transform = "";
+    if (!state.moved) {
+      setSidebarOpen(!state.wasOpen);
+      return;
+    }
+    var threshold = Math.max(80, window.innerHeight * 0.12);
+    if (state.dy > threshold || state.dy > window.innerHeight * 0.25) {
+      if (state.wasOpen) {
+        if (state.dy > window.innerHeight * 0.35) {
+          dismissToHidden();
+        } else {
+          setSidebarOpen(false);
+        }
+      } else {
+        dismissToHidden();
+      }
+    }
+  }
+
+  $sheetHeader.addEventListener("pointerup", endDrag);
+  $sheetHeader.addEventListener("pointercancel", endDrag);
+
+  $mobileToggle.addEventListener("click", function () {
+    if ($sidebar.classList.contains("sheet-hidden")) {
+      $sidebar.classList.remove("sheet-hidden");
+      return;
+    }
+    setSidebarOpen(!$sidebar.classList.contains("open"));
+  });
+})();
 
 if ($sidebarBackdrop) {
   $sidebarBackdrop.addEventListener("click", function () {
