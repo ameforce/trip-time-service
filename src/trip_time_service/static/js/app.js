@@ -2172,6 +2172,18 @@ function setupAutocomplete($input, $dropdown, setSelected, timerKey) {
     clearAutocompleteTimer(timerKey);
     setTimeout(function () { closeACDropdown($dropdown); }, 150);
   });
+
+  document.addEventListener("pointerdown", function (event) {
+    if ($dropdown.classList.contains("hidden")) return;
+    if ($input.contains(event.target) || $dropdown.contains(event.target)) {
+      return;
+    }
+    clearAutocompleteTimer(timerKey);
+    currentItems = [];
+    activeIdx = -1;
+    _acActiveIdx[timerKey] = -1;
+    closeACDropdown($dropdown);
+  });
 }
 
 /* ── API ──────────────────────────────────────────── */
