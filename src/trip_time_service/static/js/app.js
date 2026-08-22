@@ -81,6 +81,11 @@ const $datetimeMinute = document.getElementById("datetime-minute");
 const $providerBadge = document.getElementById("provider-badge");
 const $providerWarning = document.getElementById("provider-warning");
 const $versionBadge = document.getElementById("version-badge");
+const $sidebarBackdrop = document.getElementById("sidebar-backdrop");
+
+if ($datetimePanel && $datetimePanel.parentElement !== document.body) {
+  document.body.appendChild($datetimePanel);
+}
 
 let DATETIME_MINUTE_STEP = 10;
 const MAX_AUTOCOMPLETE_WARMUP_QUERIES = 8;
@@ -1116,6 +1121,9 @@ function initDatetimePicker() {
       return;
     }
     if ($datetimePicker.contains(event.target)) {
+      return;
+    }
+    if ($datetimePanel && $datetimePanel.contains(event.target)) {
       return;
     }
     closeDatetimePanel();
@@ -3848,9 +3856,28 @@ $destination.addEventListener("change", function () {
   }
 });
 
+function setSidebarOpen(open) {
+  $sidebar.classList.toggle("open", open);
+  if ($mobileToggle) {
+    $mobileToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  if ($sidebarBackdrop) {
+    $sidebarBackdrop.classList.toggle("is-visible", open);
+  }
+  if (!open && _datetimePickerState.isOpen) {
+    closeDatetimePanel();
+  }
+}
+
 $mobileToggle.addEventListener("click", function () {
-  $sidebar.classList.toggle("open");
+  setSidebarOpen(!$sidebar.classList.contains("open"));
 });
+
+if ($sidebarBackdrop) {
+  $sidebarBackdrop.addEventListener("click", function () {
+    setSidebarOpen(false);
+  });
+}
 
 function isCurrentSearchSnapshot(
   origin,
