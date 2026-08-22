@@ -1426,29 +1426,84 @@ body {
   .sidebar {
     position: fixed;
     left: 0;
-    top: 0;
-    height: 100vh;
-    height: 100dvh;
-    transform: translateX(-100%);
-    transition: transform 0.3s ease;
-    box-shadow: var(--shadow-lg);
+    right: 0;
+    top: auto;
+    bottom: 0;
+    width: 100%;
+    min-width: 0;
+    height: auto;
+    max-height: calc(100vh - 200px);
+    max-height: calc(100dvh - 200px);
+    transform: none;
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.16);
+    transition: max-height 0.3s ease;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
   .sidebar.open {
-    transform: translateX(0);
+    max-height: 92vh;
+    max-height: 92dvh;
+  }
+  .sidebar-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--sidebar-bg);
+    padding: 14px 20px 10px;
+  }
+  .subtitle {
+    display: none;
+  }
+  .route-section {
+    padding-top: 12px;
+  }
+  .input-wrap input {
+    padding: 10px 12px 10px 38px;
+  }
+  .swap-btn {
+    margin: -2px 0 6px;
+    width: 32px;
+    height: 32px;
+  }
+  .mode-tab {
+    padding: 8px 0;
+  }
+  .datetime-section {
+    padding-top: 10px;
+  }
+  .datetime-input-wrap input {
+    padding: 10px 40px 10px 10px;
+  }
+  .search-btn {
+    margin: 12px 20px 0;
+    padding: 12px;
+  }
+  .sidebar-header::after {
+    content: "";
+    position: absolute;
+    top: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 44px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--border);
   }
   .sidebar.open .sidebar-header {
     padding-left: 72px;
-  }
-  .map-container {
-    width: 100%;
   }
   .mobile-toggle {
     display: flex;
   }
 
+  .leaflet-control-zoom {
+    display: none;
+  }
+
   .version-badge {
     right: 10px;
-    bottom: 12px;
+    top: 12px;
+    bottom: auto;
     font-size: 10px;
   }
   .sidebar.open ~ .version-badge {
@@ -1467,11 +1522,5 @@ body {
     border-top: 1px solid var(--border);
     padding-left: 0;
     padding-top: 10px;
-  }
-}
-
-@media (max-width: 480px) {
-  :root {
-    --sidebar-w: calc(100vw - 56px);
   }
 }
