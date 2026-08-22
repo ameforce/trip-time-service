@@ -11,12 +11,15 @@ Hotfix 절차:
 1. `main`에서 `hotfix/vX.Y.Z` 브랜치를 생성한다. 버전이 지정되지 않았으면
    현재 릴리즈의 patch 버전을 1 올린다.
 2. hotfix 브랜치에 수정 커밋을 만든다.
-3. hotfix를 닫을 때 `main`에 no-ff merge하고 기본 merge 메시지
+3. `CHANGELOG.md`에 `vX.Y.Z` 항목을 추가한다(없으면 생성). 사용자 관점
+   변화를 우선으로 기술하고, 커밋 메시지 나열이 아닌 개선 요약으로 쓴다.
+4. hotfix를 닫을 때 `main`에 no-ff merge하고 기본 merge 메시지
    `Merge branch 'hotfix/vX.Y.Z'`를 유지한다.
-4. `main` merge commit에 annotated tag `vX.Y.Z`를 생성한다.
-5. tag `vX.Y.Z`를 `develop`에 no-ff merge하고 기본 merge 메시지
+5. `main` merge commit에 annotated tag `vX.Y.Z`를 생성한다.
+6. tag `vX.Y.Z`를 `develop`에 no-ff merge하고 기본 merge 메시지
    `Merge tag 'vX.Y.Z' into develop`을 유지한다.
-6. `main`, `develop`, tag를 push하고 배포/검증을 완료한 뒤 hotfix 브랜치를 삭제한다.
+7. `main`, `develop`, tag를 push하고, GitHub Release에 CHANGELOG의 해당
+   항목을 게시한다. 배포/검증을 완료한 뒤 hotfix 브랜치를 삭제한다.
 
 새 기능은 `develop` 기준 `feature/<name>` 브랜치에서 작업한다. 기능 브랜치를
 `develop`에 merge한 뒤, 그 `develop`을 기준으로 release 브랜치를 생성한다.
@@ -26,12 +29,21 @@ release 버전은 현재 릴리즈의 minor 버전을 1 올리고 patch 버전�
 Release 절차:
 
 1. `develop`에서 `release/vMAJOR.MINOR.0` 브랜치를 생성한다.
-2. release 브랜치를 닫을 때 `main`에 no-ff merge하고 기본 merge 메시지
+2. `CHANGELOG.md`에 `vMAJOR.MINOR.0` 항목을 추가한다(없으면 생성). 이전 태그와의
+   실제 diff를 근거로 사용자·운영 영향 중심으로 요약한다.
+3. release 브랜치를 닫을 때 `main`에 no-ff merge하고 기본 merge 메시지
    `Merge branch 'release/vMAJOR.MINOR.0'`를 유지한다.
-3. `main` merge commit에 annotated tag `vMAJOR.MINOR.0`을 생성한다.
-4. tag `vMAJOR.MINOR.0`을 `develop`에 no-ff merge하고 기본 merge 메시지
+4. `main` merge commit에 annotated tag `vMAJOR.MINOR.0`을 생성한다.
+5. tag `vMAJOR.MINOR.0`을 `develop`에 no-ff merge하고 기본 merge 메시지
    `Merge tag 'vMAJOR.MINOR.0' into develop`을 유지한다.
-5. `main`, `develop`, tag를 push하고 배포/검증을 완료한 뒤 release 브랜치를 삭제한다.
+6. `main`, `develop`, tag를 push하고, GitHub Release에 CHANGELOG의 해당 항목을
+   게시한다. 배포/검증을 완료한 뒤 release 브랜치를 삭제한다.
+
+릴리즈 문서화 규칙:
+
+- 모든 태그 릴리즈(hotfix/release)는 CHANGELOG.md 항목과 GitHub Release 게시를
+  필수 산출물로 한다. 생략은 계약 위반이며, "배포 완료" 보고에 포함되지 않는다.
+- 내용은 태그 간 diff(`git diff v이전..v신규`)로 검증한 사실만 기술한다.
 
 fix/hotfix 또는 feature/release 성격의 작업에서 `main`과 `develop`에 직접 일반
 커밋을 남기지 않는다. 이미 push된 Git-flow 그래프를 사용자 지시에 따라 고칠 때만

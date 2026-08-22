@@ -41,7 +41,16 @@ Jenkins에서 **Manage Jenkins → Credentials** 로 이동한 뒤:
 
 다음 중 조직 표준에 맞게 하나 이상 구성:
 
-- [ ] **Periodically if not otherwise run** 또는 **Scan by webhook**(Multibranch Scanning Webhook 사용 시 Git 쪽 webhook URL 등록)
+- [x] **GitHub 웹훅** (등록 완료, 2026-08) — 저장소 `ameforce/trip-time-service`의
+  `push` 이벤트가 `https://jenkins.enmsoftware.com/github-webhook/`(content type:
+  application/json, hook id `668866710`)으로 전달되어 즉시 인덱싱·빌드를
+  트리거한다. ping 응답 200 확인.
+- [x] **SCM 폴링 폴백** — `Jenkinsfile`의 `triggers { pollSCM('H/5 * * * *') }`.
+  웹훅 누락 시에도 최대 5분 내 자동 감지. 주의: declarative pipeline에서
+  `triggers`는 pipeline 최상위에 위치해야 하며 `options` 안에 두면
+  "Options definitions cannot have blocks" 파싱 오류로 빌드가 즉사한다.
+- [ ] Periodically if not otherwise run — 웹훅+폴링으로 대체됨. 필요 시 활성화.
+
 - [ ] Git 서버(예: GitHub/GitLab)에서 Jenkins로 push 이벤트 전달 시 브랜치 스캔이 도는지 확인
 
 ## 4. 브랜치 전략과 `Jenkinsfile`의 대응

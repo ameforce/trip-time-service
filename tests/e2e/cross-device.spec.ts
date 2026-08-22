@@ -122,6 +122,7 @@ test.describe('cross-device rendering', () => {
   test('[ipad-mini] 날짜/시간 피커 열기·선택', async ({ page }) => {
     await openHome(page, VIEWPORTS[2]);
     const input = page.locator('#datetime-input');
+    const before = await input.inputValue();
     await input.click();
     const panel = page.locator('#datetime-panel');
     try {
@@ -130,7 +131,25 @@ test.describe('cross-device rendering', () => {
       await page.locator('#datetime-toggle').click();
       await expect(panel).toBeVisible({ timeout: 10_000 });
     }
-    await page.locator('#datetime-hour').selectOption('09');
-    await expect(page.locator('#datetime-hour')).toHaveValue('09');
+
+    // 앱은 과거 시각 선택을 현재로 클램프하므로(정상 도메인 동작)
+    // 브라우저 시각 기준 +6시간의 명확한 미래를 선택한다.
+    const target = await page.evaluate(() => {
+      const t = new Date(Date.now() + 6 * 60 * 60 * 1000);
+      const minute = Math.floor(t.getMinutes() / 10) * 10;
+      return {
+        period: t.getHours() >= 12 ? 'pm' : 'am',
+        hour12: String(t.getHours() % 12 || 12).padStart(2, '0'),
+        minute: String(minute).padStart(2, '0'),
+      };
+    });
+    await page.locator('#datetime-period').selectOption(target.period);
+    await page.locator('#datetime-hour').selectOption(target.hour12);
+    await page.locator('#datetime-minute').selectOption(target.minute);
+
+    // 선택이 예약 시각(input)에 반영되는지 — 값 고정이 아니라 변경 자체를 검증
+    await expect
+      .poll(() => input.inputValue(), { timeout: 5_000 })
+      .not.toBe(before);
   });
 });

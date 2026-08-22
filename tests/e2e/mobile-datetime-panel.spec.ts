@@ -1,11 +1,10 @@
 import { expect, test } from '@playwright/test';
 
 test.describe('mobile datetime panel (v0.3.1 regression)', () => {
-  test('panel stays fully in viewport when sidebar is internally scrolled', async ({ page }) => {
+  test('panel stays fully in viewport when sheet is internally scrolled', async ({ page }) => {
     await page.setViewportSize({ width: 740, height: 360 });
     await page.goto('/');
-    await page.click('#mobile-toggle');
-    await page.waitForSelector('#sidebar.open', { state: 'attached' });
+    await page.waitForSelector('#datetime-toggle', { state: 'visible' });
 
     const scrollable = await page.evaluate(() => {
       const sb = document.querySelector('#sidebar')!;
@@ -44,29 +43,79 @@ test.describe('mobile datetime panel (v0.3.1 regression)', () => {
     expect(rect.bottom).toBeLessThanOrEqual(rect.vh);
   });
 
-  test('backdrop tap closes drawer and datetime panel', async ({ page }) => {
+  test('backdrop tap collapses expanded sheet and datetime panel', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/');
+
+    // expand sheet via toggle, open datetime panel
     await page.click('#mobile-toggle');
     await page.waitForSelector('#sidebar.open', { state: 'attached' });
     await expect(page.locator('#sidebar-backdrop.is-visible')).toBeVisible();
 
-    const layout = await page.evaluate(() => {
-      const r = document.querySelector('#sidebar')!.getBoundingClientRect();
-      return { drawerWidth: Math.round(r.width), vw: window.innerWidth };
-    });
-    expect(layout.drawerWidth).toBeLessThan(layout.vw);
-
     await page.click('#datetime-toggle');
     await page.waitForSelector('#datetime-panel:not(.hidden)');
 
-    await page.click('#sidebar-backdrop', {
-      position: { x: layout.vw - 20, y: 700 },
-    });
+    // exposed map area above the docked sheet belongs to the backdrop
+    await page.click('#sidebar-backdrop', { position: { x: 195, y: 30 } });
     await page.waitForSelector('#sidebar.open', { state: 'detached' });
     await expect(page.locator('#sidebar-backdrop.is-visible')).toHaveCount(0);
     await expect(page.locator('#datetime-panel')).toHaveClass(/hidden/);
     await expect(page.locator('#mobile-toggle')).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  test('sheet is docked and search controls visible without any interaction', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+
+    const layout = await page.evaluate(() => {
+      const q = (s: string) => document.querySelector(s)!;
+      const inViewport = (s: string) => {
+        const el = q(s);
+        if (!el) return false;
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+        const r = el.getBoundingClientRect();
+        return (
+          r.width > 0 && r.height > 0 && r.bottom <= innerHeight && r.right <= innerWidth && r.top >= 0
+        );
+      };
+      const sr = q('#sidebar').getBoundingClientRect();
+      return {
+        dockedBottom: Math.abs(sr.bottom - innerHeight) < 1,
+        fullWidth: Math.abs(sr.width - innerWidth) < 1,
+        searchVisible: inViewport('#search-btn'),
+        originVisible: inViewport('#origin'),
+        destinationVisible: inViewport('#destination'),
+        modeTabsVisible: inViewport('.mode-tabs'),
+        zoomHidden: getComputedStyle(document.querySelector('.leaflet-control-zoom')!).display === 'none',
+      };
+    });
+    expect(layout.dockedBottom).toBe(true);
+    expect(layout.fullWidth).toBe(true);
+    expect(layout.searchVisible).toBe(true);
+    expect(layout.originVisible).toBe(true);
+    expect(layout.destinationVisible).toBe(true);
+    expect(layout.modeTabsVisible).toBe(true);
+    expect(layout.zoomHidden).toBe(true);
+
+    // collapsed by default: not .open class
+    expect(await page.locator('#sidebar.open').count()).toBe(0);
+  });
+
+  test('search auto-expands the sheet on mobile', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+    await page.fill('#origin', '강남역');
+    await page.fill('#destination', '판교역');
+    await page.click('#search-btn');
+
+    await page.waitForSelector('#sidebar.open', { state: 'attached' });
+    const cardLoc = page
+      .locator('.recommendation-card, .result-card, .baseline-card')
+      .first();
+    await expect(cardLoc).toBeVisible({ timeout: 60_000 });
+    await cardLoc.scrollIntoViewIfNeeded();
+    await expect(cardLoc).toBeInViewport({ ratio: 0.3 });
   });
 
   test('panel is clamped within short landscape viewport and scrollable', async ({ page }) => {
