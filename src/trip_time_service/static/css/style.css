@@ -39,6 +39,7 @@ body {
   width: var(--sidebar-w);
   min-width: var(--sidebar-w);
   height: 100vh;
+  height: 100dvh;
   background: var(--sidebar-bg);
   box-shadow: var(--shadow);
   display: flex;
@@ -287,6 +288,9 @@ body {
   display: flex;
   gap: 12px;
   width: min(560px, calc(100vw - 64px));
+  max-height: calc(100vh - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
   padding: 12px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
@@ -1095,6 +1099,7 @@ body {
   flex: 1;
   position: relative;
   height: 100vh;
+  height: 100dvh;
 }
 
 .map {
@@ -1378,6 +1383,27 @@ body {
 .hidden { display: none !important; }
 
 /* ── Mobile ───────────────────────────────────────── */
+.sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1150;
+  background: rgba(15, 23, 42, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition);
+}
+
+.sidebar-backdrop.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (min-width: 769px) {
+  .sidebar-backdrop {
+    display: none;
+  }
+}
+
 .mobile-toggle {
   display: none;
   position: fixed;
@@ -1402,6 +1428,7 @@ body {
     left: 0;
     top: 0;
     height: 100vh;
+    height: 100dvh;
     transform: translateX(-100%);
     transition: transform 0.3s ease;
     box-shadow: var(--shadow-lg);
@@ -1445,6 +1472,6 @@ body {
 
 @media (max-width: 480px) {
   :root {
-    --sidebar-w: 100vw;
+    --sidebar-w: calc(100vw - 56px);
   }
 }
