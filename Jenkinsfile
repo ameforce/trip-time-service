@@ -5,11 +5,12 @@ pipeline {
     disableConcurrentBuilds()
     buildDiscarder(logRotator(numToKeepStr: "30"))
     timeout(time: 60, unit: "MINUTES")
-    // GitHub 저장소에 웹훅이 없어 push 이벤트가 Jenkins에 도달하지 않는다.
-    // SCM 폴링으로 새 커밋을 감지한다(첫 로드는 1회 branch indexing 필요).
-    triggers {
-      pollSCM('H/5 * * * *')
-    }
+  }
+
+  // GitHub 저장소에 웹훅이 없어 push 이벤트가 Jenkins에 도달하지 않는다.
+  // SCM 폴링으로 새 커밋을 감지한다(첫 로드는 1회 branch indexing 필요).
+  triggers {
+    pollSCM('H/5 * * * *')
   }
 
   parameters {
