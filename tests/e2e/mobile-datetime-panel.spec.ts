@@ -165,4 +165,73 @@ test.describe('mobile datetime panel (v0.3.1 regression)', () => {
     expect(rect.right).toBeLessThanOrEqual(rect.vw);
     expect(rect.top).toBeGreaterThanOrEqual(0);
   });
+
+  test('drag down on header from peek dismisses sheet to map only', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+    const header = page.locator('.sidebar-header');
+    const box = await header.boundingBox();
+    expect(box).not.toBeNull();
+
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + 8);
+    await page.mouse.down();
+    for (let i = 1; i <= 12; i++) {
+      await page.mouse.move(box!.x + box!.width / 2, box!.y + 8 + i * 25, { steps: 1 });
+      await page.waitForTimeout(16);
+    }
+    await page.mouse.up();
+
+    await expect(page.locator('#sidebar')).toHaveClass(/sheet-hidden/);
+    await page.waitForTimeout(450);
+    const geo = await page.evaluate(() => {
+      const sheet = document.querySelector('#sidebar')!.getBoundingClientRect();
+      const map = document.querySelector('#map-container')!.getBoundingClientRect();
+      const backdrop = document.querySelector('#sidebar-backdrop')!;
+      return {
+        sheetTop: Math.round(sheet.top),
+        vh: window.innerHeight,
+        mapFull: map.width === innerWidth && map.height === innerHeight,
+        backdropVisible: backdrop.classList.contains('is-visible'),
+      };
+    });
+    expect(geo.sheetTop).toBeGreaterThanOrEqual(geo.vh - 2);
+    expect(geo.mapFull).toBe(true);
+    expect(geo.backdropVisible).toBe(false);
+
+    // hamburger restores the docked sheet
+    await page.click('#mobile-toggle');
+    await expect(page.locator('#sidebar')).not.toHaveClass(/sheet-hidden/);
+  });
+
+  test('small drag from expanded collapses to peek without hiding', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+    await page.click('#mobile-toggle');
+    await page.waitForSelector('#sidebar.open', { state: 'attached' });
+
+    const box = await page.locator('.sidebar-header').boundingBox();
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + 8);
+    await page.mouse.down();
+    for (let i = 1; i <= 6; i++) {
+      await page.mouse.move(box!.x + box!.width / 2, box!.y + 8 + i * 20, { steps: 1 });
+      await page.waitForTimeout(16);
+    }
+    await page.mouse.up();
+
+    await expect(page.locator('#sidebar')).not.toHaveClass(/open/);
+    await expect(page.locator('#sidebar')).not.toHaveClass(/sheet-hidden/);
+  });
+
+  test('tap on sheet header toggles expand and collapse', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/');
+
+    const header = page.locator('.sidebar-header');
+    const box = await header.boundingBox();
+    await page.mouse.click(box!.x + box!.width / 2, box!.y + 10);
+    await expect(page.locator('#sidebar.open')).toHaveCount(1);
+
+    await page.mouse.click(box!.x + box!.width / 2, box!.y + 10);
+    await expect(page.locator('#sidebar.open')).toHaveCount(0);
+  });
 });
