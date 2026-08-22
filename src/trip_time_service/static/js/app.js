@@ -3908,6 +3908,10 @@ async function handleSearch() {
   closeACDropdown($originAC);
   closeACDropdown($destAC);
 
+  if (window.matchMedia && window.matchMedia("(max-width: 768px)").matches) {
+    setSidebarOpen(true);
+  }
+
   var origin = $origin.value.trim();
   var destination = $destination.value.trim();
   var datetimeVal = $datetimeInput.value;
@@ -4446,8 +4450,7 @@ async function handleSearch() {
           ) : null
     );
 
-    // On mobile, close sidebar after search
-    $sidebar.classList.remove("open");
+    // Bottom sheet stays expanded so results remain visible.
   } catch (err) {
     if (!isSearchStillCurrent()) return;
     showError(err.message || "알 수 없는 오류가 발생했습니다.");
