@@ -138,11 +138,30 @@ test.describe('cross-device rendering', () => {
       const t = new Date(Date.now() + 6 * 60 * 60 * 1000);
       const minute = Math.floor(t.getMinutes() / 10) * 10;
       return {
+        year: t.getFullYear(),
+        month: t.getMonth(),
+        day: t.getDate(),
         period: t.getHours() >= 12 ? 'pm' : 'am',
         hour12: String(t.getHours() % 12 || 12).padStart(2, '0'),
         minute: String(minute).padStart(2, '0'),
       };
     });
+
+    // 시간만 먼저 바꾸면 오늘 날짜 기준 과거 조합이 하한 클램프로 되돌아가
+    // 값이 고정될 수 있다. 먼저 대상 '날짜'를 선택해 미래로 만든 뒤 시간을
+    // 선택한다. 달이 바뀌는 경우 다음 달로 이동한다(+6시간이라 최대 1개월).
+    const view = await page.evaluate(() => {
+      const title = document
+        .getElementById('datetime-calendar-title')!
+        .textContent!.trim();
+      const m = title.match(/(\d{4})년\s*(\d{1,2})월/);
+      return m ? { year: Number(m[1]), month: Number(m[2]) - 1 } : null;
+    });
+    if (!view || view.year !== target.year || view.month !== target.month) {
+      await page.locator('#datetime-next-month').click();
+    }
+    await page.locator(`.datetime-day-btn[data-day="${target.day}"]`).click();
+
     await page.locator('#datetime-period').selectOption(target.period);
     await page.locator('#datetime-hour').selectOption(target.hour12);
     await page.locator('#datetime-minute').selectOption(target.minute);

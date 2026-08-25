@@ -1534,3 +1534,19 @@ body {
     padding-top: 10px;
   }
 }
+
+/* ── Touch devices: iOS Safari 포커스 자동 확대 차단 ─────────
+   iOS Safari는 포커스된 폼 컨트롤의 계산 폰트 크기가 16px 미만이면
+   페이지를 자동으로 확대한다. 터치 환경에서는 모든 포커스 가능 폼
+   컨트롤을 16px 이상으로 유지해 이 동작을 근본적으로 차단한다.
+   (viewport에 maximum-scale=1 을 넣는 방식은 핀치줌까지 막아
+   WCAG 2.1 1.4.4 위반이므로 사용하지 않는다.) */
+@media (max-width: 768px), (pointer: coarse) {
+  .input-wrap input,
+  .favorites-add-form input,
+  .datetime-input-wrap input,
+  .datetime-ymd-inputs input,
+  .datetime-time-col select {
+    font-size: 16px;
+  }
+}
