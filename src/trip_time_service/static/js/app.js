@@ -4003,6 +4003,69 @@ function isMobileViewport() {
   });
 })();
 
+// ── 모바일 키보드 회피 (iOS Safari 대응) ─────────────────────
+// iOS는 키보드가 떠도 레이아웃 뷰포트가 줄지 않아 bottom:0 고정
+// 시트가 키보드에 가려진다. visualViewport 겹침량을 시트 bottom 에
+// 반영해 시트를 키보드 위로 올린다.
+// - Android Chrome(interactive-widget=resizes-content)은 키보드만큼
+//   레이아웃이 줄어 overlap 이 0 이 되어 자연스럽게 무동작한다.
+// - 드래그/숨김은 transform 기반이므로 bottom 조작과 충돌하지 않는다.
+(function () {
+  var $sheet = document.getElementById("sidebar");
+  var vv = window.visualViewport;
+  if (!$sheet || !vv) return;
+
+  function clearKeyboardOffset() {
+    if ($sheet.style.bottom) {
+      $sheet.style.bottom = "";
+    }
+    if ($sheet.style.maxHeight) {
+      $sheet.style.maxHeight = "";
+    }
+  }
+
+  function applyKeyboardOffset() {
+    if (!isMobileViewport()) {
+      clearKeyboardOffset();
+      return;
+    }
+    // 겹침량 = 레이아웃 높이 - 가시 높이(키보드 + 상단 팬 제외)
+    var overlap = Math.max(
+      0,
+      Math.round(window.innerHeight - vv.height - vv.offsetTop)
+    );
+    if (overlap > 0) {
+      $sheet.style.bottom = overlap + "px";
+      // 시트 전체(헤더 포함)가 키보드 위 가시 영역 안에 머물도록 상한 조정
+      $sheet.style.maxHeight = "calc(" + Math.round(vv.height) + "px - 12px)";
+    } else {
+      clearKeyboardOffset();
+    }
+  }
+
+  vv.addEventListener("resize", applyKeyboardOffset);
+  vv.addEventListener("scroll", applyKeyboardOffset);
+  window.addEventListener("orientationchange", function () {
+    window.setTimeout(applyKeyboardOffset, 100);
+  });
+
+  // 포커스된 입력이 시트 안에서 보이도록 중앙으로 스크롤한다.
+  document.addEventListener("focusin", function (event) {
+    var target = event.target;
+    if (
+      !isMobileViewport() ||
+      !$sheet.contains(target) ||
+      !target.matches ||
+      !target.matches("input, select, textarea")
+    ) {
+      return;
+    }
+    window.setTimeout(function () {
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 150);
+  });
+})();
+
 if ($sidebarBackdrop) {
   $sidebarBackdrop.addEventListener("click", function () {
     setSidebarOpen(false);

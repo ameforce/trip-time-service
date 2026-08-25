@@ -78,3 +78,33 @@ def test_touch_form_controls_meet_ios_zoom_safe_font_size() -> None:
     sizes = re.findall(r"font-size:\s*(?P<value>[\d.]+)px", body)
     assert sizes, "16px 폰트 크기 선언이 누락되었다"
     assert all(float(value) >= 16 for value in sizes)
+
+
+def test_viewport_meta_declares_keyboard_resizes_content() -> None:
+    """Android Chrome 108+ 에서 키보드가 레이아웃 뷰포트를 줄여 바텀시트가
+    키보드 위로 올라오도록 interactive-widget=resizes-content 를 요구한다."""
+    html = Path("src/trip_time_service/static/index.html").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(
+        r"<meta\s+name=[\"']viewport[\"']\s+content=[\"'](?P<content>[^\"']+)[\"']",
+        html,
+    )
+
+    assert match is not None
+    assert re.search(
+        r"interactive-widget\s*=\s*resizes-content", match.group("content")
+    )
+
+
+def test_app_js_binds_visual_viewport_keyboard_avoidance() -> None:
+    """iOS Safari 키보드 회피: visualViewport 겹침량을 시트 bottom 에 반영하는
+    코드가 존재해야 한다."""
+    js = Path("src/trip_time_service/static/js/app.js").read_text(
+        encoding="utf-8"
+    )
+    assert "window.visualViewport" in js
+    assert 'vv.addEventListener("resize"' in js
+    # 겹침량 계산과 시트 bottom 반영
+    assert "window.innerHeight - vv.height - vv.offsetTop" in js
+    assert "$sheet.style.bottom" in js
