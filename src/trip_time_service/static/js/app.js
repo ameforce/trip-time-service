@@ -4078,9 +4078,7 @@ function isMobileViewport() {
     if (overlap > 0) {
       // 연속 resize 이벤트를 즉시 반영하기 위해 transition 비활성화
       $sheet.classList.add("kb-tracking");
-      $sheet.style.bottom = overlap + "px";
-      // 시트 전체(헤더 포함)가 키보드 위 가시 영역 안에 머물도록 상한 조정
-      $sheet.style.maxHeight = "calc(" + Math.round(vv.height) + "px - 12px)";
+      applyShift(overlap, vv.height);
       lastKnownOverlap = overlap;
     } else {
       clearKeyboardOffset();
@@ -4100,11 +4098,21 @@ function isMobileViewport() {
   }
 
   function applyOverlap(overlap) {
+    applyShift(overlap, window.innerHeight - overlap);
+  }
+
+  // 겹침량만큼 시트를 위로 옮기되, 높이는 "필요한 만큼만" 조정한다.
+  // - max-height 를 가시 영역 전체로 무조건 잡으면 시트가 화면 최상단에
+  //   붙은 전체 패널처럼 보인다(원래 모양 유지 실패).
+  // - 콘텐츠가 가시 영역보다 작으면 원래 크기를 유지한 채 평행이동하고,
+  //   클 때만 헤더가 보이도록 가시 영역에 맞춘다.
+  function applyShift(overlap, visibleHeight) {
     $sheet.classList.add("kb-tracking");
-    $sheet.style.bottom = overlap + "px";
-    var visibleHeight = window.innerHeight - overlap;
+    var contentHeight = $sheet.scrollHeight;
+    var available = Math.max(160, Math.round(visibleHeight) - 24);
     $sheet.style.maxHeight =
-      "calc(" + Math.round(visibleHeight) + "px - 12px)";
+      Math.min(contentHeight, available) + "px";
+    $sheet.style.bottom = overlap + "px";
   }
 
   vv.addEventListener("resize", applyKeyboardOffset);

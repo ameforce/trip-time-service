@@ -71,11 +71,15 @@ test.describe('mobile keyboard avoidance', () => {
     );
     expect(hasTrackingClass).toBe(true);
 
-    const maxHeight = await page.evaluate(
-      () => (document.getElementById('sidebar') as HTMLElement).style.maxHeight,
-    );
-    // 브라우저가 calc(300px - 12px)을 calc(288px)로 정규화한다
-    expect(maxHeight).toBe('calc(288px)');
+    const maxHeight = await page.evaluate(() => {
+      const sheet = document.getElementById('sidebar') as HTMLElement;
+      return {
+        style: sheet.style.maxHeight,
+        // 높이는 "필요한 만큼만": 콘텐츠와 가시 영역(vv.height=300) 중 작은 값
+        expected: Math.min(sheet.scrollHeight, 300 - 24) + 'px',
+      };
+    });
+    expect(maxHeight.style).toBe(maxHeight.expected);
 
     // 키보드 접힘: 인라인 보정 제거(CSS 클래스 값으로 복원)
     await page.evaluate(() => {
