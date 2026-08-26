@@ -108,3 +108,22 @@ def test_app_js_binds_visual_viewport_keyboard_avoidance() -> None:
     # 겹침량 계산과 시트 bottom 반영
     assert "window.innerHeight - vv.height - vv.offsetTop" in js
     assert "$sheet.style.bottom" in js
+
+
+def test_sheet_restore_handle_wired() -> None:
+    """시트 완전 숨김 상태에서 좌상단 햄버거 외의 복원 수단(하단 핸들,
+    지도 탭)이 존재해야 한다."""
+    html = Path("src/trip_time_service/static/index.html").read_text(
+        encoding="utf-8"
+    )
+    js = Path("src/trip_time_service/static/js/app.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="sheet-restore"' in html
+    assert 'aria-label="검색 패널 열기"' in html
+    # 핸들 동기화 및 복원 로직
+    assert "syncSheetRestoreHandle" in js
+    assert "function restoreSheetFromHidden" in js
+    # 지도 배경 탭 복원(#map-container 한정)
+    assert 'closest("#map-container")' in js

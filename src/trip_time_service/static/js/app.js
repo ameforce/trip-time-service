@@ -3873,6 +3873,7 @@ function setSidebarOpen(open) {
   if (open) {
     $sidebar.classList.remove("sheet-hidden");
   }
+  syncSheetRestoreHandle();
   if ($mobileToggle) {
     $mobileToggle.setAttribute("aria-expanded", open ? "true" : "false");
   }
@@ -3889,6 +3890,7 @@ function setSidebarOpen(open) {
 
 function setSheetHidden(hidden) {
   $sidebar.classList.toggle("sheet-hidden", hidden);
+  syncSheetRestoreHandle();
   if (hidden) {
     setSidebarOpen(false);
     if ($sidebarBackdrop) {
@@ -3899,6 +3901,34 @@ function setSheetHidden(hidden) {
     }
   }
 }
+
+// ── 시트 완전 숨김 복원 핸들 ─────────────────────────────────
+// 숨김 상태에서 유일한 복원 수단이 좌상단 햄버거뿐이던 문제를 해결한다.
+// 하단 중앙 핸들을 항상 표시해 발견 가능성을 확보하고, 탭/위로 드래그/
+// 지도 탭 어느 쪽으로도 복원할 수 있게 한다.
+var $sheetRestore = document.getElementById("sheet-restore");
+
+function syncSheetRestoreHandle() {
+  if (!$sheetRestore) return;
+  var shouldShow =
+    isMobileViewport() && $sidebar.classList.contains("sheet-hidden");
+  if ($sheetRestore.hidden === shouldShow) {
+    $sheetRestore.hidden = !shouldShow;
+  }
+  $sheetRestore.classList.toggle("is-visible", shouldShow);
+  if (!shouldShow) {
+    $sheetRestore.style.transform = "";
+  }
+}
+
+function restoreSheetFromHidden() {
+  if (!$sidebar.classList.contains("sheet-hidden")) {
+    return;
+  }
+  $sidebar.classList.remove("sheet-hidden");
+  syncSheetRestoreHandle();
+}
+
 
 function isMobileViewport() {
   return window.matchMedia && window.matchMedia("(max-width: 768px)").matches;
@@ -3917,6 +3947,7 @@ function isMobileViewport() {
   function dismissToHidden() {
     $sidebar.classList.remove("open");
     $sidebar.classList.add("sheet-hidden");
+    syncSheetRestoreHandle();
     if ($sidebarBackdrop) {
       $sidebarBackdrop.classList.remove("is-visible");
     }
@@ -3997,6 +4028,7 @@ function isMobileViewport() {
   $mobileToggle.addEventListener("click", function () {
     if ($sidebar.classList.contains("sheet-hidden")) {
       $sidebar.classList.remove("sheet-hidden");
+      syncSheetRestoreHandle();
       return;
     }
     setSidebarOpen(!$sidebar.classList.contains("open"));
@@ -4064,6 +4096,78 @@ function isMobileViewport() {
       target.scrollIntoView({ block: "center", behavior: "smooth" });
     }, 150);
   });
+})();
+
+// ── 숨김 시트 복원 인터랙션 ──────────────────────────────────
+// 핸들 탭/위로 드래그, 지도 배경 탭으로 완전 숨김 상태의 시트를 복원한다.
+(function () {
+  if (!$sheetRestore) return;
+
+  $sheetRestore.addEventListener("click", function () {
+    restoreSheetFromHidden();
+  });
+
+  // 핸들 위로 드래그: 스와이프 다운 숨김의 역동작
+  var drag = null;
+  $sheetRestore.addEventListener("pointerdown", function (e) {
+    drag = { id: e.pointerId, startY: e.clientY, moved: false };
+    try {
+      $sheetRestore.setPointerCapture(e.pointerId);
+    } catch (_) {}
+  });
+  $sheetRestore.addEventListener("pointermove", function (e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    var dy = drag.startY - e.clientY;
+    if (!drag.moved && Math.abs(dy) > 4) {
+      drag.moved = true;
+    }
+    if (drag.moved && dy > 0) {
+      $sheetRestore.style.transform =
+        "translateX(-50%) translateY(" + -Math.min(dy, 80) + "px)";
+    }
+  });
+  function endHandleDrag(e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    var state = drag;
+    drag = null;
+    try {
+      $sheetRestore.releasePointerCapture(state.id);
+    } catch (_) {}
+    var dy = state.startY - e.clientY;
+    $sheetRestore.style.transform = "";
+    if (dy > 24) {
+      restoreSheetFromHidden();
+    }
+  }
+  $sheetRestore.addEventListener("pointerup", endHandleDrag);
+  $sheetRestore.addEventListener("pointercancel", endHandleDrag);
+
+  // 숨김 상태에서 지도 배경 탭 시 복원.
+  // 마커·팝업·컨트롤 등 지도 자체 상호작용은 제외한다.
+  document.addEventListener(
+    "click",
+    function (event) {
+      if (!isMobileViewport()) return;
+      if (!$sidebar.classList.contains("sheet-hidden")) return;
+      var target = event.target;
+      if (!(target instanceof Element)) return;
+      if (!target.closest("#map-container")) return;
+      if (
+        target.closest(
+          ".leaflet-marker-icon, .leaflet-popup, .leaflet-control, a, button"
+        )
+      ) {
+        return;
+      }
+      restoreSheetFromHidden();
+    },
+    true
+  );
+
+  window.addEventListener("resize", syncSheetRestoreHandle);
+
+  // 초기 상태 동기화(새로고침 시 숨김 상태 유지 대비)
+  syncSheetRestoreHandle();
 })();
 
 if ($sidebarBackdrop) {

@@ -1402,6 +1402,10 @@ body {
   .sidebar-backdrop {
     display: none;
   }
+
+  .sheet-restore {
+    display: none !important;
+  }
 }
 
 .mobile-toggle {
@@ -1421,6 +1425,40 @@ body {
   align-items: center;
   justify-content: center;
 }
+
+/* ── 시트 완전 숨김 상태의 복원 핸들 ─────────────────── */
+.sheet-restore {
+  display: none;
+  position: fixed;
+  left: 50%;
+  bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 1300;
+  width: 132px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sheet-restore.is-visible {
+  display: flex;
+}
+
+.sheet-restore-bar {
+  width: 44px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--border);
+}
+
 
 @media (max-width: 768px) {
   .sidebar {
