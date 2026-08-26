@@ -4042,12 +4042,21 @@ function isMobileViewport() {
 // - Android Chrome(interactive-widget=resizes-content)은 키보드만큼
 //   레이아웃이 줄어 overlap 이 0 이 되어 자연스럽게 무동작한다.
 // - 드래그/숨김은 transform 기반이므로 bottom 조작과 충돌하지 않는다.
+// - 키보드 애니메이션(~250ms) 동안 resize 이벤트가 연속 발생하므로,
+//   kb-tracking 클래스로 transition 을 꺼서 이벤트 값을 즉시 반영한다.
+//   (transition 이 켜져 있으면 매 이벤트마다 애니메이션이 재시작돼
+//   시트가 늦게 펄떡거리는 불안정함이 생긴다.)
 (function () {
   var $sheet = document.getElementById("sidebar");
   var vv = window.visualViewport;
   if (!$sheet || !vv) return;
 
+  // 마지막 키보드 겹침량. 닫힐 때 0 으로 리셋하지 않고 유지해
+  // 다음 포커스 시 사파리 자동 팬보다 먼저 선적용할 수 있다.
+  var lastKnownOverlap = 0;
+
   function clearKeyboardOffset() {
+    $sheet.classList.remove("kb-tracking");
     if ($sheet.style.bottom) {
       $sheet.style.bottom = "";
     }
@@ -4067,12 +4076,35 @@ function isMobileViewport() {
       Math.round(window.innerHeight - vv.height - vv.offsetTop)
     );
     if (overlap > 0) {
+      // 연속 resize 이벤트를 즉시 반영하기 위해 transition 비활성화
+      $sheet.classList.add("kb-tracking");
       $sheet.style.bottom = overlap + "px";
       // 시트 전체(헤더 포함)가 키보드 위 가시 영역 안에 머물도록 상한 조정
       $sheet.style.maxHeight = "calc(" + Math.round(vv.height) + "px - 12px)";
+      lastKnownOverlap = overlap;
     } else {
       clearKeyboardOffset();
     }
+  }
+
+  // 포커스 순간 사파리가 자동 팬으로 페이지를 밀어 올리기 전에
+  // 직전 키보드 높이를 선적용해 초기 점프를 완화한다(iOS).
+  function preApplyKeyboardOffset() {
+    if (
+      lastKnownOverlap > 0 &&
+      isMobileViewport() &&
+      !$sheet.classList.contains("kb-tracking")
+    ) {
+      applyOverlap(lastKnownOverlap);
+    }
+  }
+
+  function applyOverlap(overlap) {
+    $sheet.classList.add("kb-tracking");
+    $sheet.style.bottom = overlap + "px";
+    var visibleHeight = window.innerHeight - overlap;
+    $sheet.style.maxHeight =
+      "calc(" + Math.round(visibleHeight) + "px - 12px)";
   }
 
   vv.addEventListener("resize", applyKeyboardOffset);
@@ -4082,6 +4114,7 @@ function isMobileViewport() {
   });
 
   // 포커스된 입력이 시트 안에서 보이도록 중앙으로 스크롤한다.
+  // (지연 없이 즉시 적용 — 늦은 smooth 스크롤은 2차 흔들림으로 보인다.)
   document.addEventListener("focusin", function (event) {
     var target = event.target;
     if (
@@ -4092,9 +4125,8 @@ function isMobileViewport() {
     ) {
       return;
     }
-    window.setTimeout(function () {
-      target.scrollIntoView({ block: "center", behavior: "smooth" });
-    }, 150);
+    preApplyKeyboardOffset();
+    target.scrollIntoView({ block: "center", behavior: "auto" });
   });
 })();
 

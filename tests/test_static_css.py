@@ -108,6 +108,19 @@ def test_app_js_binds_visual_viewport_keyboard_avoidance() -> None:
     # 겹침량 계산과 시트 bottom 반영
     assert "window.innerHeight - vv.height - vv.offsetTop" in js
     assert "$sheet.style.bottom" in js
+    # 불안정한 따라감 방지: 추적 중 transition 비활성화
+    assert "kb-tracking" in js
+
+
+def test_css_disables_transition_while_keyboard_tracking() -> None:
+    css = Path("src/trip_time_service/static/css/style.css").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"\.sidebar\.kb-tracking\s*\{([^}]+)\}", css)
+
+    assert match is not None
+    assert "transition" in match.group(1)
+    assert "none" in match.group(1)
 
 
 def test_sheet_restore_handle_wired() -> None:

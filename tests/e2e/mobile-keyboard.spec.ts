@@ -63,6 +63,14 @@ test.describe('mobile keyboard avoidance', () => {
     });
     await expect.poll(bottomStyle).toBe('544px');
 
+    // 추적 중에는 transition 이 비활성화되어야 한다(불안정한 따라감 방지)
+    const hasTrackingClass = await page.evaluate(() =>
+      document
+        .getElementById('sidebar')!
+        .classList.contains('kb-tracking'),
+    );
+    expect(hasTrackingClass).toBe(true);
+
     const maxHeight = await page.evaluate(
       () => (document.getElementById('sidebar') as HTMLElement).style.maxHeight,
     );
@@ -82,6 +90,37 @@ test.describe('mobile keyboard avoidance', () => {
       () => (document.getElementById('sidebar') as HTMLElement).style.maxHeight,
     );
     expect(restoredMaxHeight).toBe('');
+
+    const trackingCleared = await page.evaluate(() =>
+      document.getElementById('sidebar')!.classList.contains('kb-tracking'),
+    );
+    expect(trackingCleared).toBe(false);
+  });
+
+  test('pre-applies last keyboard height on refocus', async ({ page }) => {
+    const bottomStyle = () =>
+      page.evaluate(
+        () => (document.getElementById('sidebar') as HTMLElement).style.bottom,
+      );
+
+    // 첫 키보드 세션: 겹침 학습 후 접기
+    await page.evaluate(() => {
+      (window as unknown as { __fakeVV: { setKeyboard: (h: number) => void } })
+        .__fakeVV.setKeyboard(300);
+    });
+    await expect.poll(bottomStyle).toBe('544px');
+    await page.evaluate(() => {
+      (
+        window as unknown as {
+          __fakeVV: { setKeyboard: (h: number | null) => void };
+        }
+      ).__fakeVV.setKeyboard(null);
+    });
+    await expect.poll(bottomStyle).toBe('');
+
+    // 재포커스: resize 이벤트 전에 직전 겹침량(544px)이 선적용되어야 한다
+    await page.locator('#origin').click();
+    await expect.poll(bottomStyle, { timeout: 2_000 }).toBe('544px');
   });
 
   test('focused input scrolls into view inside sheet', async ({ page }) => {

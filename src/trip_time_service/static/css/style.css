@@ -49,6 +49,12 @@ body {
   overflow-x: hidden;
 }
 
+/* 키보드 추적 중: resize 이벤트 값을 즉시 반영해 시트가 키보드를
+   부드럽고 정확하게 따라가도록 한다(transition 재시작 방지). */
+.sidebar.kb-tracking {
+  transition: none !important;
+}
+
 .sidebar-header {
   padding: 24px 24px 16px;
   border-bottom: 1px solid var(--border);
