@@ -88,6 +88,29 @@ def test_osrm_failure_result_is_not_cached(
     assert duration.duration_seconds > 0
 
 
+def test_osrm_uses_the_supplied_coordinates_without_geocoding(
+    provider: OsrmTravelTimeProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = Route.of(
+        "같은 이름", "같은 이름", origin_coords=(37.1, 127.1), dest_coords=(37.2, 127.2)
+    )
+    actual_routes = []
+
+    def duration(*coords: float) -> float:
+        actual_routes.append(coords)
+        return 1200.0
+
+    monkeypatch.setattr(
+        osrm_module,
+        "_geocode_place",
+        lambda *_args: pytest.fail("known coordinates must skip geocoding"),
+    )
+    monkeypatch.setattr(osrm_module, "_osrm_duration", duration)
+    provider.get_drive_duration(route, datetime(2026, 1, 24, 8, 0, tzinfo=KST))
+    assert actual_routes == [(37.1, 127.1, 37.2, 127.2)]
+
+
 def test_osrm_geocode_failure_is_retryable_not_poisoned(
     provider: OsrmTravelTimeProvider,
     monkeypatch: pytest.MonkeyPatch,

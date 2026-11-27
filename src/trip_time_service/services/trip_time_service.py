@@ -4,8 +4,9 @@ import logging
 import math
 import os
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
+from threading import Event
 
 from trip_time_service.config import Settings
 from trip_time_service.core.cache import LruTtlCache
@@ -22,7 +23,14 @@ from trip_time_service.core.time_utils import (
     floor_time_to_minutes,
     subtract_hours,
 )
-from trip_time_service.providers.base import ProviderError, TravelTimeProvider
+from trip_time_service.providers.base import (
+    FORECAST_DEPARTURE_ELAPSED,
+    ForecastGridProvider,
+    ProviderError,
+    RequestRouteProvider,
+    TravelTimeProvider,
+    check_cancelled,
+)
 
 _log = logging.getLogger(__name__)
 _ARRIVAL_COARSE_PRIMARY_HOURS = 10
@@ -42,6 +50,45 @@ _ANALYSIS_SCORE_MIN_GAIN = 0.005
 
 class NoFeasibleDepartureError(RuntimeError):
     """정시 도착 가능한 추천 출발 시각이 없는 경우."""
+
+
+def _run_candidate_batch[T](
+    indices: list[int],
+    *,
+    worker_count: int,
+    evaluate: Callable[[int], T],
+    record: Callable[[T], None],
+    cancel_event: Event | None,
+) -> None:
+    if worker_count <= 1 or len(indices) <= 1:
+        for index in indices:
+            check_cancelled(cancel_event)
+            record(evaluate(index))
+        return
+
+    remaining = iter(indices)
+    with ThreadPoolExecutor(max_workers=min(worker_count, len(indices))) as executor:
+        pending: set[Future[T]] = set()
+
+        def submit_next() -> None:
+            check_cancelled(cancel_event)
+            index = next(remaining, None)
+            if index is not None:
+                pending.add(executor.submit(evaluate, index))
+
+        try:
+            for _ in range(min(worker_count, len(indices))):
+                submit_next()
+            while pending:
+                completed, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in completed:
+                    check_cancelled(cancel_event)
+                    record(future.result())
+                for _ in completed:
+                    submit_next()
+        finally:
+            for future in pending:
+                future.cancel()
 
 
 def _provider_retry_exhausted_error(exc: ProviderError) -> ProviderError:
@@ -66,7 +113,10 @@ class TripTimeService:
     ) -> None:
         self._settings = settings
         self._provider = provider
-        self._cache = cache or LruTtlCache(
+        self._forecast_grid = (
+            provider if isinstance(provider, ForecastGridProvider) else None
+        )
+        self._cache = cache if cache is not None else LruTtlCache(
             maxsize=4096,
             ttl_seconds=settings.cache_ttl.total_seconds(),
         )
@@ -75,20 +125,71 @@ class TripTimeService:
     def provider_name(self) -> str:
         return getattr(self._provider, "name", self._provider.__class__.__name__)
 
+    def _get_request_route(
+        self, origin: str, destination: str, route: Route | None
+    ) -> Route:
+        if route is not None:
+            return route
+        route = Route.of(origin, destination)
+        if isinstance(self._provider, RequestRouteProvider):
+            return self._provider.route_with_legacy_coords(route)
+        return route
+
+    def _first_forecast_slot(
+        self, requested: datetime, now: datetime
+    ) -> datetime:
+        if self._forecast_grid is None:
+            return requested
+        return ceil_time_to_minutes(
+            max(requested, now + self._forecast_grid.forecast_lead_time),
+            self._forecast_grid.forecast_grid_minutes,
+        )
+
+    def _check_forecast_slot(self, departure_time: datetime) -> None:
+        if self._forecast_grid is not None and departure_time <= datetime.now(
+            tz=departure_time.tzinfo
+        ):
+            raise ProviderError(
+                "교통 정보 조회 가능 출발 시각이 지났습니다.",
+                is_retryable=False,
+                code=FORECAST_DEPARTURE_ELAPSED,
+            )
+
     def estimate_arrival(
         self,
         *,
         origin: str,
         destination: str,
         departure_time: datetime,
+        route: Route | None = None,
+        cancel_event: Event | None = None,
     ) -> ArrivalEstimate:
-        route = Route.of(origin, destination)
+        check_cancelled(cancel_event)
+        route = self._get_request_route(origin, destination, route)
         departure_time = ensure_tzaware(departure_time, self._settings.timezone)
 
-        duration, cache_hit, _provider_calls = self._get_duration_cached(
-            route=route,
-            departure_time=departure_time,
+        sampled_departure = self._first_forecast_slot(
+            departure_time, datetime.now(tz=departure_time.tzinfo)
         )
+        try:
+            duration, cache_hit, _provider_calls = self._get_duration_cached(
+                route=route,
+                departure_time=sampled_departure,
+                cancel_event=cancel_event,
+            )
+        except ProviderError as exc:
+            if self._forecast_grid is None or exc.code != FORECAST_DEPARTURE_ELAPSED:
+                raise
+            # The slot can expire while waiting for the browser to prepare a route.
+            sampled_departure = self._first_forecast_slot(
+                sampled_departure + timedelta(minutes=1),
+                datetime.now(tz=departure_time.tzinfo),
+            )
+            duration, cache_hit, _provider_calls = self._get_duration_cached(
+                route=route,
+                departure_time=sampled_departure,
+                cancel_event=cancel_event,
+            )
         arrival_time = departure_time + timedelta(seconds=duration.duration_seconds)
 
         return ArrivalEstimate(
@@ -113,8 +214,11 @@ class TripTimeService:
         on_candidate_evaluated: (
             Callable[[RecommendationCandidate], None] | None
         ) = None,
+        route: Route | None = None,
+        cancel_event: Event | None = None,
     ) -> DepartureRecommendation:
-        route = Route.of(origin, destination)
+        check_cancelled(cancel_event)
+        route = self._get_request_route(origin, destination, route)
         desired_arrival_time = ensure_tzaware(
             desired_arrival_time, self._settings.timezone
         )
@@ -125,6 +229,9 @@ class TripTimeService:
             )
 
         step_minutes = self._settings.step_minutes
+        if self._forecast_grid is not None:
+            grid_minutes = self._forecast_grid.forecast_grid_minutes
+            step_minutes = math.ceil(step_minutes / grid_minutes) * grid_minutes
         lookback_hours = self._settings.lookback_hours
 
         if analysis_start_time is not None:
@@ -135,6 +242,7 @@ class TripTimeService:
                 step_minutes=step_minutes,
                 on_search_initialized=on_search_initialized,
                 on_candidate_evaluated=on_candidate_evaluated,
+                cancel_event=cancel_event,
             )
 
         start_limit = subtract_hours(desired_arrival_time, lookback_hours)
@@ -164,9 +272,6 @@ class TripTimeService:
         provider_calls_total = 0
         candidates_checked = 0
 
-        latest_departure: datetime | None = None
-        latest_arrival: datetime | None = None
-        latest_dur: DriveDuration | None = None
         candidate_evaluations: list[RecommendationCandidate] = []
         worker_count = self._worker_count()
         coarse_stride = max(1, math.ceil(60 / step_minutes))
@@ -184,6 +289,7 @@ class TripTimeService:
             duration, _cache_hit, provider_calls = self._get_duration_cached(
                 route=route,
                 departure_time=departure,
+                cancel_event=cancel_event,
             )
             arrival = departure + timedelta(seconds=duration.duration_seconds)
             candidate = RecommendationCandidate(
@@ -196,14 +302,11 @@ class TripTimeService:
             return index, duration, provider_calls, candidate
 
         def _record_candidate(
-            *,
-            index: int,
-            duration: DriveDuration,
-            provider_calls: int,
-            candidate: RecommendationCandidate,
+            result: tuple[int, DriveDuration, int, RecommendationCandidate],
         ) -> None:
             nonlocal provider_calls_total
             nonlocal candidates_checked
+            index, duration, provider_calls, candidate = result
             if index in evaluated:
                 return
             evaluated[index] = candidate
@@ -216,35 +319,13 @@ class TripTimeService:
 
         def _evaluate_indices(indices: list[int], *, phase: str) -> None:
             pending = [idx for idx in indices if idx not in evaluated]
-            if not pending:
-                return
-
-            if worker_count <= 1 or len(pending) == 1:
-                for idx in pending:
-                    result = _evaluate_index(idx, phase=phase)
-                    _record_candidate(
-                        index=result[0],
-                        duration=result[1],
-                        provider_calls=result[2],
-                        candidate=result[3],
-                    )
-                return
-
-            with ThreadPoolExecutor(
-                max_workers=min(worker_count, len(pending)),
-            ) as executor:
-                futures = {
-                    executor.submit(_evaluate_index, idx, phase=phase): idx
-                    for idx in pending
-                }
-                for future in as_completed(futures):
-                    result = future.result()
-                    _record_candidate(
-                        index=result[0],
-                        duration=result[1],
-                        provider_calls=result[2],
-                        candidate=result[3],
-                    )
+            _run_candidate_batch(
+                pending,
+                worker_count=worker_count,
+                evaluate=lambda idx: _evaluate_index(idx, phase=phase),
+                record=_record_candidate,
+                cancel_event=cancel_event,
+            )
 
         def _probe_indices(lo: int, hi: int, count: int) -> list[int]:
             gap = hi - lo
@@ -457,28 +538,13 @@ class TripTimeService:
         latest_arrival = best_candidate.arrival_time
         latest_dur = duration_by_index[best_index]
 
-        if (
-            latest_departure is None
-            or latest_arrival is None
-            or latest_dur is None
-        ):
-            range_start = departures[-1].strftime("%Y-%m-%d %H:%M")
-            range_end = departures[0].strftime("%Y-%m-%d %H:%M")
-            raise NoFeasibleDepartureError(
-                "기준 도착 시각을 충족하는 출발 후보를 찾지 못했습니다 "
-                f"(분석 범위 {range_start}~{range_end}, "
-                f"후보 {total_candidates}건)"
-            )
-
         safe_duration_secs = math.ceil(latest_dur.duration_seconds * 1.25)
-        if analysis_start_time is not None:
-            # 출발 시각 기준 모드: 출발은 고정, 도착이 늘어나는 형태로 표시
-            safe_departure_time = latest_departure
-        else:
-            computed_safe_departure = desired_arrival_time - timedelta(
-                seconds=safe_duration_secs,
-            )
-            safe_departure_time = max(computed_safe_departure, min_future_departure)
+        computed_safe_departure = desired_arrival_time - timedelta(
+            seconds=safe_duration_secs,
+        )
+        safe_departure_time = min(
+            latest_departure, max(computed_safe_departure, min_future_departure)
+        )
 
         score_by_index = self._score_deadline_recommendation_candidates(
             evaluated=evaluated,
@@ -511,6 +577,8 @@ class TripTimeService:
         )
         tight_score_total = score_by_index.get(best_index, (None,))[0]
 
+        self._check_forecast_slot(latest_departure)
+        check_cancelled(cancel_event)
         return DepartureRecommendation(
             route=route,
             desired_arrival_time=desired_arrival_time,
@@ -558,10 +626,13 @@ class TripTimeService:
         horizon_hours: int,
     ) -> list[datetime]:
         step = timedelta(minutes=step_minutes)
-        departure = ceil_time_to_minutes(analysis_start_time, step_minutes)
-        min_future_departure = ceil_time_to_minutes(now, step_minutes)
-        if departure < min_future_departure:
-            departure = min_future_departure
+        if self._forecast_grid is not None:
+            departure = self._first_forecast_slot(analysis_start_time, now)
+        else:
+            departure = max(
+                ceil_time_to_minutes(analysis_start_time, step_minutes),
+                ceil_time_to_minutes(now, step_minutes),
+            )
 
         effective_hours = max(1, horizon_hours)
         end_limit = departure + timedelta(hours=effective_hours)
@@ -586,6 +657,7 @@ class TripTimeService:
         on_candidate_evaluated: (
             Callable[[RecommendationCandidate], None] | None
         ),
+        cancel_event: Event | None,
     ) -> DepartureRecommendation:
         worker_count = self._worker_count()
         now = datetime.now(tz=desired_arrival_time.tzinfo)
@@ -618,6 +690,7 @@ class TripTimeService:
             duration, _cache_hit, provider_calls = self._get_duration_cached(
                 route=route,
                 departure_time=departure,
+                cancel_event=cancel_event,
             )
             arrival = departure + timedelta(seconds=duration.duration_seconds)
             candidate = RecommendationCandidate(
@@ -630,14 +703,11 @@ class TripTimeService:
             return index, duration, provider_calls, candidate
 
         def _record_candidate(
-            *,
-            index: int,
-            duration: DriveDuration,
-            provider_calls: int,
-            candidate: RecommendationCandidate,
+            result: tuple[int, DriveDuration, int, RecommendationCandidate],
         ) -> None:
             nonlocal provider_calls_total
             nonlocal candidates_checked
+            index, duration, provider_calls, candidate = result
             if index in evaluated:
                 return
             evaluated[index] = candidate
@@ -650,35 +720,13 @@ class TripTimeService:
 
         def _evaluate_indices(indices: list[int], *, phase: str) -> None:
             pending = [idx for idx in indices if idx not in evaluated]
-            if not pending:
-                return
-
-            if worker_count <= 1 or len(pending) == 1:
-                for idx in pending:
-                    result = _evaluate_index(idx, phase=phase)
-                    _record_candidate(
-                        index=result[0],
-                        duration=result[1],
-                        provider_calls=result[2],
-                        candidate=result[3],
-                    )
-                return
-
-            with ThreadPoolExecutor(
-                max_workers=min(worker_count, len(pending)),
-            ) as executor:
-                futures = {
-                    executor.submit(_evaluate_index, idx, phase=phase): idx
-                    for idx in pending
-                }
-                for future in as_completed(futures):
-                    result = future.result()
-                    _record_candidate(
-                        index=result[0],
-                        duration=result[1],
-                        provider_calls=result[2],
-                        candidate=result[3],
-                    )
+            _run_candidate_batch(
+                pending,
+                worker_count=worker_count,
+                evaluate=lambda idx: _evaluate_index(idx, phase=phase),
+                record=_record_candidate,
+                cancel_event=cancel_event,
+            )
 
         primary_max_index = min(
             total_candidates - 1,
@@ -967,6 +1015,8 @@ class TripTimeService:
             for item in candidate_evaluations
         )
 
+        self._check_forecast_slot(best_candidate.departure_time)
+        check_cancelled(cancel_event)
         return DepartureRecommendation(
             route=route,
             desired_arrival_time=baseline_candidate.arrival_time,
@@ -1330,11 +1380,16 @@ class TripTimeService:
         now: datetime,
     ) -> list[datetime]:
         step = timedelta(minutes=step_minutes)
-        departure = floor_time_to_minutes(desired_arrival_time, step_minutes)
+        grid_minutes = step_minutes
+        min_forecast_departure = now
+        if self._forecast_grid is not None:
+            grid_minutes = self._forecast_grid.forecast_grid_minutes
+            min_forecast_departure = self._first_forecast_slot(now, now)
+        departure = floor_time_to_minutes(desired_arrival_time, grid_minutes)
         departures: list[datetime] = []
 
         while departure >= start_limit:
-            if departure > now:
+            if departure > now and departure >= min_forecast_departure:
                 departures.append(departure)
             departure -= step
 
@@ -1362,26 +1417,45 @@ class TripTimeService:
         *,
         route: Route,
         departure_time: datetime,
+        cancel_event: Event | None = None,
     ) -> tuple[DriveDuration, bool, int]:
-        bucketed_departure = floor_time_to_minutes(
-            departure_time, self._settings.step_minutes
-        )
+        check_cancelled(cancel_event)
+        self._check_forecast_slot(departure_time)
+        bucketed_departure = departure_time
+        if self._forecast_grid is None:
+            bucketed_departure = floor_time_to_minutes(
+                departure_time, self._settings.step_minutes
+            )
         key = (route, bucketed_departure)
 
         cached = self._cache.get(key)
         if cached is not None:
+            check_cancelled(cancel_event)
             return cached, True, 0
 
         retryable_attempts = 2
         for attempt in range(1, retryable_attempts + 1):
+            check_cancelled(cancel_event)
+            self._check_forecast_slot(departure_time)
             try:
-                duration = self._provider.get_drive_duration(
-                    route,
-                    bucketed_departure,
-                )
+                if isinstance(self._provider, RequestRouteProvider):
+                    duration = self._provider.get_drive_duration_for_route(
+                        route, bucketed_departure, cancel_event=cancel_event
+                    )
+                else:
+                    duration = self._provider.get_drive_duration(
+                        route, bucketed_departure
+                    )
+                check_cancelled(cancel_event)
+                if duration.sampled_departure_time not in (None, bucketed_departure):
+                    raise ProviderError(
+                        "교통 정보 조회 시각이 요청한 표본과 일치하지 않습니다.",
+                        is_retryable=False,
+                    )
                 self._cache.set(key, duration)
                 return duration, False, attempt
             except ProviderError as exc:
+                check_cancelled(cancel_event)
                 if not exc.is_retryable:
                     raise
                 if attempt >= retryable_attempts:

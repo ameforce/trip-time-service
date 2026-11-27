@@ -39,6 +39,8 @@ HEALTHCHECK_DELAY_SECONDS="${HEALTHCHECK_DELAY_SECONDS:-2}"
 SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-yes}"
 SSH_KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${HOME}/.ssh/known_hosts}"
 APP_VERSION="${APP_VERSION:-${IMAGE_REF##*:}}"
+APP_REVISION="${APP_REVISION:-}"
+DEPLOY_ATTEMPT_ID="${DEPLOY_ATTEMPT_ID:-}"
 SOURCE_ARCHIVE_PATH="${SOURCE_ARCHIVE_PATH:-}"
 TTS_PROVIDER="${TTS_PROVIDER:-naver_playwright}"
 TTS_CHROME_NO_SANDBOX="${TTS_CHROME_NO_SANDBOX:-1}"
@@ -98,6 +100,8 @@ TRAEFIK_TLS_CERTRESOLVER="$(printf '%q' "${TRAEFIK_TLS_CERTRESOLVER}")"
 HEALTHCHECK_RETRIES="$(printf '%q' "${HEALTHCHECK_RETRIES}")"
 HEALTHCHECK_DELAY_SECONDS="$(printf '%q' "${HEALTHCHECK_DELAY_SECONDS}")"
 APP_VERSION="$(printf '%q' "${APP_VERSION}")"
+APP_REVISION="$(printf '%q' "${APP_REVISION}")"
+DEPLOY_ATTEMPT_ID="$(printf '%q' "${DEPLOY_ATTEMPT_ID}")"
 SOURCE_ARCHIVE_REMOTE="$(printf '%q' "${SOURCE_ARCHIVE_REMOTE}")"
 REMOTE_APP_ROOT="$(printf '%q' "${REMOTE_APP_ROOT}")"
 TTS_PROVIDER="$(printf '%q' "${TTS_PROVIDER}")"
@@ -116,9 +120,15 @@ normalize_optional() {
 NETWORK_NAME="\$(normalize_optional "\${NETWORK_NAME}")"
 TRAEFIK_TLS_CERTRESOLVER="\$(normalize_optional "\${TRAEFIK_TLS_CERTRESOLVER}")"
 SOURCE_ARCHIVE_REMOTE="\$(normalize_optional "\${SOURCE_ARCHIVE_REMOTE}")"
+APP_REVISION="\$(normalize_optional "\${APP_REVISION}")"
+DEPLOY_ATTEMPT_ID="\$(normalize_optional "\${DEPLOY_ATTEMPT_ID}")"
 
 if ! [[ "\${IMAGE_RETENTION_COUNT}" =~ ^[0-9]+$ ]]; then
   echo "[deploy] IMAGE_RETENTION_COUNT must be a non-negative integer" >&2
+  exit 1
+fi
+if [[ -n "\${APP_REVISION}" ]] && ! [[ "\${APP_REVISION}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+  echo "[deploy] APP_REVISION must be a full lowercase hexadecimal Git commit ID" >&2
   exit 1
 fi
 
@@ -138,6 +148,20 @@ if [[ ! -f "\${ENV_FILE}" ]]; then
 fi
 
 mkdir -p "\${ROLLBACK_DIR}"
+handoff_file="\${ROLLBACK_DIR}/deploy-handoff.txt"
+if ! command -v flock >/dev/null 2>&1; then
+  echo "[deploy] flock is required for coordinated deployment recovery" >&2
+  exit 1
+fi
+exec 9>>"\${ROLLBACK_DIR}/deploy.lock"
+if ! flock -w 120 9; then
+  echo "[deploy] timed out acquiring the environment deployment lock" >&2
+  exit 1
+fi
+if [[ -e "\${handoff_file}" ]]; then
+  echo "[deploy] interrupted deployment has an outstanding recovery record" >&2
+  exit 1
+fi
 
 image_repository_for_ref() {
   local image_ref="\$1" image_name="\${1##*/}"
@@ -192,13 +216,40 @@ cleanup_deploy_build_dir() {
   fi
 }
 
+container_label() {
+  case "\$1" in
+    '<no value>'|'<nil>') ;;
+    *) printf '%s' "\$1" ;;
+  esac
+}
+
+previous_id=""
 previous_image=""
-if docker container inspect "\${CONTAINER_NAME}" >/dev/null 2>&1; then
-  previous_image="\$(docker inspect --format '{{.Config.Image}}' "\${CONTAINER_NAME}" || true)"
-  if [[ -n "\${previous_image}" ]]; then
-    printf '%s\n' "\${previous_image}" > "\${ROLLBACK_DIR}/previous-image.txt"
+previous_image_id=""
+if previous="\$(docker container inspect --format '{{.Id}}|{{.Config.Image}}|{{.Image}}|{{with .Config.Labels}}{{with index . "triptime_restored_image_ref"}}{{.}}{{end}}{{end}}|{{with .Config.Labels}}{{with index . "triptime_previous_image"}}{{.}}{{end}}{{end}}|{{with .Config.Labels}}{{with index . "triptime_previous_image_id"}}{{.}}{{end}}{{end}}' "\${CONTAINER_NAME}" 2>/dev/null)"; then
+  IFS='|' read -r previous_id previous_image previous_image_id restored_ref \
+    predecessor_ref predecessor_id <<< "\${previous}"
+  restored_ref="\$(container_label "\${restored_ref}")"
+  predecessor_ref="\$(container_label "\${predecessor_ref}")"
+  predecessor_id="\$(container_label "\${predecessor_id}")"
+  if [[ (-n "\${restored_ref}" && ! "\${restored_ref}" =~ ^[-0-9A-Za-z._:/@]+$) \
+    || (-n "\${predecessor_ref}" && ! "\${predecessor_ref}" =~ ^[-0-9A-Za-z._:/@]+$) \
+    || (-n "\${predecessor_id}" && ! "\${predecessor_id}" =~ ^sha256:[0-9a-f]{64}$) ]]; then
+    echo "[deploy] active container has invalid rollback metadata" >&2
+    exit 1
   fi
-  docker rm -f "\${CONTAINER_NAME}" >/dev/null
+  previous_image="\${restored_ref:-\${previous_image}}"
+elif ! active_id="\$(docker container ls --all --quiet --filter "name=^/\${CONTAINER_NAME}$")" \
+  || [[ -n "\${active_id}" ]]; then
+  echo "[deploy] cannot determine active container state" >&2
+  exit 1
+fi
+if [[ -n "\${APP_REVISION}" && "\${previous_image}" == "\${IMAGE_REF}" ]]; then
+  if ! tagged_id="\$(docker image inspect --format '{{.Id}}' "\${IMAGE_REF}")" \
+    || [[ "\${tagged_id}" != "\${previous_image_id}" ]]; then
+    echo "[deploy] active image and deploy tag identify different bytes; deployment skipped" >&2
+    exit 1
+  fi
 fi
 
 if ! docker image inspect "\${IMAGE_REF}" >/dev/null 2>&1; then
@@ -213,9 +264,19 @@ if ! docker image inspect "\${IMAGE_REF}" >/dev/null 2>&1; then
     tar -xzf "\${SOURCE_ARCHIVE_REMOTE}" -C "\${build_dir}"
     docker build \
       --build-arg APP_VERSION="\${APP_VERSION}" \
+      --build-arg APP_REVISION="\${APP_REVISION}" \
       --tag "\${IMAGE_REF}" \
       "\${build_dir}" >/dev/null
     rm -f "\${SOURCE_ARCHIVE_REMOTE}"
+  fi
+fi
+verified_image_id=""
+if [[ -n "\${APP_REVISION}" ]]; then
+  image_identity="\$(docker image inspect --format '{{.Id}}|{{index .Config.Labels "org.opencontainers.image.revision"}}' "\${IMAGE_REF}")"
+  IFS='|' read -r verified_image_id image_revision <<< "\${image_identity}"
+  if [[ "\${image_revision}" != "\${APP_REVISION}" ]]; then
+    echo "[deploy] image revision does not match checked-out commit \${APP_REVISION}; deployment skipped" >&2
+    exit 1
   fi
 fi
 
@@ -226,14 +287,12 @@ fi
 run_container() {
   local image_ref="\$1"
   local override_provider="\${2:-}"
+  local restore_version="\${3:-}"
   local -a args
   args=(
-    --detach
     --name "\${CONTAINER_NAME}"
     --restart unless-stopped
     --env-file "\${ENV_FILE}"
-    # Runtime version must come from the deployed image/tag, not a stale env file.
-    --env "TTS_VERSION=\${APP_VERSION}"
     --env "TTS_CHROME_NO_SANDBOX=\${TTS_CHROME_NO_SANDBOX}"
     --publish "127.0.0.1:\${HOST_PORT}:\${CONTAINER_PORT}"
     --label "service=\${CONTAINER_PREFIX}"
@@ -244,7 +303,27 @@ run_container() {
   # Auto-rollback to previous_image must NOT force naver_playwright — older
   # images may only accept naver / naver_selenium from the env file.
   if [[ -n "\${override_provider}" ]]; then
+    # Keep the new release version out of containers restored during rollback.
+    args+=(--env "TTS_VERSION=\${APP_VERSION}")
     args+=(--env "TTS_PROVIDER=\${override_provider}")
+    if [[ -n "\${DEPLOY_ATTEMPT_ID}" ]]; then
+      args+=(
+        --label "triptime_deploy_attempt=\${DEPLOY_ATTEMPT_ID}"
+        --label "triptime_previous_image=\${previous_image}"
+        --label "triptime_previous_image_id=\${previous_image_id}"
+      )
+    fi
+  else
+    args+=(--label "triptime_restored_image_ref=\${previous_image}")
+    if [[ -n "\${DEPLOY_ATTEMPT_ID}" ]]; then
+      args+=(
+        --label "triptime_restore_attempt=\${DEPLOY_ATTEMPT_ID}"
+        --label "triptime_restore_candidate=\${IMAGE_REF}"
+      )
+    fi
+    if [[ -n "\${restore_version}" ]]; then
+      args+=(--env "TTS_VERSION=\${restore_version}")
+    fi
   fi
 
   if [[ -n "\${NETWORK_NAME}" ]]; then
@@ -268,45 +347,145 @@ run_container() {
     fi
   fi
 
-  docker run "\${args[@]}" "\${image_ref}" >/dev/null
+  # Keep the ID even if starting a successfully created container fails.
+  container_id=""
+  container_id="\$(docker create "\${args[@]}" "\${image_ref}")" || return
+  local expected_image_id="\${verified_image_id}"
+  if [[ -z "\${override_provider}" ]]; then
+    expected_image_id="\${image_ref}"
+  fi
+  if [[ -n "\${expected_image_id}" ]]; then
+    local created_image_id
+    if ! created_image_id="\$(docker container inspect --format '{{.Image}}' "\${container_id}")" \
+      || [[ "\${created_image_id}" != "\${expected_image_id}" ]]; then
+      echo "[deploy] candidate was created from a different image ID" >&2
+      return 1
+    fi
+  fi
+  docker start "\${container_id}" >/dev/null
 }
 
 check_health() {
-  curl --fail --silent --show-error "http://127.0.0.1:\${HOST_PORT}/healthz" >/dev/null
+  curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:\${HOST_PORT}/healthz" >/dev/null
 }
 
-run_container "\${IMAGE_REF}" "\${TTS_PROVIDER}"
-
-for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
-  if check_health; then
-    printf '%s\n' "\${IMAGE_REF}" > "\${ROLLBACK_DIR}/current-image.txt"
-    date -u +"%Y-%m-%dT%H:%M:%SZ" > "\${ROLLBACK_DIR}/last-deployed-at.txt"
-    echo "[deploy] health check passed (\${i}/\${HEALTHCHECK_RETRIES})"
-    cleanup_deploy_build_dir
-    cleanup_deploy_images "\${IMAGE_REF}"
-    exit 0
+read_image_version() {
+  local version
+  version="\$(docker image inspect --format '{{range .Config.Env}}{{if eq (printf "%.12s" .) "TTS_VERSION="}}{{println .}}{{end}}{{end}}' "\$1")" || return 1
+  [[ "\${version}" == TTS_VERSION=* ]] || return 0
+  version="\${version#TTS_VERSION=}"
+  if [[ "\${#version}" -le 128 && "\${version}" != "v0.0.0.0" \
+    && "\${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-[A-Za-z0-9._-]+)?$ ]]; then
+    printf '%s' "\${version}"
   fi
-  sleep "\${HEALTHCHECK_DELAY_SECONDS}"
-done
+}
 
-echo "[deploy] health check failed for image=\${IMAGE_REF}" >&2
-
-if [[ -n "\${previous_image}" ]]; then
-  echo "[deploy] auto rollback to previous image=\${previous_image}"
-  docker rm -f "\${CONTAINER_NAME}" >/dev/null 2>&1 || true
-  if ! docker image inspect "\${previous_image}" >/dev/null 2>&1; then
-    docker pull "\${previous_image}" >/dev/null 2>&1 || true
+write_handoff() {
+  [[ -n "\${DEPLOY_ATTEMPT_ID}" ]] || return 0
+  local replaced_id="\$1" restore_ref="\$2" restore_id="\$3" handoff_tmp
+  if [[ ! "\${replaced_id}" =~ ^[0-9a-f]{64}$ || ! "\${restore_ref}" =~ ^[-0-9A-Za-z._:/@]+$ \
+    || ! "\${restore_id}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "[deploy] cannot record the active container or previous image" >&2
+    return 1
   fi
-  # Omit provider override so previous image uses env-file / image defaults.
-  run_container "\${previous_image}"
+  handoff_tmp="\$(mktemp "\${ROLLBACK_DIR}/.deploy-handoff.XXXXXX")" || return 1
+  if ! printf '%s\n' "\${DEPLOY_ATTEMPT_ID}" "\${IMAGE_REF}" "\${replaced_id}" \
+    "\${restore_ref}" "\${restore_id}" > "\${handoff_tmp}" \
+    || ! mv -fT -- "\${handoff_tmp}" "\${handoff_file}"; then
+    rm -f -- "\${handoff_tmp}"
+    echo "[deploy] could not record the deployment handoff" >&2
+    return 1
+  fi
+}
+
+if [[ -n "\${previous_id}" ]]; then
+  # Publish the complete handoff before removing the exact active container.
+  write_handoff "\${previous_id}" "\${previous_image}" "\${previous_image_id}"
+  if [[ "\${previous_image}" == "\${IMAGE_REF}" ]]; then
+    # A rerun for the same image must preserve the preceding rollback target.
+    replaced_image_id="\${previous_image_id}"
+    previous_image="\${predecessor_ref}"
+    previous_image_id="\${predecessor_id}"
+    if [[ -n "\${previous_image_id}" && "\${previous_image_id}" == "\${replaced_image_id}" ]]; then
+      previous_image=""
+      previous_image_id=""
+    elif [[ -z "\${previous_image}" ]]; then
+      if [[ -n "\${previous_image_id}" ]]; then
+        previous_image="\${previous_image_id}"
+      elif [[ -f "\${ROLLBACK_DIR}/previous-image.txt" ]]; then
+        previous_image="\$(cat "\${ROLLBACK_DIR}/previous-image.txt")"
+        previous_image="\$(container_label "\${previous_image}")"
+      fi
+    fi
+  fi
+  if [[ "\${previous_image}" == "\${IMAGE_REF}" ]]; then
+    previous_image=""
+    previous_image_id=""
+  fi
+  if [[ -n "\${previous_image}" && ! "\${previous_image}" =~ ^[-0-9A-Za-z._:/@]+$ ]]; then
+    echo "[deploy] previous image reference is invalid" >&2
+    exit 1
+  fi
+  if [[ -n "\${previous_image}" && -z "\${previous_image_id}" ]]; then
+    previous_image_id="\$(docker image inspect --format '{{.Id}}' "\${previous_image}" 2>/dev/null || true)"
+  fi
+  printf '%s\n' "\${previous_image}" > "\${ROLLBACK_DIR}/previous-image.txt"
+  docker rm -f "\${previous_id}" >/dev/null
+else
+  printf '\n' > "\${ROLLBACK_DIR}/previous-image.txt"
+fi
+
+wait_for_health() {
+  local running
   for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
-    if check_health; then
-      printf '%s\n' "\${previous_image}" > "\${ROLLBACK_DIR}/current-image.txt"
-      echo "[deploy] rollback health check passed"
-      exit 1
+    if check_health \
+      && running="\$(docker container inspect --format '{{.Id}}|{{.State.Running}}' "\${CONTAINER_NAME}")" \
+      && [[ "\${running}" == "\${container_id}|true" ]]; then
+      return 0
     fi
     sleep "\${HEALTHCHECK_DELAY_SECONDS}"
   done
+  return 1
+}
+
+if run_container "\${IMAGE_REF}" "\${TTS_PROVIDER}" && wait_for_health \
+  && printf '%s\n' "\${IMAGE_REF}" > "\${ROLLBACK_DIR}/current-image.txt" \
+  && date -u +"%Y-%m-%dT%H:%M:%SZ" > "\${ROLLBACK_DIR}/last-deployed-at.txt" \
+  && rm -f -- "\${handoff_file}"; then
+  echo "[deploy] health check passed"
+  cleanup_deploy_build_dir
+  cleanup_deploy_images "\${IMAGE_REF}"
+  exit 0
+fi
+
+echo "[deploy] container startup, health check or deployment state update failed for image=\${IMAGE_REF}" >&2
+
+if [[ -n "\${previous_image}" ]]; then
+  echo "[deploy] auto rollback to previous image=\${previous_image}"
+  if [[ -z "\${previous_image_id}" ]]; then
+    if ! docker image inspect "\${previous_image}" >/dev/null 2>&1; then
+      docker pull "\${previous_image}" >/dev/null
+    fi
+    previous_image_id="\$(docker image inspect --format '{{.Id}}' "\${previous_image}")"
+  fi
+  if [[ ! "\${previous_image_id}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || ! restore_version="\$(read_image_version "\${previous_image_id}")"; then
+    echo "[deploy] the previous image ID is invalid or unavailable" >&2
+    exit 1
+  fi
+  # Align the record with the exact selected fallback, including same-tag reruns.
+  write_handoff "\${container_id:-\${previous_id}}" "\${previous_image}" "\${previous_image_id}"
+  if [[ -n "\${container_id}" ]] && ! docker rm -f "\${container_id}" >/dev/null; then
+    echo "[deploy] could not remove failed candidate container" >&2
+    exit 1
+  fi
+  # Omit provider override so previous image uses env-file / image defaults.
+  if run_container "\${previous_image_id}" "" "\${restore_version}" && wait_for_health \
+    && printf '%s\n' "\${previous_image}" > "\${ROLLBACK_DIR}/current-image.txt" \
+    && rm -f -- "\${handoff_file}"; then
+    echo "[deploy] rollback health check passed"
+    exit 1
+  fi
 fi
 
 echo "[deploy] rollback failed or previous image unavailable" >&2

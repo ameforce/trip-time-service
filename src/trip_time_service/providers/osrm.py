@@ -157,8 +157,8 @@ class OsrmTravelTimeProvider:
             if cached is not None:
                 return cached
 
-        o = self._geocode(route.origin)
-        d = self._geocode(route.destination)
+        o = route.origin_coords or self._geocode(route.origin)
+        d = route.dest_coords or self._geocode(route.destination)
         if o is None or d is None:
             # 실패를 가짜 값(30분)으로 위장하면 캐시에 저장되어
             # 잘못된 소요시간이 서비스된다. 재시도 가능 에러로 승격.

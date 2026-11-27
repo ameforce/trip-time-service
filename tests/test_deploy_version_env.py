@@ -21,8 +21,7 @@ def test_deploy_script_overrides_runtime_tts_provider() -> None:
     # New deploys pass provider override; auto-rollback omits it.
     assert 'args+=(--env "TTS_PROVIDER=\\${override_provider}")' in script
     assert 'run_container "\\${IMAGE_REF}" "\\${TTS_PROVIDER}"' in script
-    assert 'run_container "\\${previous_image}"' in script
-    assert 'run_container "\\${previous_image}" "\\${TTS_PROVIDER}"' not in script
+    assert r'run_container "\${previous_image_id}" "" "\${restore_version}"' in script
 
 
 def test_env_examples_do_not_pin_tts_version_placeholder() -> None:

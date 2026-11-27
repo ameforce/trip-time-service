@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import CancelledError
 from datetime import datetime, timedelta
+from threading import Event
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from trip_time_service.config import Settings
 from trip_time_service.core.models import DriveDuration, Route
@@ -163,3 +167,120 @@ def test_retryable_provider_failure_is_bucketed_after_retry_exhaustion() -> None
         raise AssertionError("retry exhaustion should raise ProviderError")
 
     assert provider.calls == 2
+
+
+def test_arrival_cancellation_skips_retry(monkeypatch) -> None:
+    cancelled = Event()
+    provider = _RetryFailingProvider()
+    service = TripTimeService(settings=_make_settings(), provider=provider)
+    original_get = provider.get_drive_duration
+
+    def fail_and_cancel(route: Route, departure_time: datetime) -> DriveDuration:
+        cancelled.set()
+        return original_get(route, departure_time)
+
+    monkeypatch.setattr(provider, "get_drive_duration", fail_and_cancel)
+    with pytest.raises(CancelledError):
+        service.estimate_arrival(
+            origin="강남역",
+            destination="판교역",
+            departure_time=datetime(2026, 4, 1, 9, 7),
+            cancel_event=cancelled,
+        )
+
+    assert provider.calls == 1
+
+
+def test_parallel_forecast_stops_submitting_candidates_after_cancellation(
+    monkeypatch,
+) -> None:
+    cancelled = Event()
+    provider = _FakeProvider()
+    monkeypatch.setattr(provider, "max_parallel_sessions", 2, raising=False)
+    service = TripTimeService(
+        settings=_make_settings_with_overrides(recommend_workers=2),
+        provider=provider,
+    )
+    start = datetime.now(tz=ZoneInfo("Asia/Seoul")) + timedelta(hours=1)
+
+    with pytest.raises(CancelledError):
+        service.recommend_departure(
+            origin="강남역",
+            destination="판교역",
+            desired_arrival_time=start,
+            analysis_start_time=start,
+            on_candidate_evaluated=lambda _candidate: cancelled.set(),
+            cancel_event=cancelled,
+        )
+
+    assert 1 <= len(provider.reusable_calls) <= 2
+
+
+@pytest.mark.parametrize("forward", [False, True])
+def test_forecast_recommendation_matches_an_evaluated_candidate(forward: bool) -> None:
+    settings = _make_settings()
+    provider = _FakeProvider()
+    service = TripTimeService(settings=settings, provider=provider)
+    target = datetime.now(tz=settings.timezone) + timedelta(hours=3)
+    route = Route.of(
+        "강남역", "판교역",
+        origin_coords=(37.1, 127.1), dest_coords=(37.2, 127.2),
+    )
+
+    recommendation = service.recommend_departure(
+        origin=route.origin,
+        destination=route.destination,
+        route=route,
+        desired_arrival_time=target,
+        analysis_start_time=target if forward else None,
+    )
+
+    chosen = next(
+        candidate for candidate in recommendation.candidate_evaluations
+        if candidate.departure_time == recommendation.recommended_departure_time
+    )
+    assert recommendation.route == route
+    assert all(provider_route == route for provider_route, _ in provider.reusable_calls)
+    assert recommendation.expected_arrival_time == chosen.arrival_time
+    assert recommendation.duration.duration_seconds == chosen.duration_seconds
+    assert recommendation.recommended_score_total == chosen.score_total
+    assert recommendation.safe_departure_duration_seconds == 1125
+    assert recommendation.safe_departure_time <= (
+        recommendation.recommended_departure_time
+    )
+    if not forward:
+        assert recommendation.expected_arrival_time <= target
+
+
+@pytest.mark.parametrize("forward", [False, True])
+def test_incomplete_forecast_returns_provider_error(
+    monkeypatch, forward: bool,
+) -> None:
+    settings = _make_settings()
+    provider = _FakeProvider()
+    service = TripTimeService(settings=settings, provider=provider)
+    target = datetime.now(tz=settings.timezone) + timedelta(hours=3)
+    original_get = provider.get_drive_duration
+    candidates = []
+
+    def fail_after_one_candidate(
+        route: Route, departure_time: datetime,
+    ) -> DriveDuration:
+        if not provider.reusable_calls:
+            return original_get(route, departure_time)
+        provider.reusable_calls.append((route, departure_time))
+        raise ProviderError("candidate unavailable", code="panel_parse_timeout")
+
+    monkeypatch.setattr(provider, "get_drive_duration", fail_after_one_candidate)
+    with pytest.raises(ProviderError) as exc:
+        service.recommend_departure(
+            origin="강남역",
+            destination="판교역",
+            desired_arrival_time=target,
+            analysis_start_time=target if forward else None,
+            on_candidate_evaluated=candidates.append,
+        )
+
+    assert exc.value.code == "provider_retry_exhausted"
+    assert len(candidates) == 1
+    assert len(provider.reusable_calls) == 3

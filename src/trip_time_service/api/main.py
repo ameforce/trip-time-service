@@ -25,6 +25,7 @@ from trip_time_service.api.routes import router
 from trip_time_service.api.routes_trip import (
     RouteInputContractError,
     route_input_contract_exception_handler,
+    trip_error_data,
 )
 from trip_time_service.config import load_settings
 from trip_time_service.providers.base import ProviderError
@@ -182,8 +183,7 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=status,
             content={
-                "detail": "교통 정보 제공자 호출 중 오류가 발생했습니다.",
-                "reason": "provider_degraded",
+                **trip_error_data(exc),
                 "retryable": exc.is_retryable,
             },
         )
@@ -197,8 +197,7 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=422,
             content={
-                "detail": "입력 조건에서 유효한 추천 출발 후보를 찾지 못했습니다.",
-                "reason": "no_feasible_departure",
+                **trip_error_data(exc),
                 "retryable": False,
             },
         )

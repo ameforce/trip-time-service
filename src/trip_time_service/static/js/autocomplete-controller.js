@@ -244,6 +244,18 @@
     function resetActiveIndex() {
       activeIdx = -1;
       _acActiveIdx[timerKey] = -1;
+      $input.removeAttribute("aria-activedescendant");
+    }
+
+    function updateActiveOption(items, nextIndex) {
+      activeIdx = nextIndex;
+      _acActiveIdx[timerKey] = activeIdx;
+      items.forEach(function (item, index) {
+        item.classList.toggle("ac-active", index === activeIdx);
+        item.setAttribute("aria-selected", index === activeIdx ? "true" : "false");
+      });
+      $input.setAttribute("aria-activedescendant", items[activeIdx].id);
+      items[activeIdx].scrollIntoView({ block: "nearest" });
     }
 
     function transition(nextPhase, query, detail) {
@@ -300,14 +312,13 @@
         })
       );
       if (shouldRetainSelectionOnInput(timerKey, displayQuery)) {
+        if (event || reason === "compositionend") invalidateSearchOnlyState();
         closeACDropdown($dropdown);
         transition("selected", displayQuery, { reason: "retain-selection" });
         return;
       }
       setSelected(null);
-      if (typeof invalidateRouteInputState === "function") {
-        invalidateRouteInputState(timerKey);
-      }
+      if (event || reason === "compositionend") invalidateRouteInputState(timerKey);
       if (!derived.trailingJamo && q.length >= AUTOCOMPLETE_MIN_QUERY_LENGTH) {
         state.lastStableQuery = q;
       }
@@ -460,25 +471,15 @@
       "keydown",
       function (event) {
         var items = $dropdown.querySelectorAll(".ac-item");
-        if (!items.length) return;
+        if (!items.length || $dropdown.classList.contains("hidden")) return;
         if (event.key === "ArrowDown") {
           event.preventDefault();
           event.stopImmediatePropagation();
-          activeIdx = Math.min(activeIdx + 1, items.length - 1);
-          _acActiveIdx[timerKey] = activeIdx;
-          items.forEach(function (el, i) {
-            el.classList.toggle("ac-active", i === activeIdx);
-            el.setAttribute("aria-selected", i === activeIdx ? "true" : "false");
-          });
+          updateActiveOption(items, Math.min(activeIdx + 1, items.length - 1));
         } else if (event.key === "ArrowUp") {
           event.preventDefault();
           event.stopImmediatePropagation();
-          activeIdx = Math.max(activeIdx - 1, 0);
-          _acActiveIdx[timerKey] = activeIdx;
-          items.forEach(function (el, i) {
-            el.classList.toggle("ac-active", i === activeIdx);
-            el.setAttribute("aria-selected", i === activeIdx ? "true" : "false");
-          });
+          updateActiveOption(items, Math.max(activeIdx - 1, 0));
         } else if (event.key === "Enter" && activeIdx >= 0 && currentItems[activeIdx]) {
           event.preventDefault();
           event.stopImmediatePropagation();

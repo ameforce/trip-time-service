@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import datetime as dt
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from trip_time_service.config import Settings
+from trip_time_service.core.models import Route
 from trip_time_service.providers import naver_playwright
+from trip_time_service.providers.base import ProviderError
 from trip_time_service.providers.naver_playwright import NaverMapsPlaywrightProvider
 
 
@@ -34,6 +37,11 @@ class _FakeCalendarButton:
     def inner_text(self) -> str:
         return self.text
 
+    def get_attribute(self, name: str) -> str | None:
+        if name == "aria-current":
+            return "true" if self._page.selected_day is self else "false"
+        return None
+
     def click(self) -> None:
         self.clicked = True
         if self._page is not None:
@@ -49,9 +57,11 @@ class _FakePage:
         month_views: dict[str, dict[bool, list[_FakeCalendarButton]]] | None = None,
         month_options: list[_FakeCalendarButton] | None = None,
         expand_button: _FakeCalendarButton | None = None,
+        accept_selection: bool = True,
     ) -> None:
         self.buttons = buttons or []
         self.clicked_button: _FakeCalendarButton | None = None
+        self.selected_day: _FakeCalendarButton | None = None
         self.click_history: list[_FakeCalendarButton] = []
         self.calendar_month_button = _FakeCalendarButton(text=calendar_month_text)
         self.month_views = month_views
@@ -59,6 +69,7 @@ class _FakePage:
         self.expand_button = expand_button or _FakeCalendarButton(text="펼치기")
         self.dropdown_open = False
         self.expanded = False
+        self.accept_selection = accept_selection
 
     def _current_day_buttons(self) -> list[_FakeCalendarButton]:
         if not self.month_views:
@@ -105,6 +116,9 @@ class _FakePage:
         if button is self.expand_button:
             self.expanded = True
             self.expand_button.text = "접기"
+            return
+        if self.accept_selection and button in self._current_day_buttons():
+            self.selected_day = button
 
 
 def _make_settings() -> Settings:
@@ -287,3 +301,69 @@ def test_set_calendar_date_selects_month_then_expands_for_future_day(
     assert expand_button.clicked is True
     assert page.calendar_month_button.text == "2026.04"
     assert page.clicked_button is target_day_button
+
+
+def test_reused_calendar_goes_from_next_year_to_today_and_reuses_verified_day() -> None:
+    settings = _make_settings()
+    provider = NaverMapsPlaywrightProvider(settings)
+    today = _FakeCalendarButton(text="31")
+    tomorrow = _FakeCalendarButton(text="1월\n1")
+    page = _FakePage([today, tomorrow], calendar_month_text="2026.12")
+    try:
+        provider._set_calendar_date(page, datetime(2027, 1, 1, 9))
+        assert page.selected_day is tomorrow
+        provider._set_calendar_date(page, datetime(2026, 12, 31, 15))
+        assert page.selected_day is today
+        provider._set_calendar_date(page, datetime(2026, 12, 31, 16))
+        assert page.click_history == [tomorrow, today]
+    finally:
+        provider.close()
+
+
+@pytest.mark.parametrize("day_visible", [True, False])
+def test_unverified_calendar_day_cannot_query_or_cache_duration(
+    monkeypatch, day_visible: bool,
+) -> None:
+    settings = _make_settings()
+    provider = NaverMapsPlaywrightProvider(settings)
+    page = _FakePage(
+        [_FakeCalendarButton(text="31")] if day_visible else [],
+        calendar_month_text="2026.12",
+        accept_selection=False,
+    )
+    previous_day = datetime(2026, 12, 30, 14, 3, 20, tzinfo=settings.timezone)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return (
+                previous_day.astimezone(tz) if tz else previous_day.replace(tzinfo=None)
+            )
+
+    monkeypatch.setattr(naver_playwright, "datetime", FrozenDatetime)
+    monkeypatch.setattr(
+        naver_playwright, "_wait_until", lambda predicate, **_kwargs: predicate()
+    )
+    monkeypatch.setattr(
+        provider, "_ensure_session_locked", lambda: SimpleNamespace(page=page)
+    )
+    monkeypatch.setattr(
+        provider._search_adapter, "navigate_and_search", lambda *_: None
+    )
+    monkeypatch.setattr(provider._departure_picker, "open_later_modal", lambda *_: None)
+    monkeypatch.setattr(
+        provider._departure_picker, "ensure_picker_open", lambda *_: None
+    )
+    monkeypatch.setattr(
+        provider._departure_picker, "set_dropdown_value",
+        lambda *_: pytest.fail("must verify the date before setting the time"),
+    )
+    departure = datetime(2026, 12, 31, 15, tzinfo=settings.timezone)
+    route = Route.of("출발", "도착")
+    try:
+        with pytest.raises(ProviderError) as exc:
+            provider.get_drive_duration_for_route(route, departure)
+        assert exc.value.code == "naver_calendar_date_unverified"
+        assert provider._dur_cache.get((route, departure)) is None
+    finally:
+        provider.close()

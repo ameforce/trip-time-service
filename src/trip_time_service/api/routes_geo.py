@@ -103,6 +103,10 @@ def _serialize_autocomplete_items(
     for item in items:
         lat = _parse_coord(item.get("lat"))
         lon = _parse_coord(item.get("lon"))
+        coords_ready = (
+            lat is not None and -90 <= lat <= 90
+            and lon is not None and -180 <= lon <= 180
+        )
         selection_kind = _autocomplete_selection_kind(item)
         canonical_query = _autocomplete_canonical_query(
             item,
@@ -111,9 +115,10 @@ def _serialize_autocomplete_items(
         if not canonical_query:
             continue
         enriched = dict(item)
-        enriched["lat"] = lat
-        enriched["lon"] = lon
-        enriched["coords_ready"] = lat is not None and lon is not None
+        enriched["lat"] = lat if coords_ready else None
+        enriched["lon"] = lon if coords_ready else None
+        enriched["coords_ready"] = coords_ready
+        enriched["coords_status"] = "ready" if coords_ready else "unresolved"
         enriched["selection_kind"] = selection_kind
         enriched["canonical_query"] = canonical_query
         serialized.append(enriched)

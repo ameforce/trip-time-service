@@ -56,6 +56,7 @@ pipeline {
       steps {
         script {
           env.DEPLOY_ATTEMPTED = "false"
+          env.DEPLOY_SUCCEEDED = "false"
         }
         checkout scm
         sh "git fetch --tags --force"
@@ -89,10 +90,8 @@ pipeline {
           uv run --no-sync --extra dev ruff check .
           uv run --no-sync --extra dev pytest
           npm ci
-          # Free stale Playwright webServer from prior failed builds on this agent.
-          fuser -k 39080/tcp || true
-          export E2E_PORT=$((39080 + (${BUILD_NUMBER:-0} % 1000)))
-          fuser -k "${E2E_PORT}/tcp" || true
+          E2E_PORT="$(uv run --no-sync python deploy/enm/e2e_port.py)"
+          export E2E_PORT
           npm run e2e:ci -- --reporter=list
         '''
       }
@@ -108,14 +107,28 @@ pipeline {
             if (params.LIVE_E2E_POLICY == "advisory") {
               catchError(buildResult: "SUCCESS", stageResult: "UNSTABLE") {
                 sh '''
-                  set +e
+                  set -eu
                   export PATH="$HOME/.local/bin:$PATH"
                   export TTS_CHROME_NO_SANDBOX=1
                   uv run playwright install chromium
-                  LIVE_E2E_POLICY=advisory npm run e2e:live:smoke -- --reporter=list
-                  SMOKE_STATUS=$?
-                  LIVE_E2E_POLICY=advisory npm run e2e:live:diagnose -- --reporter=list
-                  DIAGNOSE_STATUS=$?
+                  E2E_PORT="$(uv run --no-sync python deploy/enm/e2e_port.py)"
+                  export E2E_PORT
+                  mkdir -p ".ci-artifacts/live-$BUILD_NUMBER/smoke" ".ci-artifacts/live-$BUILD_NUMBER/diagnose"
+                  rm -f .artifacts/live/e2e-runtime.json .artifacts/live/e2e-live-summary.json
+                  SMOKE_STATUS=0
+                  LIVE_E2E_POLICY=advisory npm run e2e:live:smoke -- --reporter=list || SMOKE_STATUS=$?
+                  for artifact in e2e-runtime.json e2e-live-summary.json; do
+                    if [ -f ".artifacts/live/$artifact" ]; then
+                      mv ".artifacts/live/$artifact" ".ci-artifacts/live-$BUILD_NUMBER/smoke/$artifact"
+                    fi
+                  done
+                  DIAGNOSE_STATUS=0
+                  LIVE_E2E_POLICY=advisory npm run e2e:live:diagnose -- --reporter=list || DIAGNOSE_STATUS=$?
+                  for artifact in e2e-runtime.json e2e-live-summary.json; do
+                    if [ -f ".artifacts/live/$artifact" ]; then
+                      mv ".artifacts/live/$artifact" ".ci-artifacts/live-$BUILD_NUMBER/diagnose/$artifact"
+                    fi
+                  done
                   if [ "$SMOKE_STATUS" -ne 0 ]; then
                     exit "$SMOKE_STATUS"
                   fi
@@ -127,12 +140,23 @@ pipeline {
                 export PATH="$HOME/.local/bin:$PATH"
                 export TTS_CHROME_NO_SANDBOX=1
                 uv run playwright install chromium
-                LIVE_E2E_POLICY=blocking npm run e2e:live:smoke -- --reporter=list
+                E2E_PORT="$(uv run --no-sync python deploy/enm/e2e_port.py)"
+                export E2E_PORT
+                mkdir -p ".ci-artifacts/live-$BUILD_NUMBER/smoke"
+                rm -f .artifacts/live/e2e-runtime.json .artifacts/live/e2e-live-summary.json
+                STATUS=0
+                LIVE_E2E_POLICY=blocking npm run e2e:live:smoke -- --reporter=list || STATUS=$?
+                for artifact in e2e-runtime.json e2e-live-summary.json; do
+                  if [ -f ".artifacts/live/$artifact" ]; then
+                    mv ".artifacts/live/$artifact" ".ci-artifacts/live-$BUILD_NUMBER/smoke/$artifact"
+                  fi
+                done
+                exit "$STATUS"
               '''
             }
           } finally {
             archiveArtifacts(
-              artifacts: ".artifacts/live/e2e-runtime.json,.artifacts/live/e2e-live-summary.json",
+              artifacts: ".ci-artifacts/live-${env.BUILD_NUMBER}/**/*.json",
               allowEmptyArchive: true
             )
           }
@@ -147,10 +171,11 @@ pipeline {
             script: 'export PATH="$HOME/.local/bin:$PATH"; uv run --no-sync python scripts/version/resolve_version.py',
             returnStdout: true
           ).trim()
-          env.SHORT_SHA = sh(
-            script: "git rev-parse --short=8 HEAD",
+          env.APP_REVISION = sh(
+            script: "git rev-parse --verify HEAD",
             returnStdout: true
           ).trim()
+          env.SHORT_SHA = env.APP_REVISION.substring(0, 8)
           env.BRANCH_SLUG = env.BRANCH_NAME
             .toLowerCase()
             .replaceAll("[^a-z0-9._-]", "-")
@@ -184,6 +209,7 @@ pipeline {
           env.DEPLOY_KNOWN_HOSTS = "${env.WORKSPACE}/.ci-artifacts/enm-known-hosts"
 
           echo "APP_VERSION=${env.APP_VERSION}"
+          echo "APP_REVISION=${env.APP_REVISION}"
           echo "DEPLOY_APP_VERSION=${env.DEPLOY_APP_VERSION}"
           echo "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}"
           echo "IMAGE_REF=${env.REMOTE_IMAGE_REF}"
@@ -198,7 +224,7 @@ pipeline {
         sh '''
           mkdir -p .ci-artifacts
           BUNDLE_FILE=".ci-artifacts/triptime-${APP_VERSION}-${SHORT_SHA}.tgz"
-          git archive --format=tgz -o "$BUNDLE_FILE" HEAD
+          git archive --format=tgz -o "$BUNDLE_FILE" "$APP_REVISION"
           echo "$BUNDLE_FILE" > .ci-artifacts/current-bundle.path
         '''
         script {
@@ -223,11 +249,11 @@ pipeline {
           if (!env.EFFECTIVE_ENM_PORT?.trim()) {
             error("ENM_PORT 값이 필요합니다.")
           }
-          env.DEPLOY_ATTEMPTED = "true"
         }
         sh '''
           set -eu
           mkdir -p .ci-artifacts
+          rm -f ".ci-artifacts/release-smoke-$BUILD_NUMBER.verified"
           ssh-keyscan -p "$EFFECTIVE_ENM_PORT" "$EFFECTIVE_ENM_HOST" > "$DEPLOY_KNOWN_HOSTS"
           test -s "$DEPLOY_KNOWN_HOSTS"
         '''
@@ -240,9 +266,11 @@ pipeline {
         ]) {
           withEnv([
             "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}",
+            "DEPLOY_ATTEMPT_ID=${env.BUILD_TAG}",
             "IMAGE_REF=${env.REMOTE_IMAGE_REF}",
             "IMAGE_RETENTION_COUNT=${params.IMAGE_RETENTION_COUNT}",
             "APP_VERSION=${env.DEPLOY_APP_VERSION}",
+            "APP_REVISION=${env.APP_REVISION}",
             "SOURCE_ARCHIVE_PATH=${env.DEPLOY_BUNDLE_PATH}",
             "ENM_HOST=${env.EFFECTIVE_ENM_HOST}",
             "ENM_PORT=${env.EFFECTIVE_ENM_PORT}",
@@ -260,7 +288,11 @@ pipeline {
             "TRAEFIK_ENTRYPOINTS=${params.TRAEFIK_ENTRYPOINTS}",
             "TRAEFIK_TLS_CERTRESOLVER=${params.TRAEFIK_TLS_CERTRESOLVER}"
           ]) {
-            sh "bash deploy/enm/deploy.sh"
+            script {
+              env.DEPLOY_ATTEMPTED = "true"
+              sh "bash deploy/enm/deploy.sh"
+              env.DEPLOY_SUCCEEDED = "true"
+            }
           }
         }
       }
@@ -270,61 +302,81 @@ pipeline {
       when {
         allOf {
           not { changeRequest() }
-          expression { return env.DEPLOY_ATTEMPTED == "true" }
+          expression { return env.DEPLOY_SUCCEEDED == "true" }
         }
       }
       steps {
         sh '''
-          curl --fail --silent --show-error "https://$TARGET_DOMAIN/healthz" >/dev/null
-          echo "Smoke check passed: https://$TARGET_DOMAIN/healthz"
+          set -eu
+          export PATH="$HOME/.local/bin:$PATH"
+          uv run --no-sync python deploy/enm/smoke.py \
+            --base-url "https://$TARGET_DOMAIN" \
+            --expected-version "$DEPLOY_APP_VERSION" \
+            --artifact ".ci-artifacts/release-smoke-$BUILD_NUMBER.json"
+          touch ".ci-artifacts/release-smoke-$BUILD_NUMBER.verified"
         '''
+      }
+      post {
+        always {
+          archiveArtifacts(
+            artifacts: ".ci-artifacts/release-smoke-${env.BUILD_NUMBER}.json",
+            allowEmptyArchive: true
+          )
+        }
       }
     }
   }
 
   post {
-    failure {
+    unsuccessful {
       script {
         if (env.DEPLOY_ATTEMPTED != "true") {
-          echo "Deploy not attempted. Rollback skipped."
+          echo "No deployment started in this build. Jenkins rollback skipped."
           return
         }
-
-        if (!env.EFFECTIVE_ENM_HOST?.trim()) {
-          echo "ENM_HOST is empty. Rollback skipped."
+        if (fileExists(".ci-artifacts/release-smoke-${env.BUILD_NUMBER}.verified")) {
+          echo "Public API verification succeeded. Jenkins rollback skipped."
           return
         }
 
         echo "Deployment failed. Attempting rollback..."
-      }
 
-      withCredentials([
-        sshUserPrivateKey(
-          credentialsId: "${params.ENM_SSH_CREDENTIAL_ID?.trim() ?: 'enm-server-ssh-key'}",
-          keyFileVariable: "ENM_SSH_KEY",
-          usernameVariable: "ENM_USER"
-        )
-      ]) {
-        withEnv([
-          "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}",
-          "IMAGE_REF=${env.REMOTE_IMAGE_REF}",
-          "ENM_HOST=${env.EFFECTIVE_ENM_HOST}",
-          "ENM_PORT=${env.EFFECTIVE_ENM_PORT}",
-          "SSH_STRICT_HOST_KEY_CHECKING=yes",
-          "SSH_KNOWN_HOSTS_FILE=${env.DEPLOY_KNOWN_HOSTS}",
-          "REMOTE_APP_ROOT=${params.REMOTE_APP_ROOT}",
-          "CONTAINER_PREFIX=${env.CONTAINER_PREFIX}",
-          "CONTAINER_PORT=${env.CONTAINER_PORT}",
-          "HOST_PORT_PROD=${params.HOST_PORT_PROD}",
-          "HOST_PORT_DEV=${params.HOST_PORT_DEV}",
-          "DOMAIN_PROD=${env.DOMAIN_PROD}",
-          "DOMAIN_DEV=${env.DOMAIN_DEV}",
-          "NETWORK_NAME=${params.NETWORK_NAME}",
-          "USE_TRAEFIK_LABELS=${params.USE_TRAEFIK_LABELS}",
-          "TRAEFIK_ENTRYPOINTS=${params.TRAEFIK_ENTRYPOINTS}",
-          "TRAEFIK_TLS_CERTRESOLVER=${params.TRAEFIK_TLS_CERTRESOLVER}"
+        withCredentials([
+          sshUserPrivateKey(
+            credentialsId: "${params.ENM_SSH_CREDENTIAL_ID?.trim() ?: 'enm-server-ssh-key'}",
+            keyFileVariable: "ENM_SSH_KEY",
+            usernameVariable: "ENM_USER"
+          )
         ]) {
-          sh "bash deploy/enm/rollback.sh || true"
+          withEnv([
+            "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}",
+            "ROLLBACK_EXPECTED_IMAGE_REF=${env.REMOTE_IMAGE_REF}",
+            "ROLLBACK_EXPECTED_ATTEMPT_ID=${env.BUILD_TAG}",
+            "ENM_HOST=${env.EFFECTIVE_ENM_HOST}",
+            "ENM_PORT=${env.EFFECTIVE_ENM_PORT}",
+            "SSH_STRICT_HOST_KEY_CHECKING=yes",
+            "SSH_KNOWN_HOSTS_FILE=${env.DEPLOY_KNOWN_HOSTS}",
+            "REMOTE_APP_ROOT=${params.REMOTE_APP_ROOT}",
+            "CONTAINER_PREFIX=${env.CONTAINER_PREFIX}",
+            "CONTAINER_PORT=${env.CONTAINER_PORT}",
+            "HOST_PORT_PROD=${params.HOST_PORT_PROD}",
+            "HOST_PORT_DEV=${params.HOST_PORT_DEV}",
+            "DOMAIN_PROD=${env.DOMAIN_PROD}",
+            "DOMAIN_DEV=${env.DOMAIN_DEV}",
+            "NETWORK_NAME=${params.NETWORK_NAME}",
+            "USE_TRAEFIK_LABELS=${params.USE_TRAEFIK_LABELS}",
+            "TRAEFIK_ENTRYPOINTS=${params.TRAEFIK_ENTRYPOINTS}",
+            "TRAEFIK_TLS_CERTRESOLVER=${params.TRAEFIK_TLS_CERTRESOLVER}"
+          ]) {
+            int rollbackStatus = sh(script: "bash deploy/enm/rollback.sh", returnStatus: true)
+            if (rollbackStatus == 3) {
+              echo "No unverified candidate from this build is active. Jenkins rollback skipped."
+            } else if (rollbackStatus != 0) {
+              error("Rollback failed (exit ${rollbackStatus}). Check deployment logs.")
+            } else {
+              echo "Rollback completed."
+            }
+          }
         }
       }
     }

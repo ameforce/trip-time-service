@@ -521,7 +521,8 @@ test.describe('autocomplete ime composition', () => {
             recommended_score_total: 0.91,
             baseline_score_total: 0.83,
             candidate_evaluations: [],
-          })}\n\n`,
+          })}\n\n` +
+          'event: end\ndata: {"ok":true}\n\n',
       });
     });
 
