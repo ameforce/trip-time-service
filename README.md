@@ -68,6 +68,9 @@ Invoke-RestMethod -Method Post `
 
 미래 시각은 입력값을 사용합니다. 이미 지난 희망 도착 시각에는 HTTP 422와
 `arrival_deadline_in_past`가 반환됩니다.
+네이버 교통 정보의 조회 단위로 인해 예상 소요시간의 조회 기준 시각이 달라질 수 있습니다.
+응답의 `sampled_departure_time`에 조회 기준을 표시하며 예상 도착은 요청 출발 시각에
+조회한 소요시간을 더해 계산합니다.
 
 ## Provider 선택
 

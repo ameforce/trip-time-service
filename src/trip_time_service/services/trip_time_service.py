@@ -24,6 +24,8 @@ from trip_time_service.core.time_utils import (
     subtract_hours,
 )
 from trip_time_service.providers.base import (
+    FORECAST_DEPARTURE_ELAPSED,
+    ForecastGridProvider,
     ProviderError,
     RequestRouteProvider,
     TravelTimeProvider,
@@ -111,6 +113,9 @@ class TripTimeService:
     ) -> None:
         self._settings = settings
         self._provider = provider
+        self._forecast_grid = (
+            provider if isinstance(provider, ForecastGridProvider) else None
+        )
         self._cache = cache if cache is not None else LruTtlCache(
             maxsize=4096,
             ttl_seconds=settings.cache_ttl.total_seconds(),
@@ -130,6 +135,26 @@ class TripTimeService:
             return self._provider.route_with_legacy_coords(route)
         return route
 
+    def _first_forecast_slot(
+        self, requested: datetime, now: datetime
+    ) -> datetime:
+        if self._forecast_grid is None:
+            return requested
+        return ceil_time_to_minutes(
+            max(requested, now + self._forecast_grid.forecast_lead_time),
+            self._forecast_grid.forecast_grid_minutes,
+        )
+
+    def _check_forecast_slot(self, departure_time: datetime) -> None:
+        if self._forecast_grid is not None and departure_time <= datetime.now(
+            tz=departure_time.tzinfo
+        ):
+            raise ProviderError(
+                "교통 정보 조회 가능 출발 시각이 지났습니다.",
+                is_retryable=False,
+                code=FORECAST_DEPARTURE_ELAPSED,
+            )
+
     def estimate_arrival(
         self,
         *,
@@ -143,11 +168,28 @@ class TripTimeService:
         route = self._get_request_route(origin, destination, route)
         departure_time = ensure_tzaware(departure_time, self._settings.timezone)
 
-        duration, cache_hit, _provider_calls = self._get_duration_cached(
-            route=route,
-            departure_time=departure_time,
-            cancel_event=cancel_event,
+        sampled_departure = self._first_forecast_slot(
+            departure_time, datetime.now(tz=departure_time.tzinfo)
         )
+        try:
+            duration, cache_hit, _provider_calls = self._get_duration_cached(
+                route=route,
+                departure_time=sampled_departure,
+                cancel_event=cancel_event,
+            )
+        except ProviderError as exc:
+            if self._forecast_grid is None or exc.code != FORECAST_DEPARTURE_ELAPSED:
+                raise
+            # The slot can expire while waiting for the browser to prepare a route.
+            sampled_departure = self._first_forecast_slot(
+                sampled_departure + timedelta(minutes=1),
+                datetime.now(tz=departure_time.tzinfo),
+            )
+            duration, cache_hit, _provider_calls = self._get_duration_cached(
+                route=route,
+                departure_time=sampled_departure,
+                cancel_event=cancel_event,
+            )
         arrival_time = departure_time + timedelta(seconds=duration.duration_seconds)
 
         return ArrivalEstimate(
@@ -187,6 +229,9 @@ class TripTimeService:
             )
 
         step_minutes = self._settings.step_minutes
+        if self._forecast_grid is not None:
+            grid_minutes = self._forecast_grid.forecast_grid_minutes
+            step_minutes = math.ceil(step_minutes / grid_minutes) * grid_minutes
         lookback_hours = self._settings.lookback_hours
 
         if analysis_start_time is not None:
@@ -532,6 +577,7 @@ class TripTimeService:
         )
         tight_score_total = score_by_index.get(best_index, (None,))[0]
 
+        self._check_forecast_slot(latest_departure)
         check_cancelled(cancel_event)
         return DepartureRecommendation(
             route=route,
@@ -580,10 +626,13 @@ class TripTimeService:
         horizon_hours: int,
     ) -> list[datetime]:
         step = timedelta(minutes=step_minutes)
-        departure = ceil_time_to_minutes(analysis_start_time, step_minutes)
-        min_future_departure = ceil_time_to_minutes(now, step_minutes)
-        if departure < min_future_departure:
-            departure = min_future_departure
+        if self._forecast_grid is not None:
+            departure = self._first_forecast_slot(analysis_start_time, now)
+        else:
+            departure = max(
+                ceil_time_to_minutes(analysis_start_time, step_minutes),
+                ceil_time_to_minutes(now, step_minutes),
+            )
 
         effective_hours = max(1, horizon_hours)
         end_limit = departure + timedelta(hours=effective_hours)
@@ -966,6 +1015,7 @@ class TripTimeService:
             for item in candidate_evaluations
         )
 
+        self._check_forecast_slot(best_candidate.departure_time)
         check_cancelled(cancel_event)
         return DepartureRecommendation(
             route=route,
@@ -1330,11 +1380,16 @@ class TripTimeService:
         now: datetime,
     ) -> list[datetime]:
         step = timedelta(minutes=step_minutes)
-        departure = floor_time_to_minutes(desired_arrival_time, step_minutes)
+        grid_minutes = step_minutes
+        min_forecast_departure = now
+        if self._forecast_grid is not None:
+            grid_minutes = self._forecast_grid.forecast_grid_minutes
+            min_forecast_departure = self._first_forecast_slot(now, now)
+        departure = floor_time_to_minutes(desired_arrival_time, grid_minutes)
         departures: list[datetime] = []
 
         while departure >= start_limit:
-            if departure > now:
+            if departure > now and departure >= min_forecast_departure:
                 departures.append(departure)
             departure -= step
 
@@ -1365,9 +1420,12 @@ class TripTimeService:
         cancel_event: Event | None = None,
     ) -> tuple[DriveDuration, bool, int]:
         check_cancelled(cancel_event)
-        bucketed_departure = floor_time_to_minutes(
-            departure_time, self._settings.step_minutes
-        )
+        self._check_forecast_slot(departure_time)
+        bucketed_departure = departure_time
+        if self._forecast_grid is None:
+            bucketed_departure = floor_time_to_minutes(
+                departure_time, self._settings.step_minutes
+            )
         key = (route, bucketed_departure)
 
         cached = self._cache.get(key)
@@ -1378,6 +1436,7 @@ class TripTimeService:
         retryable_attempts = 2
         for attempt in range(1, retryable_attempts + 1):
             check_cancelled(cancel_event)
+            self._check_forecast_slot(departure_time)
             try:
                 if isinstance(self._provider, RequestRouteProvider):
                     duration = self._provider.get_drive_duration_for_route(
@@ -1388,6 +1447,11 @@ class TripTimeService:
                         route, bucketed_departure
                     )
                 check_cancelled(cancel_event)
+                if duration.sampled_departure_time not in (None, bucketed_departure):
+                    raise ProviderError(
+                        "교통 정보 조회 시각이 요청한 표본과 일치하지 않습니다.",
+                        is_retryable=False,
+                    )
                 self._cache.set(key, duration)
                 return duration, False, attempt
             except ProviderError as exc:

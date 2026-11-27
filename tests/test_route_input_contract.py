@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -44,10 +44,11 @@ def _settings(route_input_contract: str = "warn") -> Settings:
 
 
 class _FakeTripService:
-    def __init__(self) -> None:
+    def __init__(self, sampled_departure_time: datetime | None = None) -> None:
         self.arrival_calls = 0
         self.recommend_calls = 0
         self.routes: list[Route] = []
+        self.sampled_departure_time = sampled_departure_time
 
     def estimate_arrival(
         self,
@@ -61,7 +62,11 @@ class _FakeTripService:
         self.arrival_calls += 1
         route = route or Route.of(origin, destination)
         self.routes.append(route)
-        duration = DriveDuration(duration_seconds=900, fetched_at=departure_time)
+        duration = DriveDuration(
+            duration_seconds=900,
+            fetched_at=departure_time,
+            sampled_departure_time=self.sampled_departure_time,
+        )
         return ArrivalEstimate(
             route=route,
             departure_time=departure_time,
@@ -388,16 +393,19 @@ def test_route_preserves_distinct_endpoints_with_the_same_label() -> None:
     ],
 )
 def test_off_step_requested_time_is_preserved(path, body_builder, time_key) -> None:
-    client = _client(_FakeTripService())
     requested = (datetime.now(tz=_TZ) + timedelta(hours=2)).replace(
         minute=31, second=0, microsecond=0
     )
-    response = client.post(
-        path, json=body_builder(**{time_key: requested.isoformat()})
-    )
+    sample = requested.replace(minute=40)
+    client = _client(_FakeTripService(sampled_departure_time=sample))
+    requested_z = requested.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    response = client.post(path, json=body_builder(**{time_key: requested_z}))
 
     assert response.status_code == 200
-    assert datetime.fromisoformat(response.json()[time_key]) == requested
+    payload = response.json()
+    assert datetime.fromisoformat(payload[time_key]) == requested
+    if time_key == "departure_time":
+        assert datetime.fromisoformat(payload["sampled_departure_time"]) == sample
 
 
 @pytest.mark.parametrize("suffix", ["", "/stream"])

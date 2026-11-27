@@ -11,6 +11,7 @@ import urllib.request
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
+from dataclasses import replace
 from functools import lru_cache
 
 from trip_time_service.api.e2e_fixtures import is_fixture_mode_enabled
@@ -1579,11 +1580,11 @@ def resolve_route_for_provider(
     ):
         # Both endpoint labels remain available for the browser text search.
         return route
-    return Route.of(
-        route.origin,
-        route.destination,
+    return replace(
+        route,
         origin_coords=resolved_origin,
         dest_coords=resolved_dest,
+        allow_text_fallback=origin_coords is None and dest_coords is None,
     )
 
 

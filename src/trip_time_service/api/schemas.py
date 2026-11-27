@@ -40,6 +40,7 @@ class ArrivalTimeResponse(BaseModel):
     duration_seconds: int
     provider: str
     cache_hit: bool
+    sampled_departure_time: datetime | None = None
 
 
 class DepartureRecommendationRequest(BaseModel):

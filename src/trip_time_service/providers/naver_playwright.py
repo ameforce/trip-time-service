@@ -15,7 +15,7 @@ import threading
 import time as _time
 from concurrent.futures import CancelledError
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,8 +29,13 @@ from trip_time_service.browser.playwright_runtime import (
 from trip_time_service.config import Settings
 from trip_time_service.core.cache import LruTtlCache
 from trip_time_service.core.models import DriveDuration, Route
+from trip_time_service.core.time_utils import ceil_time_to_minutes
 from trip_time_service.privacy import redact_route, redact_text
-from trip_time_service.providers.base import ProviderError, check_cancelled
+from trip_time_service.providers.base import (
+    FORECAST_DEPARTURE_ELAPSED,
+    ProviderError,
+    check_cancelled,
+)
 from trip_time_service.providers.naver_map_parsing import (
     _PANEL_DIAGNOSTIC_SAMPLE_LIMIT,
     _PANEL_DIAGNOSTIC_SELECTORS,
@@ -44,6 +49,8 @@ from trip_time_service.providers.naver_map_parsing import (
 _log = logging.getLogger(__name__)
 
 _MINUTE_RESOLUTION = 10
+# Leave time for navigation and opening the departure picker.
+_FORECAST_LEAD_TIME = timedelta(minutes=1)
 _CLOSE_LOCK_TIMEOUT_SECONDS = 2.0
 _SESSION_CLOSE_TIMEOUT_SECONDS = 4.0
 _POOL_CLOSE_TIMEOUT_SECONDS = 6.0
@@ -59,6 +66,15 @@ _PAGE_DEFAULT_TIMEOUT_MS = 30000
 
 def _sleep(seconds: float) -> None:
     _time.sleep(seconds)
+
+
+def _check_future_departure(departure_time: datetime) -> None:
+    if departure_time <= datetime.now(tz=departure_time.tzinfo):
+        raise ProviderError(
+            "네이버 지도에서 조회 가능한 출발 시각이 지났습니다.",
+            is_retryable=False,
+            code=FORECAST_DEPARTURE_ELAPSED,
+        )
 
 
 def _safe_visible(element: Any) -> bool:
@@ -85,6 +101,25 @@ def _safe_text(element: Any) -> str:
 
 def _click(element: Any) -> None:
     element.click()
+
+
+def _calendar_day_is_selected(button: Any) -> bool:
+    if button is None:
+        return False
+    try:
+        markers = [
+            button.get_attribute(name)
+            for name in ("aria-selected", "aria-pressed", "data-selected")
+        ]
+        if any(marker is not None for marker in markers):
+            return "true" in markers
+        classes = (button.get_attribute("class") or "").split()
+    except Exception:
+        return False
+    return bool(
+        {"selected", "is_selected", "is-selected", "active", "is_active", "on"}
+        .intersection(classes)
+    )
 
 
 def _query_all(page: Any, selector: str) -> list:
@@ -123,7 +158,14 @@ class _NaverDirectionsSearchAdapter:
             route.dest_coords,
         )
 
-    def navigate_and_search(self, page: Any, route: Route) -> None:
+    def navigate_and_search(
+        self,
+        page: Any,
+        route: Route,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
+        check_cancelled(cancel_event)
         direct_url = self.build_directions_url(route)
         if direct_url:
             _log.info(
@@ -137,19 +179,22 @@ class _NaverDirectionsSearchAdapter:
                     timeout=_PAGE_DEFAULT_TIMEOUT_MS,
                 )
             except Exception:
-                raise ProviderError(
-                    "선택한 좌표의 경로에 접속하지 못했습니다."
-                ) from None
+                if not route.allow_text_fallback:
+                    raise ProviderError(
+                        "선택한 좌표의 경로에 접속하지 못했습니다."
+                    ) from None
+            else:
+                found = _wait_until(
+                    lambda: bool(page.query_selector("button.later_departure_btn")),
+                    timeout=20,
+                )
+                if found:
+                    _sleep(0.5)
+                    return
+                if not route.allow_text_fallback:
+                    raise ProviderError("선택한 좌표의 경로를 불러오지 못했습니다.")
 
-            found = _wait_until(
-                lambda: bool(page.query_selector("button.later_departure_btn")),
-                timeout=20,
-            )
-            if not found:
-                raise ProviderError("선택한 좌표의 경로를 불러오지 못했습니다.")
-            _sleep(0.5)
-            return
-
+        check_cancelled(cancel_event)
         self.navigate_and_search_ac(page, route)
 
     def navigate_and_search_ac(self, page: Any, route: Route) -> None:
@@ -447,6 +492,7 @@ class _NaverDeparturePickerAdapter:
             raise ProviderError(
                 f"과거 시간 조회 불가 ({ampm_text} {hour_text} {minute_text})",
                 is_retryable=False,
+                code=FORECAST_DEPARTURE_ELAPSED if "미래시간" in button_text else None,
             )
 
         _click(confirm)
@@ -474,6 +520,10 @@ class _NaverDeparturePickerAdapter:
                 raise ProviderError(
                     f"과거 시간 조회 불가 ({ampm_text} {hour_text} {minute_text})",
                     is_retryable=False,
+                    code=(
+                        FORECAST_DEPARTURE_ELAPSED
+                        if "미래시간" in current_text else None
+                    ),
                 )
 
             _sleep(2)
@@ -490,6 +540,10 @@ class _NaverDeparturePickerAdapter:
                         f"과거 시간 조회 불가 "
                         f"({ampm_text} {hour_text} {minute_text})",
                         is_retryable=False,
+                        code=(
+                            FORECAST_DEPARTURE_ELAPSED
+                            if "미래시간" in current_text else None
+                        ),
                     )
                 _log.warning("확인 클릭 실패 (버튼 잔존), 재시도")
                 _click(still_visible[0])
@@ -509,6 +563,10 @@ class _NaverDeparturePickerAdapter:
                             f"과거 시간 조회 불가 "
                             f"({ampm_text} {hour_text} {minute_text})",
                             is_retryable=False,
+                            code=(
+                                FORECAST_DEPARTURE_ELAPSED
+                                if "미래시간" in final_text else None
+                            ),
                         )
                     raise ProviderError(
                         f"확인 버튼 클릭 불가 "
@@ -690,13 +748,10 @@ class _NaverDeparturePickerAdapter:
                 visible_buttons.append(button)
         return visible_buttons
 
-    def find_calendar_day_button(self, page: Any, target_date):
-        day_text = str(target_date.day)
-        current_year_month = self.read_calendar_display_year_month(page)
-        fallback_button = None
+    def find_calendar_day_button(self, page: Any, target_date: date) -> Any | None:
+        displayed_year_month = self.read_calendar_display_year_month(page)
+        current_year_month = displayed_year_month
         for button in self.visible_calendar_day_buttons(page):
-            if not _safe_enabled(button):
-                continue
             text_lines = [
                 line.strip()
                 for line in _safe_text(button).splitlines()
@@ -707,22 +762,27 @@ class _NaverDeparturePickerAdapter:
             month_label_match = re.search(r"(\d{1,2})월", text_lines[0])
             if month_label_match:
                 label_month = int(month_label_match.group(1))
-                if current_year_month is None:
+                if displayed_year_month is None:
                     current_year_month = (target_date.year, label_month)
                 else:
-                    current_year, current_month = current_year_month
-                    if label_month < current_month:
-                        current_year += 1
-                    current_year_month = (current_year, label_month)
-            button_day_text = text_lines[-1]
-            if button_day_text != day_text:
-                continue
-            if current_year_month == (target_date.year, target_date.month):
+                    displayed_year, displayed_month = displayed_year_month
+                    offset = (label_month - displayed_month + 6) % 12 - 6
+                    year = displayed_year + (displayed_month + offset - 1) // 12
+                    current_year_month = (year, label_month)
+            day_number = next(
+                (
+                    int(match.group(1))
+                    for line in reversed(text_lines)
+                    if (match := re.fullmatch(r"(\d{1,2})일?", line))
+                ),
+                None,
+            )
+            if (
+                day_number == target_date.day
+                and current_year_month == (target_date.year, target_date.month)
+                and (_safe_enabled(button) or _calendar_day_is_selected(button))
+            ):
                 return button
-            if current_year_month is None and fallback_button is None:
-                fallback_button = button
-        if fallback_button is not None:
-            return fallback_button
         return None
 
     def read_calendar_display_year_month(self, page: Any) -> tuple[int, int] | None:
@@ -730,12 +790,14 @@ class _NaverDeparturePickerAdapter:
             if not _safe_visible(button):
                 continue
             text = _safe_text(button)
-            match = re.search(r"(\d{4})\.(\d{2})$", text)
+            match = re.search(r"(\d{4})\.(\d{1,2})$", text)
             if match:
                 return int(match.group(1)), int(match.group(2))
             match = re.search(r"(\d{1,2})월", text)
             if match:
-                return datetime.now().year, int(match.group(1))
+                month = int(match.group(1))
+                today = datetime.now(tz=self._provider._settings.timezone).date()
+                return today.year + (month < today.month), month
         return None
 
     def select_calendar_month(self, page: Any, target_date) -> bool:
@@ -807,13 +869,7 @@ class _NaverDeparturePickerAdapter:
         return visible_count_after > visible_count_before
 
     def set_calendar_date(self, page: Any, departure_time: datetime) -> None:
-        from datetime import date as _date
-
-        today = _date.today()
         target = departure_time.date()
-        if target == today:
-            return
-
         day_button = self.find_calendar_day_button(page, target)
         if day_button is None:
             displayed_year_month = self.read_calendar_display_year_month(page)
@@ -825,20 +881,21 @@ class _NaverDeparturePickerAdapter:
             day_button = self.find_calendar_day_button(page, target)
 
         if day_button is not None:
+            if _calendar_day_is_selected(day_button):
+                return
             _click(day_button)
-            _sleep(0.5)
-            _log.debug("캘린더 날짜 선택: %s", target.strftime("%Y-%m-%d"))
-            return
+            if _wait_until(
+                lambda: _calendar_day_is_selected(
+                    self.find_calendar_day_button(page, target)
+                ),
+                timeout=1.0,
+            ):
+                _log.debug("캘린더 날짜 선택: %s", target.isoformat())
+                return
 
-        visible_days = [
-            _safe_text(button).replace("\n", " ")
-            for button in self.visible_calendar_day_buttons(page)
-        ]
-        _log.warning(
-            "캘린더에서 %s일을 찾을 수 없음 (target=%s, visible_days=%s)",
-            target.day,
-            target.strftime("%Y-%m-%d"),
-            visible_days,
+        raise ProviderError(
+            f"네이버 지도 캘린더에서 {target.isoformat()} 선택을 확인하지 못했습니다.",
+            code="naver_calendar_date_unverified",
         )
 
     def set_dropdown_value(self, page: Any, kind: str, target: str) -> None:
@@ -878,6 +935,8 @@ class _NaverDeparturePickerAdapter:
 
 class NaverMapsPlaywrightProvider:
     name = "naver_playwright"
+    forecast_grid_minutes = _MINUTE_RESOLUTION
+    forecast_lead_time = _FORECAST_LEAD_TIME
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -887,7 +946,7 @@ class NaverMapsPlaywrightProvider:
         self._session: PlaywrightBrowserSession | None = None
         self._current_route: Route | None = None
         self._modal_open = False
-        self._dur_cache = LruTtlCache[tuple[Route, date, int, int], DriveDuration](
+        self._dur_cache = LruTtlCache[tuple[Route, datetime], DriveDuration](
             maxsize=512,
             ttl_seconds=settings.cache_ttl.total_seconds(),
         )
@@ -910,14 +969,24 @@ class NaverMapsPlaywrightProvider:
             if origin_coords is None or dest_coords is None:
                 return route
             return replace(
-                route, origin_coords=origin_coords, dest_coords=dest_coords
+                route,
+                origin_coords=origin_coords,
+                dest_coords=dest_coords,
+                allow_text_fallback=(
+                    route.origin_coords is None and route.dest_coords is None
+                ),
             )
 
     def get_drive_duration(
         self, route: Route, departure_time: datetime,
     ) -> DriveDuration:
+        now = datetime.now(tz=departure_time.tzinfo)
+        sampled_departure = ceil_time_to_minutes(
+            max(departure_time, now + self.forecast_lead_time),
+            self.forecast_grid_minutes,
+        )
         return self.get_drive_duration_for_route(
-            self.route_with_legacy_coords(route), departure_time
+            self.route_with_legacy_coords(route), sampled_departure
         )
 
     def get_drive_duration_for_route(
@@ -933,8 +1002,15 @@ class NaverMapsPlaywrightProvider:
                 "경로의 다른 장소 좌표를 확인하지 못했습니다.",
                 is_retryable=False,
             )
-        m10 = (departure_time.minute // _MINUTE_RESOLUTION) * _MINUTE_RESOLUTION
-        cache_key = (route, departure_time.date(), departure_time.hour, m10)
+        if departure_time.minute % _MINUTE_RESOLUTION or (
+            departure_time.second or departure_time.microsecond
+        ):
+            raise ProviderError(
+                "네이버 지도 출발 시각은 10분 단위여야 합니다.",
+                is_retryable=False,
+            )
+        _check_future_departure(departure_time)
+        cache_key = (route, departure_time)
 
         cached = self._dur_cache.get(cache_key)
         if cached is not None:
@@ -943,7 +1019,7 @@ class NaverMapsPlaywrightProvider:
         # Playwright create/use must stay on the dedicated owner thread.
         return self._owner.call(
             lambda: self._get_drive_duration_on_owner(
-                route, departure_time, m10, cache_key, cancel_event
+                route, departure_time, cache_key, cancel_event
             )
         )
 
@@ -951,17 +1027,18 @@ class NaverMapsPlaywrightProvider:
         self,
         route: Route,
         departure_time: datetime,
-        m10: int,
-        cache_key: tuple[Route, date, int, int],
+        cache_key: tuple[Route, datetime],
         cancel_event: threading.Event | None,
     ) -> DriveDuration:
         with self._lock:
             check_cancelled(cancel_event)
+            _check_future_departure(departure_time)
             cached = self._dur_cache.get(cache_key)
             if cached is not None:
                 return cached
 
             session = self._ensure_session_locked()
+            m10 = departure_time.minute
             try:
                 cancel_args = (
                     {"cancel_event": cancel_event} if cancel_event is not None else {}
@@ -1008,6 +1085,7 @@ class NaverMapsPlaywrightProvider:
                 duration_seconds=secs,
                 fetched_at=datetime.now(tz=departure_time.tzinfo),
                 raw_text=f"네이버 지도: {secs // 60}분",
+                sampled_departure_time=departure_time,
             )
             self._dur_cache.set(cache_key, duration)
             _log.info(
@@ -1133,7 +1211,10 @@ class NaverMapsPlaywrightProvider:
         check_cancelled(cancel_event)
         # 1) 경로가 바뀌면 새로 검색
         if self._current_route != route:
-            self._search_adapter.navigate_and_search(page, route)
+            cancel_args = (
+                {"cancel_event": cancel_event} if cancel_event is not None else {}
+            )
+            self._search_adapter.navigate_and_search(page, route, **cancel_args)
             self._current_route = route
             self._modal_open = False
 
@@ -1144,6 +1225,7 @@ class NaverMapsPlaywrightProvider:
             self._modal_open = True
 
         check_cancelled(cancel_event)
+        _check_future_departure(departure_time)
         # 3) 시간 설정 + 결과 읽기
         return self._departure_picker.set_time_and_read(
             page, departure_time.hour, m10, departure_time,
@@ -1217,6 +1299,8 @@ class NaverMapsPlaywrightProvider:
 
 class NaverMapsPlaywrightPoolProvider:
     name = "naver_playwright"
+    forecast_grid_minutes = _MINUTE_RESOLUTION
+    forecast_lead_time = _FORECAST_LEAD_TIME
 
     def __init__(self, settings: Settings) -> None:
         pool_size = max(1, settings.naver_session_pool_size)

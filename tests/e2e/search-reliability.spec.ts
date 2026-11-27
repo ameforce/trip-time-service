@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
+declare let _map: { getCenter: () => { lat: number; lng: number } } | null;
+
 const route = { origin: '서울역', destination: '판교역' };
 const arrival = {
   route,
@@ -154,7 +156,7 @@ test('shows busy and validation errors from HTTP responses without automatic ret
   await page.route('**/v1/trip/arrival-time-with-recommendation/stream', (request) => {
     attempts++;
     return attempts === 1
-      ? request.fulfill({ status: 503, json: { detail: 'busy' } })
+      ? request.fulfill({ status: 503, json: { reason: 'capacity_exhausted' } })
       : request.fulfill({ status: 422, json: { detail: [{ msg: '잘못된 시간' }, { msg: '경로 확인 필요' }] } });
   });
   await page.goto('/');
@@ -267,6 +269,173 @@ test('a busy deadline baseline leaves an explicit retry without starting a recom
   expect(recommendationRequests).toBe(1);
 });
 
+
+for (const scenario of [
+  { name: '503 provider failure', response: { status: 503, json: { reason: 'provider_degraded' } } },
+  { name: 'provider bucket', response: { status: 503, json: { provider_bucket: 'panel_parse_timeout' } } },
+  { name: 'unusable payload', response: { json: { departure_time: 'invalid' } } },
+  { name: 'invalid JSON', response: { contentType: 'application/json', body: 'invalid' } },
+]) {
+  test('recommends without the optional deadline baseline after ' + scenario.name, async ({ page }) => {
+    await configure(page);
+    await page.clock.setFixedTime(new Date('2030-06-04T06:00:00Z'));
+    const requests: string[] = [];
+    await page.route('**/v1/trip/arrival-time', (request) => {
+      requests.push('baseline');
+      return request.fulfill(scenario.response);
+    });
+    await page.route('**/v1/trip/recommended-departure-time/stream', (request) => {
+      requests.push('recommendation');
+      return request.fulfill({
+        contentType: 'text/event-stream',
+        body: frame('recommendation', recommendationFor(request.request().postDataJSON().desired_arrival_time)) +
+          frame('end', { ok: true }),
+      });
+    });
+    await page.goto('/');
+    await enterRoute(page);
+    await page.locator('#tab-departure').click();
+    await page.locator('#search-btn').click();
+    await expect(page.locator('#results > *').first()).toHaveClass(/recommendation-card/);
+    await expect(page.locator('.baseline-unavailable')).toContainText('지금 출발할 때의 예상 시간을 불러오지 못했습니다');
+    await expect(page.locator('#search-status')).toContainText('지금 출발할 때의 예상 시간을 불러오지 못했습니다');
+    await expect(page.locator('#retry-search')).toBeHidden();
+    await expect(page.locator('#search-btn')).toBeEnabled();
+    expect(requests).toEqual(['baseline', 'recommendation']);
+  });
+}
+
+test('shared and unclassified baseline failures stop before requesting a recommendation', async ({ page }) => {
+  await configure(page);
+  await page.clock.setFixedTime(new Date('2030-06-04T06:00:00Z'));
+  const failures = [
+    { data: { reason: 'provider_degraded', provider_bucket: 'ncaptcha_backoff' }, message: '조회가 잠시 제한' },
+    { data: { reason: 'request_cancelled' }, message: '검색이 중단' },
+    { data: { reason: 'provider_degraded', provider_bucket: 'coords_unresolved' }, message: '좌표를 확인할 수 없어' },
+    { data: { detail: '서비스에 연결할 수 없습니다.' }, message: '서비스에 연결할 수 없습니다.' },
+  ];
+  let baselineRequests = 0;
+  let recommendationRequests = 0;
+  await page.route('**/v1/trip/arrival-time', (request) =>
+    request.fulfill({ status: 503, json: failures[baselineRequests++].data })
+  );
+  await page.route('**/v1/trip/recommended-departure-time/stream', (request) => {
+    recommendationRequests++;
+    return request.abort();
+  });
+  await page.goto('/');
+  await enterRoute(page);
+  await page.locator('#tab-departure').click();
+  for (const failure of failures) {
+    await page.locator('#search-btn').click();
+    await expect(page.locator('#error-msg')).toContainText(failure.message);
+    await expect(page.locator('#search-btn')).toBeEnabled();
+  }
+  expect(baselineRequests).toBe(failures.length);
+  expect(recommendationRequests).toBe(0);
+});
+
+test('keeps the baseline until the recommendation has a successful terminal frame', async ({ page }) => {
+  await configure(page);
+  await page.clock.setFixedTime(new Date('2030-06-04T06:00:00Z'));
+  let attempts = 0;
+  await page.route('**/v1/trip/arrival-time-with-recommendation/stream', (request) => {
+    attempts++;
+    return request.fulfill({
+      contentType: 'text/event-stream',
+      body: frame('arrival', { arrival }) +
+        frame('recommendation', recommendationFor(arrival.arrival_time)) +
+        (attempts === 1 ? '' : frame('end', { ok: true })),
+    });
+  });
+  await page.goto('/');
+  await enterRoute(page);
+  await page.locator('#search-btn').click();
+  await expect(page.locator('.baseline-card')).toBeVisible();
+  await expect(page.locator('.recommendation-card')).toHaveCount(0);
+  await expect(page.locator('#error-msg')).toContainText('검색 응답이 끝나기 전에 연결이 끊겼습니다');
+  await expect(page.locator('#search-btn')).toBeEnabled();
+  expect(attempts).toBe(1);
+
+  await page.getByRole('button', { name: '다시 시도' }).click();
+  await expect(page.locator('.recommendation-card')).toBeVisible();
+  await expect(page.locator('#error-box')).toBeHidden();
+  expect(attempts).toBe(2);
+});
+
+test('free-text geocode results are cached by request query and map center', async ({ page }) => {
+  await configure(page);
+  const requestCenters: Array<[string | null, string | null]> = [];
+  const seoul = { lat: 37.5665, lon: 126.9780 };
+  const busan = { lat: 35.1796, lon: 129.0756 };
+  await page.route('**/api/geocode?*', (request) => {
+    const url = new URL(request.request().url());
+    expect(url.searchParams.get('q')).toBe('중앙역');
+    const centerLat = url.searchParams.get('center_lat');
+    requestCenters.push([centerLat, url.searchParams.get('center_lon')]);
+    return request.fulfill({ json: [centerLat === '37.566500' ? seoul : busan] });
+  });
+  await page.goto('/');
+  await expect(page.locator('#map-status')).toContainText('이동 시간 검색은 계속');
+  const results = await page.evaluate(async ({ first, second }) => {
+    let center = first;
+    const map = { getCenter: () => ({ lat: center.lat, lng: center.lon }) };
+    // Drive the real route-coordinate lookup while controlling the map bias.
+    const lookup = window as unknown as {
+      resolveRouteCriticalCoords: (query: string, selection: null) => Promise<unknown>;
+    };
+    _map = map;
+    try {
+      const firstLookup = await lookup.resolveRouteCriticalCoords(' 중앙역 ', null);
+      const sameCenter = await lookup.resolveRouteCriticalCoords('중앙역', null);
+      center = second;
+      const secondLookup = await lookup.resolveRouteCriticalCoords('중앙역', null);
+      center = first;
+      const backToFirst = await lookup.resolveRouteCriticalCoords('중앙역', null);
+      return [firstLookup, sameCenter, secondLookup, backToFirst];
+    } finally {
+      _map = null;
+    }
+  }, { first: seoul, second: busan });
+
+  expect(results).toEqual([seoul, seoul, busan, seoul]);
+  expect(requestCenters).toEqual([
+    ['37.566500', '126.978000'],
+    ['35.179600', '129.075600'],
+  ]);
+});
+
+test('shows a different provider sample time without changing the requested trip or calendar', async ({ page }) => {
+  await configure(page);
+  await page.clock.setFixedTime(new Date('2030-06-04T04:00:00Z'));
+  const offGridArrival = {
+    ...arrival,
+    departure_time: '2030-06-04T05:04:00Z',
+    arrival_time: '2030-06-04T05:35:12Z',
+  };
+  const samples = ['2030-06-04T05:10:00Z', '2030-06-04T14:04:00+09:00'];
+  await page.route('**/v1/trip/arrival-time-with-recommendation/stream', (request) => {
+    expect(request.request().postDataJSON().departure_time).toBe('2030-06-04T05:04:00.000Z');
+    return request.fulfill({
+      contentType: 'text/event-stream',
+      body: frame('arrival', { arrival: { ...offGridArrival, sampled_departure_time: samples.shift() } }) +
+        frame('recommendation', recommendationFor(offGridArrival.arrival_time)) +
+        frame('end', { ok: true }),
+    });
+  });
+  await page.goto('/');
+  await enterRoute(page);
+  await page.locator('#datetime-input').fill('2030-06-04T14:04');
+  await page.locator('#search-btn').click();
+  await expect(page.locator('.row-baseline-departure .value')).toHaveText('2030-06-04 14:04');
+  await expect(page.locator('.sample-time-note')).toHaveText('교통 정보 조회 기준 시각 2030-06-04 14:10');
+  const calendar = await page.getByRole('link', { name: '추천 일정 추가' }).getAttribute('href');
+  expect(new URL(calendar!).searchParams.get('dates')).toBe('20300604T050400Z/20300604T053512Z');
+
+  await page.locator('#search-btn').click();
+  await expect(page.locator('.recommendation-card')).toBeVisible();
+  await expect(page.locator('.sample-time-note')).toHaveCount(0);
+});
 
 test('deadline search succeeds on the fixture service at capacity one', async ({ page }) => {
   test.skip(process.env.TTS_E2E_FIXTURE_MODE !== '1' || process.env.TTS_PROVIDER !== 'mock' ||

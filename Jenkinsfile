@@ -55,6 +55,7 @@ pipeline {
     stage("Checkout") {
       steps {
         script {
+          env.DEPLOY_ATTEMPTED = "false"
           env.DEPLOY_SUCCEEDED = "false"
         }
         checkout scm
@@ -170,10 +171,11 @@ pipeline {
             script: 'export PATH="$HOME/.local/bin:$PATH"; uv run --no-sync python scripts/version/resolve_version.py',
             returnStdout: true
           ).trim()
-          env.SHORT_SHA = sh(
-            script: "git rev-parse --short=8 HEAD",
+          env.APP_REVISION = sh(
+            script: "git rev-parse --verify HEAD",
             returnStdout: true
           ).trim()
+          env.SHORT_SHA = env.APP_REVISION.substring(0, 8)
           env.BRANCH_SLUG = env.BRANCH_NAME
             .toLowerCase()
             .replaceAll("[^a-z0-9._-]", "-")
@@ -207,6 +209,7 @@ pipeline {
           env.DEPLOY_KNOWN_HOSTS = "${env.WORKSPACE}/.ci-artifacts/enm-known-hosts"
 
           echo "APP_VERSION=${env.APP_VERSION}"
+          echo "APP_REVISION=${env.APP_REVISION}"
           echo "DEPLOY_APP_VERSION=${env.DEPLOY_APP_VERSION}"
           echo "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}"
           echo "IMAGE_REF=${env.REMOTE_IMAGE_REF}"
@@ -221,7 +224,7 @@ pipeline {
         sh '''
           mkdir -p .ci-artifacts
           BUNDLE_FILE=".ci-artifacts/triptime-${APP_VERSION}-${SHORT_SHA}.tgz"
-          git archive --format=tgz -o "$BUNDLE_FILE" HEAD
+          git archive --format=tgz -o "$BUNDLE_FILE" "$APP_REVISION"
           echo "$BUNDLE_FILE" > .ci-artifacts/current-bundle.path
         '''
         script {
@@ -250,6 +253,7 @@ pipeline {
         sh '''
           set -eu
           mkdir -p .ci-artifacts
+          rm -f ".ci-artifacts/release-smoke-$BUILD_NUMBER.verified"
           ssh-keyscan -p "$EFFECTIVE_ENM_PORT" "$EFFECTIVE_ENM_HOST" > "$DEPLOY_KNOWN_HOSTS"
           test -s "$DEPLOY_KNOWN_HOSTS"
         '''
@@ -262,9 +266,11 @@ pipeline {
         ]) {
           withEnv([
             "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}",
+            "DEPLOY_ATTEMPT_ID=${env.BUILD_TAG}",
             "IMAGE_REF=${env.REMOTE_IMAGE_REF}",
             "IMAGE_RETENTION_COUNT=${params.IMAGE_RETENTION_COUNT}",
             "APP_VERSION=${env.DEPLOY_APP_VERSION}",
+            "APP_REVISION=${env.APP_REVISION}",
             "SOURCE_ARCHIVE_PATH=${env.DEPLOY_BUNDLE_PATH}",
             "ENM_HOST=${env.EFFECTIVE_ENM_HOST}",
             "ENM_PORT=${env.EFFECTIVE_ENM_PORT}",
@@ -282,8 +288,9 @@ pipeline {
             "TRAEFIK_ENTRYPOINTS=${params.TRAEFIK_ENTRYPOINTS}",
             "TRAEFIK_TLS_CERTRESOLVER=${params.TRAEFIK_TLS_CERTRESOLVER}"
           ]) {
-            sh "bash deploy/enm/deploy.sh"
             script {
+              env.DEPLOY_ATTEMPTED = "true"
+              sh "bash deploy/enm/deploy.sh"
               env.DEPLOY_SUCCEEDED = "true"
             }
           }
@@ -300,11 +307,13 @@ pipeline {
       }
       steps {
         sh '''
+          set -eu
           export PATH="$HOME/.local/bin:$PATH"
           uv run --no-sync python deploy/enm/smoke.py \
             --base-url "https://$TARGET_DOMAIN" \
             --expected-version "$DEPLOY_APP_VERSION" \
             --artifact ".ci-artifacts/release-smoke-$BUILD_NUMBER.json"
+          touch ".ci-artifacts/release-smoke-$BUILD_NUMBER.verified"
         '''
       }
       post {
@@ -319,10 +328,14 @@ pipeline {
   }
 
   post {
-    failure {
+    unsuccessful {
       script {
-        if (env.DEPLOY_SUCCEEDED != "true") {
-          echo "No successful deployment in this build. Jenkins rollback skipped."
+        if (env.DEPLOY_ATTEMPTED != "true") {
+          echo "No deployment started in this build. Jenkins rollback skipped."
+          return
+        }
+        if (fileExists(".ci-artifacts/release-smoke-${env.BUILD_NUMBER}.verified")) {
+          echo "Public API verification succeeded. Jenkins rollback skipped."
           return
         }
 
@@ -338,6 +351,7 @@ pipeline {
           withEnv([
             "DEPLOY_ENV=${env.EFFECTIVE_DEPLOY_ENV}",
             "ROLLBACK_EXPECTED_IMAGE_REF=${env.REMOTE_IMAGE_REF}",
+            "ROLLBACK_EXPECTED_ATTEMPT_ID=${env.BUILD_TAG}",
             "ENM_HOST=${env.EFFECTIVE_ENM_HOST}",
             "ENM_PORT=${env.EFFECTIVE_ENM_PORT}",
             "SSH_STRICT_HOST_KEY_CHECKING=yes",
@@ -355,10 +369,13 @@ pipeline {
             "TRAEFIK_TLS_CERTRESOLVER=${params.TRAEFIK_TLS_CERTRESOLVER}"
           ]) {
             int rollbackStatus = sh(script: "bash deploy/enm/rollback.sh", returnStatus: true)
-            if (rollbackStatus != 0) {
+            if (rollbackStatus == 3) {
+              echo "No unverified candidate from this build is active. Jenkins rollback skipped."
+            } else if (rollbackStatus != 0) {
               error("Rollback failed (exit ${rollbackStatus}). Check deployment logs.")
+            } else {
+              echo "Rollback completed."
             }
-            echo "Rollback completed."
           }
         }
       }

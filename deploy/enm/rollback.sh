@@ -37,6 +37,7 @@ HEALTHCHECK_RETRIES="${HEALTHCHECK_RETRIES:-30}"
 HEALTHCHECK_DELAY_SECONDS="${HEALTHCHECK_DELAY_SECONDS:-2}"
 ROLLBACK_IMAGE_REF="${ROLLBACK_IMAGE_REF:-}"
 ROLLBACK_EXPECTED_IMAGE_REF="${ROLLBACK_EXPECTED_IMAGE_REF:-}"
+ROLLBACK_EXPECTED_ATTEMPT_ID="${ROLLBACK_EXPECTED_ATTEMPT_ID:-}"
 SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-yes}"
 SSH_KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${HOME}/.ssh/known_hosts}"
 # Do not force TTS_PROVIDER on rollback: previous images may only accept
@@ -81,6 +82,7 @@ HEALTHCHECK_RETRIES="$(printf '%q' "${HEALTHCHECK_RETRIES}")"
 HEALTHCHECK_DELAY_SECONDS="$(printf '%q' "${HEALTHCHECK_DELAY_SECONDS}")"
 ROLLBACK_IMAGE_REF="$(printf '%q' "${ROLLBACK_IMAGE_REF}")"
 ROLLBACK_EXPECTED_IMAGE_REF="$(printf '%q' "${ROLLBACK_EXPECTED_IMAGE_REF}")"
+ROLLBACK_EXPECTED_ATTEMPT_ID="$(printf '%q' "${ROLLBACK_EXPECTED_ATTEMPT_ID}")"
 TTS_CHROME_NO_SANDBOX="$(printf '%q' "${TTS_CHROME_NO_SANDBOX}")"
 
 normalize_optional() {
@@ -96,6 +98,7 @@ NETWORK_NAME="\$(normalize_optional "\${NETWORK_NAME}")"
 TRAEFIK_TLS_CERTRESOLVER="\$(normalize_optional "\${TRAEFIK_TLS_CERTRESOLVER}")"
 ROLLBACK_IMAGE_REF="\$(normalize_optional "\${ROLLBACK_IMAGE_REF}")"
 ROLLBACK_EXPECTED_IMAGE_REF="\$(normalize_optional "\${ROLLBACK_EXPECTED_IMAGE_REF}")"
+ROLLBACK_EXPECTED_ATTEMPT_ID="\$(normalize_optional "\${ROLLBACK_EXPECTED_ATTEMPT_ID}")"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "[rollback] docker command not found on remote host" >&2
@@ -107,47 +110,65 @@ if ! command -v curl >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -f "\${ENV_FILE}" ]]; then
-  echo "[rollback] env file not found on remote host: \${ENV_FILE}" >&2
-  exit 1
-fi
-
-target_image="\${ROLLBACK_IMAGE_REF}"
-if [[ -z "\${target_image}" ]]; then
-  if [[ -f "\${ROLLBACK_DIR}/previous-image.txt" ]]; then
-    target_image="\$(cat "\${ROLLBACK_DIR}/previous-image.txt")"
-  fi
-fi
-
-if [[ -z "\${target_image}" ]]; then
-  echo "[rollback] target rollback image not found. Set ROLLBACK_IMAGE_REF or previous-image.txt" >&2
-  exit 1
-fi
-
 check_health() {
   curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:\${HOST_PORT}/healthz" >/dev/null
 }
 
+current_id=""
 current_image=""
-if docker container inspect "\${CONTAINER_NAME}" >/dev/null 2>&1; then
-  current_image="\$(docker inspect --format '{{.Config.Image}}' "\${CONTAINER_NAME}")"
+current_attempt=""
+current_previous=""
+container_format='{{println .Id}}{{println .Config.Image}}{{println (index .Config.Labels "triptime_deploy_attempt")}}{{index .Config.Labels "triptime_previous_image"}}'
+if current="\$(docker container inspect --format "\${container_format}" "\${CONTAINER_NAME}" 2>/dev/null)"; then
+  mapfile -t fields <<< "\${current}"
+  current_id="\${fields[0]}"
+  current_image="\${fields[1]:-}"
+  current_attempt="\${fields[2]:-}"
+  current_previous="\${fields[3]:-}"
+elif ! active_id="\$(docker container ls --all --quiet --filter "name=^/\${CONTAINER_NAME}$")" \
+  || [[ -n "\${active_id}" ]]; then
+  echo "[rollback] cannot determine active container state" >&2
+  exit 1
 fi
-if [[ -n "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
-  if [[ "\${current_image}" == "\${target_image}" ]] && check_health; then
-    echo "[rollback] previous image is already running and healthy"
-    exit 0
+
+if [[ -n "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" ]]; then
+  if [[ -z "\${current_id}" || "\${current_attempt}" != "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" \
+    || "\${current_image}" != "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
+    echo "[rollback] no active candidate from this deployment attempt"
+    exit 3
   fi
+  target_image="\${current_previous}"
+else
+  target_image="\${ROLLBACK_IMAGE_REF}"
+  if [[ -z "\${target_image}" && -f "\${ROLLBACK_DIR}/previous-image.txt" ]]; then
+    target_image="\$(cat "\${ROLLBACK_DIR}/previous-image.txt")"
+  fi
+fi
+
+if [[ -n "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
   if [[ "\${current_image}" != "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
+    if [[ -n "\${target_image}" && "\${current_image}" == "\${target_image}" ]] && check_health; then
+      echo "[rollback] previous image is already running and healthy"
+      exit 0
+    fi
     echo "[rollback] active container no longer runs the failed deployment image" >&2
     exit 1
   fi
 fi
 
+if [[ -z "\${target_image}" ]]; then
+  echo "[rollback] target rollback image not found" >&2
+  exit 1
+fi
+if [[ ! -f "\${ENV_FILE}" ]]; then
+  echo "[rollback] env file not found on remote host: \${ENV_FILE}" >&2
+  exit 1
+fi
 if ! docker image inspect "\${target_image}" >/dev/null 2>&1; then
   docker pull "\${target_image}" >/dev/null
 fi
-if [[ -n "\${current_image}" ]]; then
-  docker rm -f "\${CONTAINER_NAME}" >/dev/null
+if [[ -n "\${current_id}" ]]; then
+  docker rm -f "\${current_id}" >/dev/null
 fi
 
 run_container() {

@@ -166,6 +166,9 @@ def test_release_smoke_reports_bounded_public_api_evidence(
             assert checks[mode]["bucket"] == expected_bucket
         else:
             assert checks[mode]["recommendation_received"] is True
+            first = checks[mode]["first_usable_ms"]
+            recommendation = checks[mode]["recommendation_ms"]
+            assert 0 <= first <= recommendation <= checks[mode]["elapsed_ms"]
     if not expected_bucket:
         assert checks["depart_at"]["arrival_received"] is True
 

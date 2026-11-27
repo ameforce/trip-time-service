@@ -34,8 +34,8 @@ let _searchInProgress = false;
 let _searchController = null;
 let _routeInputRevision = 0;
 
-// geocode 결과 캐시 (address → {lat, lon})
-var _geocodeCache = {};
+// geocode 요청 URL → 좌표. 검색어와 지도 중심을 함께 사용한다.
+const _geocodeCache = new Map();
 
 // 후보 상세 tooltip portal 상태
 let _candidateTooltipPortal = null;
@@ -1272,22 +1272,18 @@ function addMarker(latlng, opts) {
  * 주소 → 좌표 변환 (캐시 우선).
  * 자동완성 선택 좌표가 있으면 즉시 반환, 캐시 히트면 네트워크 생략.
  */
-function geocodeQueryToCoords(query, cacheAlias, signal) {
+function geocodeQueryToCoords(query, signal) {
   var geocodeQuery = String(query || "").trim();
   if (!geocodeQuery) return Promise.resolve(null);
-  if (_geocodeCache[geocodeQuery]) return Promise.resolve(_geocodeCache[geocodeQuery]);
-  return fetch(
-    "/api/geocode?q=" +
-      encodeURIComponent(geocodeQuery) +
-      buildMapCenterQueryString(),
-    { signal: signal }
-  )
-    .then(function (res) { return res.json(); })
+  var url = "/api/geocode?q=" + encodeURIComponent(geocodeQuery) + buildMapCenterQueryString();
+  var cached = _geocodeCache.get(url);
+  if (cached) return Promise.resolve(cached);
+  return fetch(url, { signal: signal })
+    .then(function (res) { return res.ok ? res.json() : null; })
     .then(function (data) {
-      if (!data || data.length === 0) return null;
-      var coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
-      _geocodeCache[geocodeQuery] = coords;
-      if (cacheAlias && cacheAlias !== geocodeQuery) _geocodeCache[cacheAlias] = coords;
+      var coords = normalizeCoords(Array.isArray(data) ? data[0] : null);
+      if (!coords) return null;
+      _geocodeCache.set(url, coords);
       if (data[0].source) {
         console.info(
           "[geocode]",
@@ -1309,8 +1305,7 @@ function resolveCoords(address, selectedCoords, signal) {
   if (hasStableSelection(selectedCoords) && selectedCoords.coords_ready === false) {
     return Promise.resolve(null);
   }
-  var geocodeQuery = String(address || "").trim();
-  return geocodeQuery ? geocodeQueryToCoords(geocodeQuery, address, signal) : Promise.resolve(null);
+  return geocodeQueryToCoords(address, signal);
 }
 
 function resolveRouteCriticalCoords(address, selectedCoords, signal) {
@@ -1319,9 +1314,7 @@ function resolveRouteCriticalCoords(address, selectedCoords, signal) {
     return Promise.resolve(normalizedSelectedCoords);
   }
   if (hasStableSelection(selectedCoords)) {
-    var query = getStableSearchQuery(address, selectedCoords);
-    if (!query) return Promise.resolve(null);
-    return geocodeQueryToCoords(query, address, signal);
+    return geocodeQueryToCoords(getStableSearchQuery(address, selectedCoords), signal);
   }
   return resolveCoords(address, selectedCoords, signal);
 }
@@ -2135,10 +2128,12 @@ function strictRouteContractHeaders() {
 
 function tripRequestError(payload, status, fallback) {
   var data = payload || {};
-  var reason = data.reason || (status === 503 ? "capacity_exhausted" : "");
+  var reason = data.reason;
+  var providerBucket = data.provider_bucket;
   var messages = {
     capacity_exhausted: "검색 요청이 많습니다. 잠시 후 다시 시도해 주세요.",
     stream_stall_timeout: "검색 응답이 지연되었습니다. 잠시 후 다시 시도해 주세요.",
+    request_cancelled: "검색이 중단되었습니다.",
     panel_parse_timeout: "네이버 교통 정보를 제시간에 읽지 못했습니다. 잠시 후 다시 시도해 주세요.",
     arrival_deadline_in_past: "현재 시점 이전으로는 조회를 할 수 없습니다.",
     provider_retry_exhausted: "네이버 교통 정보 응답이 지연되었습니다. 잠시 후 다시 시도해 주세요.",
@@ -2149,15 +2144,39 @@ function tripRequestError(payload, status, fallback) {
   if (Array.isArray(detail)) {
     detail = detail.map(function (item) { return item && item.msg; }).filter(Boolean).join(" / ");
   }
-  var message = (Object.hasOwn(messages, data.provider_bucket) && messages[data.provider_bucket]) ||
+  var message = (Object.hasOwn(messages, providerBucket) && messages[providerBucket]) ||
     (Object.hasOwn(messages, reason) && messages[reason]) ||
     (typeof detail === "string" && detail) || fallback;
   var error = new Error(message);
-  error.retryable = data.provider_bucket !== "coords_unresolved" &&
+  error.reason = reason;
+  error.providerBucket = providerBucket;
+  error.retryable = data.retryable !== false &&
+    reason !== "coords_unresolved" && providerBucket !== "coords_unresolved" &&
     (status >= 500 || reason === "capacity_exhausted" ||
       reason === "stream_stall_timeout" || reason === "provider_degraded" ||
       reason === "worker_failed" || (status === 0 && !reason));
   return error;
+}
+
+function canSkipDepartureBaseline(error) {
+  var sharedFailures = ["capacity_exhausted", "ncaptcha_backoff", "request_cancelled", "coords_unresolved"];
+  return error.name !== "AbortError" &&
+    !sharedFailures.includes(error.reason) && !sharedFailures.includes(error.providerBucket) &&
+    (error.reason === "provider_degraded" ||
+      ["panel_parse_timeout", "provider_retry_exhausted"].includes(error.providerBucket));
+}
+
+function hasUsableDepartureBaseline(data) {
+  var offsetSuffix = /(?:Z|[+-]\d{2}:\d{2})$/;
+  if (!data || typeof data.departure_time !== "string" || typeof data.arrival_time !== "string" ||
+      !offsetSuffix.test(data.departure_time) || !offsetSuffix.test(data.arrival_time)) {
+    return false;
+  }
+  var departure = parseIsoDatetime(data.departure_time);
+  var arrival = parseIsoDatetime(data.arrival_time);
+  return departure && arrival && departure <= arrival &&
+    Number.isFinite(data.duration_seconds) && data.duration_seconds >= 0 &&
+    typeof data.provider === "string";
 }
 
 async function fetchTrip(path, body, signal) {
@@ -2186,13 +2205,18 @@ async function readTripStream(path, body, signal, handlers) {
   var decoder = new TextDecoder("utf-8");
   var buffer = "";
   var recommendation = null;
+  var completed = false;
   var candidates = [];
   var progress = null;
 
   function dispatch(event, data) {
-    if (event === "error" || event === "busy" || (event === "end" && data.ok === false)) {
+    if (event === "error" || event === "busy" || (event === "end" && data.ok !== true)) {
       if (event === "busy" && !data.reason) data.reason = "capacity_exhausted";
       throw tripRequestError(data, 0, "추천 계산 중 오류가 발생했습니다.");
+    }
+    if (event === "end") {
+      completed = true;
+      return;
     }
     if (event === "arrival" && handlers.onArrival) {
       progress = data.progress || progress;
@@ -2209,7 +2233,7 @@ async function readTripStream(path, body, signal, handlers) {
   function consumeBuffer() {
     var events = buffer.split(/\r?\n\r?\n/);
     buffer = events.pop();
-    events.forEach(function (block) {
+    for (var block of events) {
       var event = "message";
       var data = [];
       block.split(/\r?\n/).forEach(function (line) {
@@ -2217,20 +2241,16 @@ async function readTripStream(path, body, signal, handlers) {
         if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
       });
       if (data.length) dispatch(event, JSON.parse(data.join("\n")) || {});
-    });
+      if (completed) break;
+    }
   }
 
   try {
-    while (true) {
+    while (!completed) {
       var chunk = await reader.read();
       signal.throwIfAborted();
       if (chunk.done) break;
       buffer += decoder.decode(chunk.value, { stream: true });
-      consumeBuffer();
-    }
-    buffer += decoder.decode();
-    if (buffer.trim()) {
-      buffer += "\n\n";
       consumeBuffer();
     }
   } finally {
@@ -2240,6 +2260,7 @@ async function readTripStream(path, body, signal, handlers) {
     reader.releaseLock();
   }
 
+  if (!completed) throw new Error("검색 응답이 끝나기 전에 연결이 끊겼습니다. 다시 시도해 주세요.");
   if (!recommendation) throw new Error("추천 결과를 수신하지 못했습니다.");
   if (candidates.length && !recommendation.candidate_evaluations?.length) {
     recommendation.candidate_evaluations = candidates;
@@ -2650,6 +2671,15 @@ function computeArrivalFromDeparture(departureTime, durationSeconds) {
   return new Date(departure.getTime() + durationSeconds * 1000).toISOString();
 }
 
+function buildSampledDepartureNote(data) {
+  if (!data) return "";
+  var requested = parseIsoDatetime(data.departure_time);
+  var sampled = parseIsoDatetime(data.sampled_departure_time);
+  if (!requested || !sampled || requested.getTime() === sampled.getTime()) return "";
+  return '<p class="progress-copy sample-time-note">교통 정보 조회 기준 시각 ' +
+    formatDatetime(data.sampled_departure_time) + "</p>";
+}
+
 function buildAnalysisCard(data, context, options) {
   var ctx = context || _renderContext("departure");
   var opts = options || {};
@@ -2723,6 +2753,7 @@ function buildAnalysisCard(data, context, options) {
     "      </div>" +
     "    </div>" +
     "  </div>" +
+    buildSampledDepartureNote(opts.baseline) +
     '  <div class="calc-explain analysis-tooltip-panel">' +
     '    <div class="calc-explain-title">&#128209; 보정 산출 근거</div>' +
          candidateRow +
@@ -2804,6 +2835,7 @@ function buildBaselineArrivalCard(data, context) {
     '      <span class="value">' + formatDatetime(data.arrival_time) + "</span>" +
     "    </div>" +
     "  </div>" +
+    buildSampledDepartureNote(data) +
     '  <div class="result-duration">' +
     '    <div class="duration-big">' + durationText + "</div>" +
     '    <div class="duration-label">' + ctx.baselineDurationLabel + "</div>" +
@@ -2849,7 +2881,7 @@ function renderDeparturePending(arrivalData, context, immediateSafe, progress) {
       buildAnalysisCard(
         pendingAnalysis,
         ctx,
-        { hideCandidateSummary: true }
+        { hideCandidateSummary: true, baseline: arrivalData }
       ) +
       buildLiveProgressCard(prog)
     );
@@ -2899,13 +2931,17 @@ function renderDeparturePending(arrivalData, context, immediateSafe, progress) {
   setupAnalysisTooltipPanels();
 }
 
+const DEPARTURE_BASELINE_UNAVAILABLE = "지금 출발할 때의 예상 시간을 불러오지 못했습니다.";
+
 function renderDepartureResult(data, baselineArrivalData, context, immediateSafe) {
   hideCandidateTooltip(true);
   var ctx = context || _renderContext("departure");
   setProviderName(data.provider);
   var detailsHtml = buildProviderNoticeCard(data.provider);
-  if (baselineArrivalData && ctx.mode !== "arrival") {
-    detailsHtml += buildBaselineArrivalCard(baselineArrivalData, ctx);
+  if (ctx.mode === "departure") {
+    detailsHtml += baselineArrivalData
+      ? buildBaselineArrivalCard(baselineArrivalData, ctx)
+      : '<p class="result-card progress-copy baseline-unavailable">' + DEPARTURE_BASELINE_UNAVAILABLE + "</p>";
   }
   if (immediateSafe && ctx.mode !== "arrival") {
     detailsHtml += buildImmediateSafeCard(immediateSafe);
@@ -2988,7 +3024,9 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     total_candidates: data.total_candidates,
   };
   if (analysisData.latest_departure_time || analysisData.safe_departure_time) {
-    detailsHtml += buildAnalysisCard(analysisData, ctx);
+    detailsHtml += buildAnalysisCard(analysisData, ctx, {
+      baseline: ctx.mode === "arrival" ? baselineArrivalData : null,
+    });
   }
 
   var candidateTooltipHtml = buildCandidateTooltip(data.candidate_evaluations || [], ctx);
@@ -3781,12 +3819,26 @@ async function handleSearch() {
     if (searchMode === "departure") {
       // The baseline and recommendation share server capacity.
       var baselineDeparture = new Date(Math.ceil(Date.now() / 60000) * 60000);
-      var baselineResponse = await fetchTrip("arrival-time", {
-        ...routeBody, departure_time: baselineDeparture.toISOString(),
-      }, signal);
-      var baseline = await baselineResponse.json();
+      var baseline = null;
+      try {
+        var baselineResponse = await fetchTrip("arrival-time", {
+          ...routeBody, departure_time: baselineDeparture.toISOString(),
+        }, signal);
+        baseline = await baselineResponse.json().catch(function (error) {
+          signal.throwIfAborted();
+          if (error.name === "AbortError") throw error;
+          return null;
+        });
+      } catch (baselineError) {
+        if (!isSearchStillCurrent()) return;
+        if (!canSkipDepartureBaseline(baselineError)) throw baselineError;
+      }
       if (!isSearchStillCurrent()) return;
-      receiveBaseline(baseline);
+      if (hasUsableDepartureBaseline(baseline)) {
+        receiveBaseline(baseline);
+      } else {
+        $searchStatus.textContent = DEPARTURE_BASELINE_UNAVAILABLE + " 추천 출발 시각을 계산하고 있습니다.";
+      }
       streamPath = "recommended-departure-time/stream";
       streamBody = { ...routeBody, desired_arrival_time: isoTime };
     }
@@ -3798,7 +3850,8 @@ async function handleSearch() {
         withDisplayRoute(recommendation, displayOrigin, displayDestination),
         baselineData, context, immediateSafe
       );
-      $searchStatus.textContent = "추천 출발 시각을 확인할 수 있습니다.";
+      $searchStatus.textContent = "추천 출발 시각을 확인할 수 있습니다." +
+        (searchMode === "departure" && !baselineData ? " " + DEPARTURE_BASELINE_UNAVAILABLE : "");
     } catch (streamError) {
       if (!isSearchStillCurrent()) return;
       if (!baselineData) throw streamError;

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from concurrent.futures import CancelledError
-from datetime import datetime
+from datetime import datetime, timedelta
 from threading import Event
 from typing import Protocol, runtime_checkable
 
 from trip_time_service.core.models import DriveDuration, Route
+
+FORECAST_DEPARTURE_ELAPSED = "forecast_departure_elapsed"
 
 
 class ProviderError(RuntimeError):
@@ -58,6 +60,14 @@ class RequestRouteProvider(Protocol):
         *,
         cancel_event: Event | None = None,
     ) -> DriveDuration: ...
+
+
+@runtime_checkable
+class ForecastGridProvider(Protocol):
+    """A provider that evaluates exact slots on a fixed minute grid."""
+
+    forecast_grid_minutes: int
+    forecast_lead_time: timedelta
 
 
 def check_cancelled(cancel_event: Event | None) -> None:

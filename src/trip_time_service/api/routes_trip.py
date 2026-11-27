@@ -258,6 +258,7 @@ def _to_arrival_response(result: ArrivalEstimate) -> ArrivalTimeResponse:
         duration_seconds=result.duration.duration_seconds,
         provider=result.provider,
         cache_hit=result.cache_hit,
+        sampled_departure_time=result.duration.sampled_departure_time,
     )
 
 

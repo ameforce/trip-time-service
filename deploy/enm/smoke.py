@@ -166,7 +166,9 @@ def _check_trip(
         entrypoint = "recommended-departure-time"
         time_key = "desired_arrival_time"
     payload = {**ROUTE, time_key: requested_time.isoformat()}
-    saw_arrival = saw_recommendation = False
+    started = time.monotonic()
+    arrival_ms: int | None = None
+    recommendation_ms: int | None = None
     with _response(conn, f"/v1/trip/{entrypoint}/stream", payload=payload) as response:
         media_type = response.getheader("Content-Type", "").partition(";")[0].strip()
         if media_type != "text/event-stream":
@@ -183,28 +185,34 @@ def _check_trip(
                     raise SmokeFailure(reason)
                 raise SmokeFailure("stream_failed")
             if event == "arrival" and depart_at:
-                if saw_arrival:
+                if arrival_ms is not None:
                     raise SmokeFailure("duplicate_final_event")
                 _route_result(
                     _object(data.get("arrival")), "departure_time", "arrival_time"
                 )
-                saw_arrival = True
+                arrival_ms = round((time.monotonic() - started) * 1000)
             if event == "recommendation":
-                if saw_recommendation:
+                if recommendation_ms is not None:
                     raise SmokeFailure("duplicate_final_event")
                 _route_result(
                     data, "recommended_departure_time", "expected_arrival_time"
                 )
-                saw_recommendation = True
+                recommendation_ms = round((time.monotonic() - started) * 1000)
             if event == "end":
-                if not saw_recommendation or (depart_at and not saw_arrival):
+                if recommendation_ms is None or (depart_at and arrival_ms is None):
                     raise SmokeFailure("missing_final_event")
                 return {
                     "provider": PROVIDER,
-                    "arrival_received": saw_arrival,
-                    "recommendation_received": saw_recommendation,
+                    "arrival_received": arrival_ms is not None,
+                    "recommendation_received": True,
+                    "first_usable_ms": (
+                        recommendation_ms
+                        if arrival_ms is None
+                        else min(arrival_ms, recommendation_ms)
+                    ),
+                    "recommendation_ms": recommendation_ms,
                 }
-    if not saw_recommendation or (depart_at and not saw_arrival):
+    if recommendation_ms is None or (depart_at and arrival_ms is None):
         raise SmokeFailure("missing_final_event")
     raise SmokeFailure("missing_end_event")
 

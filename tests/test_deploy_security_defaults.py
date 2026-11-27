@@ -155,6 +155,18 @@ def test_jenkins_dev_runtime_version_uses_deploy_image_tag() -> None:
     assert '"APP_VERSION=${env.APP_VERSION}"' not in deploy_stage
 
 
+def test_jenkins_packages_and_builds_the_exact_checked_out_revision() -> None:
+    jenkinsfile = _read_repo_text("Jenkinsfile")
+    deploy = _read_repo_text("deploy/enm/deploy.sh")
+    dockerfile = _read_repo_text("Dockerfile")
+
+    assert 'script: "git rev-parse --verify HEAD"' in jenkinsfile
+    assert 'git archive --format=tgz -o "$BUNDLE_FILE" "$APP_REVISION"' in jenkinsfile
+    assert '"APP_REVISION=${env.APP_REVISION}"' in jenkinsfile
+    assert r'--build-arg APP_REVISION="\${APP_REVISION}"' in deploy
+    assert 'LABEL org.opencontainers.image.revision=${APP_REVISION}' in dockerfile
+
+
 def test_jenkins_passes_enm_image_retention_count_to_deploy() -> None:
     # Given: Jenkins owns the operator-facing retention knob.
     jenkinsfile = _read_repo_text("Jenkinsfile")
@@ -185,28 +197,38 @@ def test_enm_deploy_image_retention_runs_only_after_successful_health_check() ->
     assert "cleanup_deploy_build_dir" not in failure_block
 
 
-def test_jenkins_only_rolls_back_after_successful_deploy_and_failed_smoke() -> None:
+def test_jenkins_rolls_back_only_an_attempted_deployment_without_smoke_pass() -> None:
     jenkinsfile = _read_repo_text("Jenkinsfile")
     deploy, rest = jenkinsfile.split('stage("Deploy To ENM")', 1)[1].split(
         'stage("Smoke Verify")', 1
     )
     smoke, post = rest.split("\n  post {", 1)
 
-    assert deploy.index('sh "bash deploy/enm/deploy.sh"') < deploy.index(
-        'env.DEPLOY_SUCCEEDED = "true"'
+    assert (
+        deploy.index('env.DEPLOY_ATTEMPTED = "true"')
+        < deploy.index('sh "bash deploy/enm/deploy.sh"')
+        < deploy.index('env.DEPLOY_SUCCEEDED = "true"')
     )
+    assert '"DEPLOY_ATTEMPT_ID=${env.BUILD_TAG}"' in deploy
+    assert 'rm -f ".ci-artifacts/release-smoke-$BUILD_NUMBER.verified"' in deploy
     assert 'env.DEPLOY_SUCCEEDED == "true"' in smoke
     assert 'uv run --no-sync python deploy/enm/smoke.py' in smoke
     assert '--expected-version "$DEPLOY_APP_VERSION"' in smoke
+    assert smoke.index("--artifact") < smoke.index(
+        'touch ".ci-artifacts/release-smoke-$BUILD_NUMBER.verified"'
+    )
     assert "healthz" not in smoke
     assert re.search(
-        r'failure \{\s+script \{\s+if \(env.DEPLOY_SUCCEEDED != "true"\) \{'
+        r'unsuccessful \{\s+script \{\s+if \(env.DEPLOY_ATTEMPTED != "true"\) \{'
+        r'[^}]+return\s+\}\s+if \(fileExists\("[^"]+\.verified"\)\) \{'
         r'[^}]+return\s+\}\s+echo "[^"]+"\s+withCredentials\(',
         post,
     )
     assert '"ROLLBACK_EXPECTED_IMAGE_REF=${env.REMOTE_IMAGE_REF}"' in post
+    assert '"ROLLBACK_EXPECTED_ATTEMPT_ID=${env.BUILD_TAG}"' in post
     assert 'sh(script: "bash deploy/enm/rollback.sh", returnStatus: true)' in post
     assert 'if (rollbackStatus != 0)' in post
+    assert 'if (rollbackStatus == 3)' in post
     assert 'error("Rollback failed (exit ${rollbackStatus}).' in post
 
 

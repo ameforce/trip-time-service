@@ -14,6 +14,8 @@ class Route:
     destination: str
     origin_coords: tuple[float, float] | None = None
     dest_coords: tuple[float, float] | None = None
+    # Text-only requests can discard coordinates derived by the server.
+    allow_text_fallback: bool = False
 
     @classmethod
     def of(
@@ -38,6 +40,7 @@ class DriveDuration:
     duration_seconds: int
     fetched_at: datetime
     raw_text: str | None = None
+    sampled_departure_time: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.duration_seconds < 0:
