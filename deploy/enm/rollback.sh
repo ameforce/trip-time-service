@@ -139,6 +139,7 @@ load_handoff() {
   fi
   handoff_previous_ref="\${record[3]}"
   handoff_previous_id="\${record[4]}"
+  handoff_replaced_id="\${record[2]}"
 }
 
 read_image_version() {
@@ -157,7 +158,12 @@ current_image=""
 current_attempt=""
 current_previous=""
 current_previous_id=""
-container_format='{{println .Id}}{{println .Config.Image}}{{println (index .Config.Labels "triptime_deploy_attempt")}}{{println (index .Config.Labels "triptime_previous_image")}}{{index .Config.Labels "triptime_previous_image_id"}}'
+current_image_id=""
+current_restore_attempt=""
+current_restore_candidate=""
+current_restored_ref=""
+current_running=""
+container_format='{{println .Id}}{{println .Config.Image}}{{println (index .Config.Labels "triptime_deploy_attempt")}}{{println (index .Config.Labels "triptime_previous_image")}}{{println (index .Config.Labels "triptime_previous_image_id")}}{{println .Image}}{{println (index .Config.Labels "triptime_restore_attempt")}}{{println (index .Config.Labels "triptime_restore_candidate")}}{{println (index .Config.Labels "triptime_restored_image_ref")}}{{.State.Running}}'
 if current="\$(docker container inspect --format "\${container_format}" "\${CONTAINER_NAME}" 2>/dev/null)"; then
   mapfile -t fields <<< "\${current}"
   current_id="\${fields[0]}"
@@ -165,6 +171,11 @@ if current="\$(docker container inspect --format "\${container_format}" "\${CONT
   current_attempt="\${fields[2]:-}"
   current_previous="\${fields[3]:-}"
   current_previous_id="\${fields[4]:-}"
+  current_image_id="\${fields[5]:-}"
+  current_restore_attempt="\${fields[6]:-}"
+  current_restore_candidate="\${fields[7]:-}"
+  current_restored_ref="\${fields[8]:-}"
+  current_running="\${fields[9]:-}"
 elif ! active_id="\$(docker container ls --all --quiet --filter "name=^/\${CONTAINER_NAME}$")" \
   || [[ -n "\${active_id}" ]]; then
   echo "[rollback] cannot determine active container state" >&2
@@ -172,9 +183,11 @@ elif ! active_id="\$(docker container ls --all --quiet --filter "name=^/\${CONTA
 fi
 
 target_image_id=""
+resume_restore_id=""
 if [[ -n "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" ]]; then
   handoff_previous_ref=""
   handoff_previous_id=""
+  handoff_replaced_id=""
   if [[ -n "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]] && load_handoff; then
     echo "[rollback] found a recovery record for this deployment attempt"
   fi
@@ -182,9 +195,21 @@ if [[ -n "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" ]]; then
     target_image="\${handoff_previous_ref}"
     target_image_id="\${handoff_previous_id}"
     echo "[rollback] recovering the previous image after an interrupted switch"
+  elif [[ -n "\${current_id}" && -n "\${handoff_previous_id}" \
+    && "\${current_restore_attempt}" == "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" ]]; then
+    if [[ "\${current_restore_candidate}" != "\${ROLLBACK_EXPECTED_IMAGE_REF}" \
+      || "\${current_restored_ref}" != "\${handoff_previous_ref}" \
+      || "\${current_image_id}" != "\${handoff_previous_id}" \
+      || ("\${current_running}" != "true" && "\${current_running}" != "false") ]]; then
+      echo "[rollback] restored container identity does not match the recovery record" >&2
+      exit 1
+    fi
+    target_image="\${handoff_previous_ref}"
+    target_image_id="\${handoff_previous_id}"
+    resume_restore_id="\${current_id}"
   elif [[ -z "\${current_id}" || "\${current_attempt}" != "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" \
     || "\${current_image}" != "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
-    if [[ -n "\${handoff_previous_id}" ]]; then
+    if [[ -n "\${handoff_replaced_id}" && "\${current_id}" == "\${handoff_replaced_id}" ]]; then
       rm -f -- "\${handoff_file}"
     fi
     echo "[rollback] no active candidate from this deployment attempt"
@@ -234,7 +259,7 @@ if [[ ! "\${target_image_id}" =~ ^sha256:[0-9a-f]{64}$ ]] \
   echo "[rollback] the previous image ID is invalid or unavailable" >&2
   exit 1
 fi
-if [[ -n "\${current_id}" ]]; then
+if [[ -n "\${current_id}" && -z "\${resume_restore_id}" ]]; then
   if [[ -n "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" ]]; then
     if [[ ! "\${current_id}" =~ ^[0-9a-f]{64}$ \
       || ! "\${target_image}" =~ ^[-0-9A-Za-z._:/@]+$ ]]; then
@@ -254,11 +279,10 @@ if [[ -n "\${current_id}" ]]; then
   docker rm -f "\${current_id}" >/dev/null
 fi
 
-run_container() {
+create_restored_container() {
   local image_ref="\$1"
   local -a args
   args=(
-    --detach
     --name "\${CONTAINER_NAME}"
     --restart unless-stopped
     --env-file "\${ENV_FILE}"
@@ -268,6 +292,12 @@ run_container() {
     --label "deploy_env=\${DEPLOY_ENV}"
   )
   args+=(--label "triptime_restored_image_ref=\${target_image}")
+  if [[ -n "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" ]]; then
+    args+=(
+      --label "triptime_restore_attempt=\${ROLLBACK_EXPECTED_ATTEMPT_ID}"
+      --label "triptime_restore_candidate=\${ROLLBACK_EXPECTED_IMAGE_REF}"
+    )
+  fi
   if [[ -n "\${restore_version}" ]]; then
     args+=(--env "TTS_VERSION=\${restore_version}")
   fi
@@ -293,16 +323,50 @@ run_container() {
     fi
   fi
 
-  docker run "\${args[@]}" "\${image_ref}" >/dev/null
+  docker create "\${args[@]}" "\${image_ref}"
 }
 
-run_container "\${target_image_id}"
+restored_at_expected_state() {
+  local expected_running="\$1" state
+  state="\$(docker container inspect --format '{{.Id}}|{{.Image}}|{{.State.Running}}' "\${CONTAINER_NAME}")" \
+    && [[ "\${state}" == "\${restored_id}|\${target_image_id}|\${expected_running}" ]]
+}
+
+restored_healthy() {
+  check_health && restored_at_expected_state true
+}
+
+finish_restore() {
+  printf '%s\n' "\${target_image}" > "\${ROLLBACK_DIR}/current-image.txt"
+  rm -f -- "\${handoff_file}"
+  echo "[rollback] health check passed"
+}
+
+if [[ -n "\${resume_restore_id}" ]]; then
+  restored_id="\${resume_restore_id}"
+  if [[ "\${current_running}" == "true" ]] && restored_healthy; then
+    finish_restore
+    exit 0
+  fi
+  if ! restored_at_expected_state "\${current_running}"; then
+    echo "[rollback] the restored container state changed before restart" >&2
+    exit 1
+  fi
+  if [[ "\${current_running}" == "true" ]]; then
+    echo "[rollback] restarting the previous image owned by this attempt"
+    docker restart "\${restored_id}" >/dev/null
+  else
+    echo "[rollback] starting the previous image already created by this attempt"
+    docker start "\${restored_id}" >/dev/null
+  fi
+else
+  restored_id="\$(create_restored_container "\${target_image_id}")"
+  docker start "\${restored_id}" >/dev/null
+fi
 
 for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
-  if check_health; then
-    printf '%s\n' "\${target_image}" > "\${ROLLBACK_DIR}/current-image.txt"
-    rm -f -- "\${handoff_file}"
-    echo "[rollback] health check passed"
+  if restored_healthy; then
+    finish_restore
     exit 0
   fi
   sleep "\${HEALTHCHECK_DELAY_SECONDS}"

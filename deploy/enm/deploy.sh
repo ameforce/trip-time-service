@@ -158,6 +158,10 @@ if ! flock -w 120 9; then
   echo "[deploy] timed out acquiring the environment deployment lock" >&2
   exit 1
 fi
+if [[ -e "\${handoff_file}" ]]; then
+  echo "[deploy] interrupted deployment has an outstanding recovery record" >&2
+  exit 1
+fi
 
 image_repository_for_ref() {
   local image_ref="\$1" image_name="\${1##*/}"
@@ -222,9 +226,6 @@ if previous="\$(docker container inspect --format '{{.Id}}|{{.Config.Image}}|{{.
 elif ! active_id="\$(docker container ls --all --quiet --filter "name=^/\${CONTAINER_NAME}$")" \
   || [[ -n "\${active_id}" ]]; then
   echo "[deploy] cannot determine active container state" >&2
-  exit 1
-elif [[ -e "\${handoff_file}" ]]; then
-  echo "[deploy] interrupted deployment has an outstanding recovery record" >&2
   exit 1
 fi
 if [[ -n "\${APP_REVISION}" && "\${previous_image}" == "\${IMAGE_REF}" ]]; then
@@ -298,6 +299,12 @@ run_container() {
     fi
   else
     args+=(--label "triptime_restored_image_ref=\${previous_image}")
+    if [[ -n "\${DEPLOY_ATTEMPT_ID}" ]]; then
+      args+=(
+        --label "triptime_restore_attempt=\${DEPLOY_ATTEMPT_ID}"
+        --label "triptime_restore_candidate=\${IMAGE_REF}"
+      )
+    fi
     if [[ -n "\${restore_version}" ]]; then
       args+=(--env "TTS_VERSION=\${restore_version}")
     fi
@@ -327,10 +334,14 @@ run_container() {
   # Keep the ID even if starting a successfully created container fails.
   container_id=""
   container_id="\$(docker create "\${args[@]}" "\${image_ref}")" || return
-  if [[ -n "\${override_provider}" && -n "\${verified_image_id}" ]]; then
+  local expected_image_id="\${verified_image_id}"
+  if [[ -z "\${override_provider}" ]]; then
+    expected_image_id="\${image_ref}"
+  fi
+  if [[ -n "\${expected_image_id}" ]]; then
     local created_image_id
     if ! created_image_id="\$(docker container inspect --format '{{.Image}}' "\${container_id}")" \
-      || [[ "\${created_image_id}" != "\${verified_image_id}" ]]; then
+      || [[ "\${created_image_id}" != "\${expected_image_id}" ]]; then
       echo "[deploy] candidate was created from a different image ID" >&2
       return 1
     fi
@@ -353,20 +364,27 @@ read_image_version() {
   fi
 }
 
-if [[ -n "\${previous_id}" ]]; then
-  if [[ -n "\${DEPLOY_ATTEMPT_ID}" ]]; then
-    # Publish the complete handoff before removing the exact active container.
-    handoff_tmp="\$(mktemp "\${ROLLBACK_DIR}/.deploy-handoff.XXXXXX")"
-    if ! printf '%s\n' "\${DEPLOY_ATTEMPT_ID}" "\${IMAGE_REF}" "\${previous_id}" \
-      "\${previous_image}" "\${previous_image_id}" > "\${handoff_tmp}" \
-      || ! mv -fT -- "\${handoff_tmp}" "\${handoff_file}"; then
-      rm -f -- "\${handoff_tmp}"
-      echo "[deploy] could not record the deployment handoff" >&2
-      exit 1
-    fi
-  else
-    rm -f -- "\${handoff_file}"
+write_handoff() {
+  [[ -n "\${DEPLOY_ATTEMPT_ID}" ]] || return 0
+  local replaced_id="\$1" restore_ref="\$2" restore_id="\$3" handoff_tmp
+  if [[ ! "\${replaced_id}" =~ ^[0-9a-f]{64}$ || ! "\${restore_ref}" =~ ^[-0-9A-Za-z._:/@]+$ \
+    || ! "\${restore_id}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "[deploy] cannot record the active container or previous image" >&2
+    return 1
   fi
+  handoff_tmp="\$(mktemp "\${ROLLBACK_DIR}/.deploy-handoff.XXXXXX")" || return 1
+  if ! printf '%s\n' "\${DEPLOY_ATTEMPT_ID}" "\${IMAGE_REF}" "\${replaced_id}" \
+    "\${restore_ref}" "\${restore_id}" > "\${handoff_tmp}" \
+    || ! mv -fT -- "\${handoff_tmp}" "\${handoff_file}"; then
+    rm -f -- "\${handoff_tmp}"
+    echo "[deploy] could not record the deployment handoff" >&2
+    return 1
+  fi
+}
+
+if [[ -n "\${previous_id}" ]]; then
+  # Publish the complete handoff before removing the exact active container.
+  write_handoff "\${previous_id}" "\${previous_image}" "\${previous_image_id}"
   if [[ "\${previous_image}" == "\${IMAGE_REF}" ]]; then
     # A rerun for the same image must preserve the preceding rollback target.
     previous_image="\${predecessor_ref}"
@@ -389,8 +407,11 @@ else
 fi
 
 wait_for_health() {
+  local running
   for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
-    if check_health; then
+    if check_health \
+      && running="\$(docker container inspect --format '{{.Id}}|{{.State.Running}}' "\${CONTAINER_NAME}")" \
+      && [[ "\${running}" == "\${container_id}|true" ]]; then
       return 0
     fi
     sleep "\${HEALTHCHECK_DELAY_SECONDS}"
@@ -423,6 +444,8 @@ if [[ -n "\${previous_image}" ]]; then
     echo "[deploy] the previous image ID is invalid or unavailable" >&2
     exit 1
   fi
+  # Align the record with the exact selected fallback, including same-tag reruns.
+  write_handoff "\${container_id:-\${previous_id}}" "\${previous_image}" "\${previous_image_id}"
   if [[ -n "\${container_id}" ]] && ! docker rm -f "\${container_id}" >/dev/null; then
     echo "[deploy] could not remove failed candidate container" >&2
     exit 1
