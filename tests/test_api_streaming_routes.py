@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
+from concurrent.futures import CancelledError
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from trip_time_service.api import routes_trip, streaming
 from trip_time_service.api.schemas import (
@@ -92,11 +96,13 @@ class _FakeTripService:
         origin: str,
         destination: str,
         departure_time: datetime,
+        route: Route | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> ArrivalEstimate:
         self.arrival_called = True
         duration = DriveDuration(duration_seconds=900, fetched_at=departure_time)
         return ArrivalEstimate(
-            route=Route.of(origin, destination),
+            route=route or Route.of(origin, destination),
             departure_time=departure_time,
             arrival_time=departure_time + timedelta(seconds=duration.duration_seconds),
             duration=duration,
@@ -111,11 +117,13 @@ class _FakeTripService:
         destination: str,
         desired_arrival_time: datetime,
         analysis_start_time: datetime | None = None,
+        route: Route | None = None,
+        cancel_event: threading.Event | None = None,
         on_search_initialized=None,
         on_candidate_evaluated=None,
     ) -> DepartureRecommendation:
         self.recommend_called = True
-        route = Route.of(origin, destination)
+        route = route or Route.of(origin, destination)
         departure = analysis_start_time or desired_arrival_time - timedelta(minutes=30)
         duration = DriveDuration(duration_seconds=900, fetched_at=departure)
         arrival = departure + timedelta(seconds=duration.duration_seconds)
@@ -158,12 +166,13 @@ class _FailingTripService(_FakeTripService):
 
 def test_departure_stream_yields_plan_before_slow_pre_geocode(monkeypatch) -> None:
     service = _FakeTripService()
-    release = __import__("threading").Event()
+    release = threading.Event()
 
-    def slow_pre_geocode(*args, **kwargs) -> None:
+    def slow_resolve(service, origin, destination, **kwargs) -> Route:
         release.wait(timeout=2.0)
+        return Route.of(origin, destination)
 
-    monkeypatch.setattr(routes_trip, "pre_geocode_for_provider", slow_pre_geocode)
+    monkeypatch.setattr(routes_trip, "resolve_route_for_provider", slow_resolve)
     payload = DepartureRecommendationRequest(
         origin="강남역",
         destination="판교역",
@@ -182,12 +191,13 @@ def test_departure_stream_yields_plan_before_slow_pre_geocode(monkeypatch) -> No
 
 def test_arrival_stream_yields_plan_before_arrival_estimate(monkeypatch) -> None:
     service = _FakeTripService()
-    release = __import__("threading").Event()
+    release = threading.Event()
 
-    def slow_pre_geocode(*args, **kwargs) -> None:
+    def slow_resolve(service, origin, destination, **kwargs) -> Route:
         release.wait(timeout=2.0)
+        return Route.of(origin, destination)
 
-    monkeypatch.setattr(routes_trip, "pre_geocode_for_provider", slow_pre_geocode)
+    monkeypatch.setattr(routes_trip, "resolve_route_for_provider", slow_resolve)
     payload = ArrivalTimeRequest(
         origin="강남역",
         destination="판교역",
@@ -215,12 +225,7 @@ def test_arrival_stream_yields_plan_before_arrival_estimate(monkeypatch) -> None
     assert "event: recommendation" in rest
 
 
-def test_stream_provider_error_has_non_success_terminal_event(monkeypatch) -> None:
-    monkeypatch.setattr(
-        routes_trip,
-        "pre_geocode_for_provider",
-        lambda *args, **kwargs: None,
-    )
+def test_stream_provider_error_has_non_success_terminal_event() -> None:
     payload = DepartureRecommendationRequest(
         origin="강남역",
         destination="판교역",
@@ -239,18 +244,9 @@ def test_stream_provider_error_has_non_success_terminal_event(monkeypatch) -> No
 
 
 def test_stream_capacity_exhaustion_returns_busy(monkeypatch) -> None:
-    monkeypatch.setattr(
-        routes_trip,
-        "pre_geocode_for_provider",
-        lambda *args, **kwargs: None,
-    )
-    acquired = 0
-    for _ in range(streaming._DEFAULT_STREAM_WORKER_LIMIT):
-        if streaming._STREAM_WORKER_SEMAPHORE.acquire(blocking=False):
-            acquired += 1
-    assert acquired == streaming._DEFAULT_STREAM_WORKER_LIMIT
-
-    try:
+    semaphore = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(streaming, "_STREAM_WORKER_SEMAPHORE", semaphore)
+    with semaphore:
         payload = DepartureRecommendationRequest(
             origin="강남역",
             destination="판교역",
@@ -261,10 +257,6 @@ def test_stream_capacity_exhaustion_returns_busy(monkeypatch) -> None:
             _request(_FakeTripService()),
         )
         body = asyncio.run(_read_remaining(response))
-    finally:
-        for _ in range(acquired):
-            streaming._STREAM_WORKER_SEMAPHORE.release()
-
     assert "event: busy" in body
     assert "capacity_exhausted" in body
     assert '"ok": false' in body
@@ -272,12 +264,15 @@ def test_stream_capacity_exhaustion_returns_busy(monkeypatch) -> None:
 
 def test_stream_idle_timeout_uses_stable_reason(monkeypatch) -> None:
     service = _FakeTripService()
-    release = __import__("threading").Event()
+    stopped = threading.Event()
 
-    def slow_pre_geocode(*args, **kwargs) -> None:
-        release.wait(timeout=2.0)
+    def slow_resolve(service, origin, destination, *, cancel_event, **kwargs) -> Route:
+        if cancel_event.wait(timeout=2.0):
+            stopped.set()
+            raise CancelledError
+        return Route.of(origin, destination)
 
-    monkeypatch.setattr(routes_trip, "pre_geocode_for_provider", slow_pre_geocode)
+    monkeypatch.setattr(routes_trip, "resolve_route_for_provider", slow_resolve)
     monkeypatch.setattr(routes_trip, "STREAM_IDLE_TIMEOUT_SECONDS", 0.01)
     payload = DepartureRecommendationRequest(
         origin="강남역",
@@ -289,17 +284,95 @@ def test_stream_idle_timeout_uses_stable_reason(monkeypatch) -> None:
         _request(service),
     )
 
-    try:
-        first, rest, _ = asyncio.run(_first_then_rest(response))
-    finally:
-        release.set()
+    first, rest, _ = asyncio.run(_first_then_rest(response))
 
+    assert stopped.wait(timeout=1.0)
+    assert not service.recommend_called
     assert first.startswith("event: plan")
     assert "event: error" in rest
     assert "stream_stall_timeout" in rest
     assert "event: end" in rest
     assert '"ok": false' in rest
     assert '"reason": "stream_stall_timeout"' in rest
+
+
+def test_disconnect_cancels_stream_work_and_releases_admission(monkeypatch) -> None:
+    semaphore = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(streaming, "_STREAM_WORKER_SEMAPHORE", semaphore)
+    workers: list[threading.Thread] = []
+
+    def observe_worker(**kwargs):
+        worker = streaming.start_bounded_stream_worker(**kwargs)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(routes_trip, "start_bounded_stream_worker", observe_worker)
+    cancelled = threading.Event()
+
+    class _SlowService(_FakeTripService):
+        def recommend_departure(self, *, cancel_event, **kwargs):
+            if cancel_event.wait(2):
+                cancelled.set()
+                raise CancelledError
+            raise AssertionError("stream worker did not receive disconnect")
+
+    payload = DepartureRecommendationRequest(
+        origin="강남역",
+        destination="판교역",
+        desired_arrival_time=datetime.now(tz=_TZ) + timedelta(hours=1),
+    )
+    response = routes_trip.stream_recommended_departure_time(
+        payload, _request(_SlowService())
+    )
+
+    async def disconnect_after_plan():
+        plan_sent = asyncio.Event()
+
+        async def receive():
+            await plan_sent.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            if message.get("body", b"").startswith(b"event: plan"):
+                plan_sent.set()
+
+        await asyncio.wait_for(
+            response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send),
+            timeout=2,
+        )
+
+    asyncio.run(disconnect_after_plan())
+    assert len(workers) == 1
+    workers[0].join(timeout=1)
+    assert not workers[0].is_alive()
+    assert cancelled.is_set()
+    assert semaphore.acquire(blocking=False)
+    semaphore.release()
+
+
+def test_non_streaming_disconnect_releases_slot_after_work_stops(monkeypatch) -> None:
+    semaphore = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(streaming, "_STREAM_WORKER_SEMAPHORE", semaphore)
+    worker_started = threading.Event()
+
+    async def receive():
+        assert await asyncio.to_thread(worker_started.wait, 1)
+        return {"type": "http.disconnect"}
+
+    def operation(cancel_event: threading.Event) -> None:
+        worker_started.set()
+        assert cancel_event.wait(1)
+        assert not semaphore.acquire(blocking=False)
+        raise CancelledError
+
+    with pytest.raises(routes_trip.RouteInputContractError) as raised:
+        asyncio.run(
+            routes_trip._run_trip_work(SimpleNamespace(receive=receive), operation)
+        )
+
+    assert raised.value.reason == "request_cancelled"
+    assert semaphore.acquire(blocking=False)
+    semaphore.release()
 
 
 def test_stream_queue_has_room_for_error_and_terminal_marker(monkeypatch) -> None:

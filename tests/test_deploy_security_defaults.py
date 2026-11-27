@@ -11,7 +11,7 @@ def _read_repo_text(relative_path: str) -> str:
 
 
 def _deploy_success_block(script: str) -> str:
-    return script.split("if check_health; then", 1)[1].split("exit 0", 1)[0]
+    return script.split(r'if run_container "\${IMAGE_REF}"', 1)[1].split("exit 0", 1)[0]
 
 
 def test_dockerfile_runs_as_non_root_with_playwright_chromium() -> None:
@@ -120,10 +120,10 @@ def test_jenkins_live_policy_archives_only_sanitized_summary_by_default() -> Non
     assert 'choices: ["off", "advisory", "blocking"]' in jenkinsfile
     assert "npm run e2e:live:smoke" in jenkinsfile
     assert "npm run e2e:live:diagnose" in jenkinsfile
-    assert (
-        ".artifacts/live/e2e-runtime.json,.artifacts/live/e2e-live-summary.json"
-        in jenkinsfile
-    )
+    assert "for artifact in e2e-runtime.json e2e-live-summary.json; do" in jenkinsfile
+    assert '".ci-artifacts/live-$BUILD_NUMBER/smoke/$artifact"' in jenkinsfile
+    assert '".ci-artifacts/live-$BUILD_NUMBER/diagnose/$artifact"' in jenkinsfile
+    assert '".ci-artifacts/live-${env.BUILD_NUMBER}/**/*.json"' in jenkinsfile
     assert ".artifacts/live/test-results/**" not in jenkinsfile
     assert ".artifacts/live/playwright-report/**" not in jenkinsfile
 
@@ -171,9 +171,7 @@ def test_enm_deploy_image_retention_runs_only_after_successful_health_check() ->
     # Given: deploy.sh has separate success and failure paths.
     script = _read_repo_text("deploy/enm/deploy.sh")
     success_block = _deploy_success_block(script)
-    failure_block = script.split(
-        'echo "[deploy] health check failed for image=\\${IMAGE_REF}"', 1
-    )[1]
+    failure_block = script.split("if run_container", 1)[1].split("exit 0", 1)[1]
 
     # Then: cleanup runs after current-image.txt is updated, never on failed deploys.
     current_marker_write = (
@@ -185,6 +183,31 @@ def test_enm_deploy_image_retention_runs_only_after_successful_health_check() ->
     assert "cleanup_deploy_build_dir" in success_block
     assert "cleanup_deploy_images" not in failure_block
     assert "cleanup_deploy_build_dir" not in failure_block
+
+
+def test_jenkins_only_rolls_back_after_successful_deploy_and_failed_smoke() -> None:
+    jenkinsfile = _read_repo_text("Jenkinsfile")
+    deploy, rest = jenkinsfile.split('stage("Deploy To ENM")', 1)[1].split(
+        'stage("Smoke Verify")', 1
+    )
+    smoke, post = rest.split("\n  post {", 1)
+
+    assert deploy.index('sh "bash deploy/enm/deploy.sh"') < deploy.index(
+        'env.DEPLOY_SUCCEEDED = "true"'
+    )
+    assert 'env.DEPLOY_SUCCEEDED == "true"' in smoke
+    assert 'uv run --no-sync python deploy/enm/smoke.py' in smoke
+    assert '--expected-version "$DEPLOY_APP_VERSION"' in smoke
+    assert "healthz" not in smoke
+    assert re.search(
+        r'failure \{\s+script \{\s+if \(env.DEPLOY_SUCCEEDED != "true"\) \{'
+        r'[^}]+return\s+\}\s+echo "[^"]+"\s+withCredentials\(',
+        post,
+    )
+    assert '"ROLLBACK_EXPECTED_IMAGE_REF=${env.REMOTE_IMAGE_REF}"' in post
+    assert 'sh(script: "bash deploy/enm/rollback.sh", returnStatus: true)' in post
+    assert 'if (rollbackStatus != 0)' in post
+    assert 'error("Rollback failed (exit ${rollbackStatus}).' in post
 
 
 def test_enm_deploy_image_retention_policy_is_bounded_and_explicit() -> None:
@@ -228,15 +251,13 @@ def test_jenkins_live_e2e_stage_exports_uv_path() -> None:
     assert re.search(
         r'export PATH="\$HOME/\.local/bin:\$PATH"\s+'
         r"export TTS_CHROME_NO_SANDBOX=1\s+"
-        r"uv run playwright install chromium\s+"
-        r"LIVE_E2E_POLICY=advisory npm run e2e:live:smoke",
+        r"uv run playwright install chromium",
         jenkinsfile,
     )
     assert re.search(
         r'export PATH="\$HOME/\.local/bin:\$PATH"\s+'
         r"export TTS_CHROME_NO_SANDBOX=1\s+"
-        r"uv run playwright install chromium\s+"
-        r"LIVE_E2E_POLICY=blocking npm run e2e:live:smoke",
+        r"uv run playwright install chromium",
         jenkinsfile,
     )
 
@@ -247,14 +268,12 @@ def test_jenkins_live_e2e_stage_uses_agent_chrome_sandbox_override() -> None:
     assert jenkinsfile.count("export TTS_CHROME_NO_SANDBOX=1") == 2
     assert (
         "export TTS_CHROME_NO_SANDBOX=1\n"
-        "                  uv run playwright install chromium\n"
-        "                  LIVE_E2E_POLICY=advisory npm run e2e:live:smoke"
+        "                  uv run playwright install chromium"
         in jenkinsfile
     )
     assert (
         "export TTS_CHROME_NO_SANDBOX=1\n"
-        "                uv run playwright install chromium\n"
-        "                LIVE_E2E_POLICY=blocking npm run e2e:live:smoke"
+        "                uv run playwright install chromium"
         in jenkinsfile
     )
 

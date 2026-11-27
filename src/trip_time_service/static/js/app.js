@@ -30,7 +30,8 @@ const COORDS_UNRESOLVED_ROUTE_MESSAGE =
   "좌표를 확인할 수 없어 경로를 조회할 수 없습니다. 다른 후보를 선택해 주세요.";
 let _autocompleteWarmupQueued = false;
 let _autocompleteCacheMap = {};
-let _searchInProgress = false; // 중복 검색 방지 플래그
+let _searchInProgress = false;
+let _searchController = null;
 let _routeInputRevision = 0;
 
 // geocode 결과 캐시 (address → {lat, lon})
@@ -58,9 +59,13 @@ const $searchBtn = document.getElementById("search-btn");
 const $results = document.getElementById("results");
 const $errorBox = document.getElementById("error-box");
 const $errorMsg = document.getElementById("error-msg");
+const $retrySearch = document.getElementById("retry-search");
+const $searchStatus = document.getElementById("search-status");
 const $loading = document.getElementById("loading");
 const $mapEl = document.getElementById("map");
 const $mapPlaceholder = document.getElementById("map-placeholder");
+const $mapStatus = document.getElementById("map-status");
+const $mapRouteNote = document.getElementById("map-route-note");
 const $mobileToggle = document.getElementById("mobile-toggle");
 const $sidebar = document.getElementById("sidebar");
 const $originAC = document.getElementById("origin-ac");
@@ -82,6 +87,7 @@ const $providerBadge = document.getElementById("provider-badge");
 const $providerWarning = document.getElementById("provider-warning");
 const $versionBadge = document.getElementById("version-badge");
 const $sidebarBackdrop = document.getElementById("sidebar-backdrop");
+const $sheetRestore = document.getElementById("sheet-restore");
 
 if ($datetimePanel && $datetimePanel.parentElement !== document.body) {
   document.body.appendChild($datetimePanel);
@@ -89,7 +95,6 @@ if ($datetimePanel && $datetimePanel.parentElement !== document.body) {
 
 let DATETIME_MINUTE_STEP = 10;
 const MAX_AUTOCOMPLETE_WARMUP_QUERIES = 8;
-let _datetimeMinIso = "";
 let _datetimePickerState = {
   selected: null,
   viewYear: 0,
@@ -101,82 +106,23 @@ let _datetimeRefocusFromValidation = false;
 /* ── Helpers ──────────────────────────────────────── */
 
 function formatDuration(seconds) {
-  var normalized = Number(seconds);
-  if (!isFinite(normalized) || normalized < 0) {
-    normalized = 0;
-  }
-  var h = Math.floor(normalized / 3600);
-  var m = Math.floor((normalized % 3600) / 60);
-  if (h > 0 && m > 0) return h + "시간 " + m + "분";
-  if (h > 0) return h + "시간";
-  return m + "분";
-}
-
-function formatDateParts(dateObj) {
-  var month = String(dateObj.getMonth() + 1).padStart(2, "0");
-  var day = String(dateObj.getDate()).padStart(2, "0");
-  var hours = String(dateObj.getHours()).padStart(2, "0");
-  var mins = String(dateObj.getMinutes()).padStart(2, "0");
-  return dateObj.getFullYear() + "-" + month + "-" + day + " " + hours + ":" + mins;
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "-";
+  var wholeSeconds = Math.round(seconds);
+  var hours = Math.floor(wholeSeconds / 3600);
+  var minutes = Math.floor((wholeSeconds % 3600) / 60);
+  var remaining = wholeSeconds % 60;
+  var parts = [];
+  if (hours) parts.push(hours + "시간");
+  if (minutes) parts.push(minutes + "분");
+  if (remaining) parts.push(remaining + "초");
+  return parts.join(" ") || "0분";
 }
 
 function formatDatetime(isoStr) {
-  var d = new Date(isoStr);
-  if (isNaN(d.getTime())) {
-    return "-";
-  }
-  return formatDateParts(d);
-}
-
-function floorDateToMinuteStep(dateObj, stepMinutes) {
-  var floored = new Date(dateObj.getTime());
-  floored.setSeconds(0, 0);
-  var remainder = floored.getMinutes() % stepMinutes;
-  if (remainder !== 0) {
-    floored.setMinutes(floored.getMinutes() - remainder, 0, 0);
-  }
-  return floored;
-}
-
-function ceilDurationSecondsToMinuteStep(durationSeconds, stepMinutes) {
-  if (durationSeconds == null) {
-    return null;
-  }
-  var normalized = Number(durationSeconds);
-  if (!isFinite(normalized) || normalized < 0) {
-    return null;
-  }
-  if (normalized === 0) {
-    return 0;
-  }
-  var stepSeconds = Math.max(1, stepMinutes) * 60;
-  return Math.ceil(normalized / stepSeconds) * stepSeconds;
-}
-
-function formatRoundedDatetime(isoStr) {
-  if (!isoStr) {
-    return "-";
-  }
-  var d = new Date(isoStr);
-  if (isNaN(d.getTime())) {
-    return "-";
-  }
-  var rounded = floorDateToMinuteStep(d, DATETIME_MINUTE_STEP);
-  return formatDateParts(rounded);
-}
-
-function formatRoundedDuration(durationSeconds) {
-  if (durationSeconds == null) {
-    return "-";
-  }
-  var roundedSeconds = ceilDurationSecondsToMinuteStep(
-    durationSeconds,
-    DATETIME_MINUTE_STEP
-  );
-  if (roundedSeconds == null) {
-    return "-";
-  }
-  return formatDuration(roundedSeconds);
+  var date = parseIsoDatetime(isoStr);
+  if (!date) return "-";
+  var wall = toServiceWallDate(date).toISOString();
+  return wall.slice(0, date.getUTCSeconds() ? 19 : 16).replace("T", " ");
 }
 
 function formatScorePercent(score) {
@@ -188,12 +134,9 @@ function formatScorePercent(score) {
 }
 
 function formatArrivalDelta(recommendedArrivalIso, baselineArrivalIso) {
-  var recommendedArrival = new Date(recommendedArrivalIso);
-  var baselineArrival = new Date(baselineArrivalIso);
-  if (
-    isNaN(recommendedArrival.getTime()) ||
-    isNaN(baselineArrival.getTime())
-  ) {
+  var recommendedArrival = parseIsoDatetime(recommendedArrivalIso);
+  var baselineArrival = parseIsoDatetime(baselineArrivalIso);
+  if (!recommendedArrival || !baselineArrival) {
     return "-";
   }
 
@@ -217,51 +160,46 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function formatUtcOffset(offsetMinutes) {
-  var sign = offsetMinutes >= 0 ? "+" : "-";
-  var abs = Math.abs(offsetMinutes);
-  var hours = String(Math.floor(abs / 60)).padStart(2, "0");
-  var minutes = String(abs % 60).padStart(2, "0");
-  return sign + hours + ":" + minutes;
+// The picker uses UTC fields to hold civil calendar values without applying
+// the device zone. Only this boundary converts between civil values and instants.
+let _serviceTimeFormatter;
+
+function toServiceWallDate(instant) {
+  if (!_serviceTimeFormatter) {
+    _serviceTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone: _config.timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    });
+  }
+  var parts = {};
+  _serviceTimeFormatter.formatToParts(instant).forEach(function (part) {
+    parts[part.type] = Number(part.value);
+  });
+  return new Date(Date.UTC(
+    parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second
+  ));
 }
 
-function resolveTimezoneOffsetMinutes(dateObj) {
-  var timezone = _config && _config.timezone ? _config.timezone : null;
-  if (timezone && typeof Intl !== "undefined" && Intl.DateTimeFormat) {
-    try {
-      var formatter = new Intl.DateTimeFormat("en-US", {
-        timeZone: timezone,
-        timeZoneName: "shortOffset",
-      });
-      var parts = formatter.formatToParts(dateObj);
-      var zonePart = "";
-      for (var i = 0; i < parts.length; i++) {
-        if (parts[i].type === "timeZoneName") {
-          zonePart = parts[i].value || "";
-          break;
-        }
-      }
-      var match = zonePart.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/i);
-      if (match) {
-        var sign = match[1] === "-" ? -1 : 1;
-        var hours = parseInt(match[2], 10) || 0;
-        var minutes = parseInt(match[3] || "0", 10) || 0;
-        return sign * (hours * 60 + minutes);
-      }
-    } catch (_) {
-      // fallback below
-    }
-  }
-  return -dateObj.getTimezoneOffset();
-}
-
-function toApiDatetimeString(localDatetimeValue) {
-  var parsed = parseLocalIsoMinutes(localDatetimeValue);
-  if (!parsed) {
-    return null;
-  }
-  var offsetMinutes = resolveTimezoneOffsetMinutes(parsed);
-  return localDatetimeValue + ":00" + formatUtcOffset(offsetMinutes);
+function resolveServiceInstant(wallDate, now) {
+  var wallTime = wallDate.getTime();
+  // Either side of a DST transition can supply the applicable offset.
+  // Skip DST gaps and choose the earliest upcoming occurrence of a repeated time.
+  var instants = [-24, 24].map(function (hours) {
+    var sample = new Date(wallTime + hours * 3600000);
+    var offset = toServiceWallDate(sample).getTime() - sample.getTime();
+    return wallTime - offset;
+  }).filter(function (instant) {
+    return toServiceWallDate(new Date(instant)).getTime() === wallTime;
+  });
+  instants.sort(function (a, b) { return a - b; });
+  if (!instants.length) return null;
+  return new Date(instants.find(function (instant) { return instant > now; }) ?? instants[0]);
 }
 
 function parseIsoDatetime(isoStr) {
@@ -273,14 +211,6 @@ function parseIsoDatetime(isoStr) {
     return null;
   }
   return parsed;
-}
-
-function toDisplayAlignedIsoDatetime(isoStr) {
-  var parsed = parseIsoDatetime(isoStr);
-  if (!parsed) {
-    return null;
-  }
-  return floorDateToMinuteStep(parsed, DATETIME_MINUTE_STEP).toISOString();
 }
 
 function toGoogleCalendarUtcToken(isoStr) {
@@ -350,6 +280,7 @@ function buildGoogleCalendarTemplateUrl(eventPayload) {
     "action=TEMPLATE",
     "text=" + encodeURIComponent(eventPayload.title || "Trip Time 일정"),
     "dates=" + encodeURIComponent(startToken + "/" + endToken),
+    "ctz=" + encodeURIComponent(_config.timezone),
   ];
   if (eventPayload.details) {
     queryParts.push("details=" + encodeURIComponent(eventPayload.details));
@@ -370,27 +301,18 @@ function buildCalendarEventPayload(options) {
   var label = options.label || "이동 일정";
   var detailLines = [
     "Trip Time " + label,
-    "출발: " + formatRoundedDatetime(options.departureIso),
-    "도착: " + formatRoundedDatetime(options.arrivalIso),
+    "출발: " + formatDatetime(options.departureIso),
+    "도착: " + formatDatetime(options.arrivalIso),
     "출발지: " + origin,
     "도착지: " + destination,
-    "희망 도착: " + formatRoundedDatetime(options.desiredArrivalIso),
-    "예상 소요시간: " + formatRoundedDuration(options.durationSeconds),
+    "희망 도착: " + formatDatetime(options.desiredArrivalIso),
+    "예상 소요시간: " + formatDuration(options.durationSeconds),
   ];
-  var alignedStartIso = toDisplayAlignedIsoDatetime(options.departureIso);
-  var alignedEndIso = toDisplayAlignedIsoDatetime(options.arrivalIso);
-  var alignedDurationSeconds = ceilDurationSecondsToMinuteStep(
-    options.durationSeconds,
-    DATETIME_MINUTE_STEP
-  );
-
   return {
     title: "[Trip Time] " + label + " - " + origin + " -> " + destination,
-    startIso: alignedStartIso || options.departureIso,
-    endIso: alignedEndIso || options.arrivalIso,
-    durationSeconds: alignedDurationSeconds != null
-      ? alignedDurationSeconds
-      : options.durationSeconds,
+    startIso: options.departureIso,
+    endIso: options.arrivalIso,
+    durationSeconds: options.durationSeconds,
     details: detailLines.join("\n"),
     location: destination,
   };
@@ -451,24 +373,24 @@ function setVersionBadge(versionText) {
  * 예: 10분 단위에서는 18:31 → 18:40, 18:40 → 18:40, 18:41 → 18:50
  * 네이버 지도는 과거 시간 조회 불가이므로 항상 미래 시간을 반환.
  */
-function nowCeilToStep() {
-  var d = new Date();
-  var m = d.getMinutes();
-  var ceil = Math.ceil(m / DATETIME_MINUTE_STEP) * DATETIME_MINUTE_STEP;
-  if (ceil === m && (d.getSeconds() > 0 || d.getMilliseconds() > 0)) {
-    ceil += DATETIME_MINUTE_STEP;
+function defaultDatetimeValue() {
+  var now = Date.now();
+  var nowWall = toServiceWallDate(new Date(now));
+  var step = DATETIME_MINUTE_STEP;
+  var minute = nowWall.getUTCMinutes();
+  nowWall.setUTCMinutes(Math.floor(minute / step) * step + step, 0, 0);
+  var instant = resolveServiceInstant(nowWall, now);
+  if (!instant || instant.getTime() <= now) {
+    return toWallIsoMinutes(toServiceWallDate(new Date(now + step * 60000)));
   }
-  d.setMinutes(ceil, 0, 0);
-  return toLocalIsoMinutes(d);
+  return toWallIsoMinutes(nowWall);
 }
 
-function toLocalIsoMinutes(dateObj) {
-  var offset = dateObj.getTimezoneOffset();
-  var local = new Date(dateObj.getTime() - offset * 60000);
-  return local.toISOString().slice(0, 16);
+function toWallIsoMinutes(wallDate) {
+  return wallDate.toISOString().slice(0, 16);
 }
 
-function parseLocalIsoMinutes(value) {
+function parseWallIsoMinutes(value) {
   if (!value) {
     return null;
   }
@@ -488,14 +410,14 @@ function parseLocalIsoMinutes(value) {
 }
 
 function buildValidatedDate(year, month, day, hour, minute) {
-  var parsed = new Date(year, month - 1, day, hour, minute, 0, 0);
+  var parsed = new Date(Date.UTC(year, month - 1, day, hour, minute));
 
   if (
-    parsed.getFullYear() !== year ||
-    parsed.getMonth() !== month - 1 ||
-    parsed.getDate() !== day ||
-    parsed.getHours() !== hour ||
-    parsed.getMinutes() !== minute
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day ||
+    parsed.getUTCHours() !== hour ||
+    parsed.getUTCMinutes() !== minute
   ) {
     return null;
   }
@@ -507,7 +429,7 @@ function parseFlexibleDatetimeInput(value, fallbackDate) {
     return null;
   }
 
-  var strict = parseLocalIsoMinutes(value);
+  var strict = parseWallIsoMinutes(value);
   if (strict) {
     return strict;
   }
@@ -520,12 +442,12 @@ function parseFlexibleDatetimeInput(value, fallbackDate) {
   var base =
     fallbackDate && !isNaN(fallbackDate.getTime())
       ? fallbackDate
-      : new Date();
+      : toServiceWallDate(new Date());
   var year;
   var month;
   var day;
-  var hour = base.getHours();
-  var minute = base.getMinutes();
+  var hour = base.getUTCHours();
+  var minute = base.getUTCMinutes();
 
   var digitsOnly = trimmed.replace(/\D/g, "");
   if (digitsOnly.length === 12 || digitsOnly.length === 8) {
@@ -558,38 +480,19 @@ function parseFlexibleDatetimeInput(value, fallbackDate) {
   return buildValidatedDate(year, month, day, hour, minute);
 }
 
-function ceilDateToMinuteStep(dateObj, stepMinutes) {
-  var rounded = new Date(dateObj.getTime());
-  rounded.setSeconds(0, 0);
-  var minute = rounded.getMinutes();
-  var ceil = Math.ceil(minute / stepMinutes) * stepMinutes;
-  if (ceil !== minute) {
-    rounded.setMinutes(ceil, 0, 0);
-  }
-  return rounded;
-}
-
 function clampNumber(value, min, max) {
   return Math.min(Math.max(value, min), max);
-}
-
-function getDatetimeMinDate() {
-  if (!_datetimeMinIso) {
-    _datetimeMinIso = nowCeilToStep();
-  }
-  return parseLocalIsoMinutes(_datetimeMinIso);
 }
 
 function getSelectedDatetimeOrNow() {
   if (_datetimePickerState.selected) {
     return new Date(_datetimePickerState.selected.getTime());
   }
-  var parsed = parseFlexibleDatetimeInput($datetimeInput.value, new Date());
+  var parsed = parseFlexibleDatetimeInput($datetimeInput.value, toServiceWallDate(new Date()));
   if (parsed) {
     return parsed;
   }
-  var minDate = getDatetimeMinDate();
-  return minDate ? new Date(minDate.getTime()) : new Date();
+  return toServiceWallDate(new Date());
 }
 
 function syncDatetimeDateFields() {
@@ -597,9 +500,9 @@ function syncDatetimeDateFields() {
     return;
   }
   var selected = getSelectedDatetimeOrNow();
-  $datetimeYear.value = String(selected.getFullYear());
-  $datetimeMonth.value = String(selected.getMonth() + 1).padStart(2, "0");
-  $datetimeDay.value = String(selected.getDate()).padStart(2, "0");
+  $datetimeYear.value = String(selected.getUTCFullYear());
+  $datetimeMonth.value = String(selected.getUTCMonth() + 1).padStart(2, "0");
+  $datetimeDay.value = String(selected.getUTCDate()).padStart(2, "0");
 }
 
 function syncDatetimeTimeFields() {
@@ -607,7 +510,7 @@ function syncDatetimeTimeFields() {
     return;
   }
   var selected = getSelectedDatetimeOrNow();
-  var hours24 = selected.getHours();
+  var hours24 = selected.getUTCHours();
   var period = hours24 >= 12 ? "pm" : "am";
   var hours12 = hours24 % 12;
   if (hours12 === 0) {
@@ -615,7 +518,7 @@ function syncDatetimeTimeFields() {
   }
   $datetimePeriod.value = period;
   $datetimeHour.value = String(hours12).padStart(2, "0");
-  $datetimeMinute.value = String(selected.getMinutes()).padStart(2, "0");
+  $datetimeMinute.value = String(selected.getUTCMinutes()).padStart(2, "0");
 }
 
 function renderDatetimeCalendar() {
@@ -625,54 +528,29 @@ function renderDatetimeCalendar() {
 
   var viewYear = _datetimePickerState.viewYear;
   var viewMonth = _datetimePickerState.viewMonth;
-  $datetimeCalendarTitle.textContent =
-    viewYear +
-    "년 " +
-    String(viewMonth + 1).padStart(2, "0") +
-    "월";
-
-  var firstWeekday = new Date(viewYear, viewMonth, 1).getDay();
-  var daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-  var selected = getSelectedDatetimeOrNow();
-  var minDate = getDatetimeMinDate();
-  var minDateOnly = minDate
-    ? new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate())
-    : null;
-  var today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  var html = "";
-  for (var i = 0; i < firstWeekday; i++) {
-    html += '<span class="datetime-day-empty"></span>';
-  }
-  for (var day = 1; day <= daysInMonth; day++) {
-    var cls = "datetime-day-btn";
-    var cellDate = new Date(viewYear, viewMonth, day, 0, 0, 0, 0);
-    var isSelected =
-      selected.getFullYear() === viewYear &&
-      selected.getMonth() === viewMonth &&
-      selected.getDate() === day;
-    var isToday = cellDate.getTime() === today.getTime();
-    var disabled =
-      minDateOnly && cellDate.getTime() < minDateOnly.getTime();
-    if (isSelected) {
-      cls += " is-selected";
+  var title = viewYear + "년 " + String(viewMonth + 1).padStart(2, "0") + "월";
+  // Keep the day buttons mounted when focus leaves a date editor mid-click.
+  if ($datetimeCalendarTitle.textContent !== title) {
+    $datetimeCalendarTitle.textContent = title;
+    var firstWeekday = new Date(Date.UTC(viewYear, viewMonth, 1)).getUTCDay();
+    var daysInMonth = new Date(Date.UTC(viewYear, viewMonth + 1, 0)).getUTCDate();
+    var html = '<span class="datetime-day-empty"></span>'.repeat(firstWeekday);
+    for (var day = 1; day <= daysInMonth; day++) {
+      html += '<button class="datetime-day-btn" type="button" data-day="' + day +
+        '">' + day + "</button>";
     }
-    if (isToday) {
-      cls += " is-today";
-    }
-    html +=
-      '<button class="' +
-      cls +
-      '" type="button" data-day="' +
-      day +
-      '"' +
-      (disabled ? " disabled" : "") +
-      ">" +
-      day +
-      "</button>";
+    $datetimeCalendarDays.innerHTML = html;
   }
-  $datetimeCalendarDays.innerHTML = html;
+  var selectedDay = toWallIsoMinutes(getSelectedDatetimeOrNow()).slice(0, 10);
+  var today = toWallIsoMinutes(toServiceWallDate(new Date())).slice(0, 10);
+  $datetimeCalendarDays.querySelectorAll(".datetime-day-btn").forEach(function (button) {
+    var date = new Date(Date.UTC(viewYear, viewMonth, Number(button.dataset.day)));
+    var day = toWallIsoMinutes(date).slice(0, 10);
+    button.classList.toggle("is-selected", day === selectedDay);
+    button.classList.toggle("is-today", day === today);
+    button.setAttribute("aria-pressed", String(day === selectedDay));
+    button.disabled = day < today;
+  });
 }
 
 function renderDatetimePicker() {
@@ -689,31 +567,27 @@ function setDatetimeFromDate(dateObj, options) {
     return;
   }
   var opts = options || {};
-  var normalized = ceilDateToMinuteStep(dateObj, DATETIME_MINUTE_STEP);
-  if (opts.enforceMin !== false) {
-    var minDate = getDatetimeMinDate();
-    if (minDate && normalized.getTime() < minDate.getTime()) {
-      normalized = new Date(minDate.getTime());
-    }
-  }
-
-  _datetimePickerState.selected = normalized;
+  _datetimePickerState.selected = dateObj;
   if (!opts.keepView) {
-    _datetimePickerState.viewYear = normalized.getFullYear();
-    _datetimePickerState.viewMonth = normalized.getMonth();
+    _datetimePickerState.viewYear = dateObj.getUTCFullYear();
+    _datetimePickerState.viewMonth = dateObj.getUTCMonth();
   }
-  $datetimeInput.value = toLocalIsoMinutes(normalized);
+  var value = toWallIsoMinutes(dateObj);
+  if ($datetimeInput.value !== value) {
+    $datetimeInput.value = value;
+    invalidateSearchOnlyState();
+  }
   renderDatetimePicker();
 }
 
 function syncDatetimePickerFromInput(options) {
   var fallbackDate =
     _datetimePickerState.selected ||
-    parseLocalIsoMinutes(nowCeilToStep()) ||
+    parseWallIsoMinutes(defaultDatetimeValue()) ||
     new Date();
   var parsed = parseFlexibleDatetimeInput($datetimeInput.value, fallbackDate);
   if (!parsed) {
-    parsed = parseLocalIsoMinutes(nowCeilToStep());
+    parsed = parseWallIsoMinutes(defaultDatetimeValue());
   }
   if (!parsed) {
     return false;
@@ -725,7 +599,7 @@ function syncDatetimePickerFromInput(options) {
 function syncDatetimeStateFromInputValue() {
   var fallbackDate =
     _datetimePickerState.selected ||
-    parseLocalIsoMinutes(nowCeilToStep()) ||
+    parseWallIsoMinutes(defaultDatetimeValue()) ||
     new Date();
   var parsed = parseFlexibleDatetimeInput($datetimeInput.value, fallbackDate);
   if (!parsed) {
@@ -733,8 +607,8 @@ function syncDatetimeStateFromInputValue() {
   }
 
   _datetimePickerState.selected = new Date(parsed.getTime());
-  _datetimePickerState.viewYear = parsed.getFullYear();
-  _datetimePickerState.viewMonth = parsed.getMonth();
+  _datetimePickerState.viewYear = parsed.getUTCFullYear();
+  _datetimePickerState.viewMonth = parsed.getUTCMonth();
   if (_datetimePickerState.isOpen) {
     renderDatetimePicker();
   }
@@ -813,7 +687,7 @@ function showDatetimeInputTooltip(message, segment) {
 function validateDatetimeAgainstNowOnBlur() {
   var fallbackDate =
     _datetimePickerState.selected ||
-    parseLocalIsoMinutes(nowCeilToStep()) ||
+    parseWallIsoMinutes(defaultDatetimeValue()) ||
     new Date();
   var selected = parseFlexibleDatetimeInput($datetimeInput.value, fallbackDate);
   if (!selected) {
@@ -821,24 +695,19 @@ function validateDatetimeAgainstNowOnBlur() {
     return true;
   }
 
-  var now = new Date();
-  if (selected.getTime() > now.getTime()) {
+  var instant = resolveServiceInstant(selected, Date.now());
+  if (!instant) {
+    showDatetimeInputTooltip("서비스 시간대에 존재하지 않는 시각입니다.", "time");
+    return false;
+  }
+  if (instant.getTime() > Date.now()) {
     hideDatetimeInputTooltip();
     return true;
   }
 
-  var selectedDateOnly = new Date(
-    selected.getFullYear(),
-    selected.getMonth(),
-    selected.getDate()
-  );
-  var nowDateOnly = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate()
-  );
-  var segment =
-    selectedDateOnly.getTime() < nowDateOnly.getTime() ? "date" : "time";
+  var nowWall = toServiceWallDate(new Date());
+  var segment = toWallIsoMinutes(selected).slice(0, 10) < toWallIsoMinutes(nowWall).slice(0, 10)
+    ? "date" : "time";
   showDatetimeInputTooltip(
     "현재 시점 이전으로는 조회를 할 수 없습니다.",
     segment
@@ -847,13 +716,13 @@ function validateDatetimeAgainstNowOnBlur() {
 }
 
 function moveDatetimeMonth(delta) {
-  var base = new Date(
+  var base = new Date(Date.UTC(
     _datetimePickerState.viewYear,
     _datetimePickerState.viewMonth + delta,
     1
-  );
-  _datetimePickerState.viewYear = base.getFullYear();
-  _datetimePickerState.viewMonth = base.getMonth();
+  ));
+  _datetimePickerState.viewYear = base.getUTCFullYear();
+  _datetimePickerState.viewMonth = base.getUTCMonth();
   renderDatetimeCalendar();
 }
 
@@ -871,20 +740,20 @@ function applyDatetimeDateFields() {
   }
   year = clampNumber(year, 2000, 2099);
   month = clampNumber(month, 1, 12);
-  var maxDay = new Date(year, month, 0).getDate();
+  var maxDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
   day = clampNumber(day, 1, maxDay);
 
   var selected = getSelectedDatetimeOrNow();
-  var nextDate = new Date(
+  var nextDate = new Date(Date.UTC(
     year,
     month - 1,
     day,
-    selected.getHours(),
-    selected.getMinutes(),
+    selected.getUTCHours(),
+    selected.getUTCMinutes(),
     0,
     0
-  );
-  setDatetimeFromDate(nextDate, { enforceMin: true });
+  ));
+  setDatetimeFromDate(nextDate);
 }
 
 function applyDatetimeTimeFields() {
@@ -906,16 +775,16 @@ function applyDatetimeTimeFields() {
   }
 
   var selected = getSelectedDatetimeOrNow();
-  var nextDate = new Date(
-    selected.getFullYear(),
-    selected.getMonth(),
-    selected.getDate(),
+  var nextDate = new Date(Date.UTC(
+    selected.getUTCFullYear(),
+    selected.getUTCMonth(),
+    selected.getUTCDate(),
     hour24,
     minute,
     0,
     0
-  );
-  setDatetimeFromDate(nextDate, { keepView: true, enforceMin: true });
+  ));
+  setDatetimeFromDate(nextDate, { keepView: true });
 }
 
 function positionDatetimePanel() {
@@ -923,12 +792,15 @@ function positionDatetimePanel() {
     return;
   }
   positionDatetimeInputTooltip();
+  var viewport = $sidebar.classList.contains("kb-tracking") ? window.visualViewport : null;
+  var margin = 8;
+  var minTop = (viewport ? viewport.offsetTop : 0) + margin;
+  $datetimePanel.style.maxHeight = viewport ? Math.max(0, viewport.height - 2 * margin) + "px" : "";
   var anchorRect = $datetimePicker.getBoundingClientRect();
   var panelRect = $datetimePanel.getBoundingClientRect();
   var gap = 8;
-  var margin = 8;
   var viewportWidth = window.innerWidth;
-  var viewportHeight = window.innerHeight;
+  var viewportBottom = viewport ? viewport.offsetTop + viewport.height : window.innerHeight;
   var tooltipExtraGap = 0;
   if (
     $datetimeInputTooltip &&
@@ -949,13 +821,9 @@ function positionDatetimePanel() {
   }
 
   var top = anchorRect.bottom + gap + tooltipExtraGap;
-  var maxTop = viewportHeight - margin - panelRect.height;
-  if (top > maxTop) {
-    top = Math.max(margin, anchorRect.top - panelRect.height - gap);
-  }
-  if (top < margin) {
-    top = margin;
-  }
+  var maxTop = viewportBottom - margin - panelRect.height;
+  if (top > maxTop) top = anchorRect.top - panelRect.height - gap;
+  top = Math.max(minTop, Math.min(top, maxTop));
 
   $datetimePanel.style.left = Math.round(left) + "px";
   $datetimePanel.style.top = Math.round(top) + "px";
@@ -999,7 +867,10 @@ function sanitizeDateFieldInput(event) {
 }
 
 function bindDatetimeDateField($input) {
-  $input.addEventListener("input", sanitizeDateFieldInput);
+  $input.addEventListener("input", function (event) {
+    sanitizeDateFieldInput(event);
+    invalidateSearchOnlyState();
+  });
   $input.addEventListener("blur", applyDatetimeDateFields);
   $input.addEventListener("change", applyDatetimeDateFields);
   $input.addEventListener("keydown", function (event) {
@@ -1023,7 +894,7 @@ function populateDatetimeTimeOptions() {
   $datetimeHour.innerHTML = hourOptions;
 
   var minuteOptions = "";
-  for (var minute = 0; minute < 60; minute += DATETIME_MINUTE_STEP) {
+  for (var minute = 0; minute < 60; minute++) {
     var minuteText = String(minute).padStart(2, "0");
     minuteOptions +=
       '<option value="' + minuteText + '">' + minuteText + "</option>";
@@ -1072,7 +943,8 @@ function initDatetimePicker() {
   });
   $datetimeInput.addEventListener("blur", function () {
     setTimeout(function () {
-      if ($datetimePicker && $datetimePicker.contains(document.activeElement)) {
+      if ($datetimePicker.contains(document.activeElement) ||
+          $datetimePanel.contains(document.activeElement)) {
         return;
       }
       validateDatetimeAgainstNowOnBlur();
@@ -1086,6 +958,15 @@ function initDatetimePicker() {
     moveDatetimeMonth(1);
   });
 
+  $datetimeCalendarDays.addEventListener("pointerdown", function (event) {
+    var field = document.activeElement;
+    if (event.target.closest(".datetime-day-btn:not(:disabled)") &&
+        field.matches("input") && ($datetimePicker.contains(field) || $datetimePanel.contains(field))) {
+      // Select the tapped date before blur can commit an editor's old value or move the panel.
+      event.preventDefault();
+    }
+  });
+
   $datetimeCalendarDays.addEventListener("click", function (event) {
     var $btn = event.target.closest(".datetime-day-btn");
     if (!$btn || $btn.disabled) {
@@ -1096,16 +977,15 @@ function initDatetimePicker() {
       return;
     }
     var selected = getSelectedDatetimeOrNow();
-    var nextDate = new Date(
+    var nextDate = new Date(Date.UTC(
       _datetimePickerState.viewYear,
       _datetimePickerState.viewMonth,
       day,
-      selected.getHours(),
-      selected.getMinutes(),
-      0,
-      0
-    );
-    setDatetimeFromDate(nextDate, { enforceMin: true });
+      selected.getUTCHours(),
+      selected.getUTCMinutes()
+    ));
+    setDatetimeFromDate(nextDate);
+    $btn.focus({ preventScroll: true });
   });
 
   bindDatetimeDateField($datetimeYear);
@@ -1154,68 +1034,25 @@ function initDatetimePicker() {
   );
 }
 
-/**
- * 현재 시각 하한값을 내부 상태로 갱신.
- */
-function enforceMinDatetime() {
-  _datetimeMinIso = nowCeilToStep();
-}
-
-/**
- * 선택된 시각이 과거인지 검사하고, 과거면 자동 보정.
- * 반환값: { corrected, invalid } 객체.
- */
-function validateAndCeilDatetime() {
-  var val = $datetimeInput.value;
-  if (!val) {
-    return { corrected: null, invalid: false };
-  }
-  var fallbackDate =
-    _datetimePickerState.selected ||
-    parseLocalIsoMinutes(nowCeilToStep()) ||
-    new Date();
-  var selected = parseFlexibleDatetimeInput(val, fallbackDate);
-  if (!selected) {
-    return { corrected: null, invalid: true };
-  }
-
-  var now = new Date();
-  var correctedDate = null;
-  if (selected <= now) {
-    correctedDate = parseLocalIsoMinutes(nowCeilToStep());
-  } else {
-    var ceilSelected = ceilDateToMinuteStep(selected, DATETIME_MINUTE_STEP);
-    if (ceilSelected.getTime() !== selected.getTime()) {
-      correctedDate = ceilSelected;
-    }
-  }
-
-  if (correctedDate) {
-    var minDate = getDatetimeMinDate();
-    if (minDate && correctedDate.getTime() < minDate.getTime()) {
-      correctedDate = minDate;
-    }
-    var corrected = toLocalIsoMinutes(correctedDate);
-    setDatetimeFromDate(correctedDate, { enforceMin: true });
-    return { corrected: corrected, invalid: false };
-  }
-
-  setDatetimeFromDate(selected, { keepView: true, enforceMin: true });
-  return { corrected: null, invalid: false };
-}
-
-function showError(msg) {
-  $errorMsg.textContent = msg;
+function showError(msg, options) {
+  var opts = options || {};
   $errorBox.classList.remove("hidden");
-  $results.classList.add("hidden");
+  $errorMsg.textContent = msg;
+  $searchStatus.textContent = msg;
+  $retrySearch.classList.toggle("hidden", !opts.retry);
+  if (!opts.keepResults) $results.classList.add("hidden");
 }
 
 function hideError() {
   $errorBox.classList.add("hidden");
+  $errorMsg.textContent = "";
+  $searchStatus.textContent = "";
+  $retrySearch.classList.add("hidden");
 }
 
 function showLoading() {
   $loading.classList.remove("hidden");
+  $searchStatus.textContent = "출발지와 도착지의 교통 정보를 조회하고 있습니다.";
   $searchBtn.disabled = true;
 }
 
@@ -1310,22 +1147,47 @@ function getFavorites() {
 /* ── Map (Leaflet + OpenStreetMap) ────────────────── */
 
 function initMap() {
-  $mapPlaceholder.classList.add("hidden");
-  _map = L.map($mapEl, { zoomControl: true }).setView([37.5665, 126.978], 12);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    maxZoom: 19,
-  }).addTo(_map);
+  function showFallback() {
+    $mapStatus.textContent = "지도를 불러올 수 없습니다. 이동 시간 검색은 계속 사용할 수 있습니다.";
+  }
+
+  function mountMap() {
+    try {
+      _map = window.L.map($mapEl, { zoomControl: true }).setView([37.5665, 126.978], 12);
+      window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        maxZoom: 19,
+      }).addTo(_map);
+      $mapPlaceholder.classList.add("hidden");
+    } catch (_) {
+      _map = null;
+      showFallback();
+    }
+  }
+
+  if (window.L) {
+    mountMap();
+    return;
+  }
+  var timeout = window.setTimeout(showFallback, 5000);
+  var script = document.createElement("script");
+  script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+  script.addEventListener("load", function () {
+    window.clearTimeout(timeout);
+    mountMap();
+  });
+  script.addEventListener("error", function () {
+    window.clearTimeout(timeout);
+    showFallback();
+  });
+  document.head.appendChild(script);
 }
 
 function clearMarkers() {
   _markers.forEach(function (m) { _map.removeLayer(m); });
   _markers = [];
   _endpointMarkers = { origin: null, dest: null };
-  if (_routeGroup) {
-    _map.removeLayer(_routeGroup);
-    _routeGroup = null;
-  }
+  clearRouteGroup();
 }
 
 function syncMarkerList() {
@@ -1339,6 +1201,7 @@ function clearRouteGroup() {
     _map.removeLayer(_routeGroup);
   }
   _routeGroup = null;
+  $mapRouteNote.classList.add("hidden");
 }
 
 function clearEndpointMarker(endpoint) {
@@ -1358,11 +1221,16 @@ function setEndpointMarker(endpoint, latlng, opts) {
 function invalidateSearchState(options) {
   var clearMapMarkers = !options || options.clearMarkers !== false;
   _routeInputRevision += 1;
+  if (_searchController) _searchController.abort();
+  _searchController = null;
   _searchInProgress = false;
+  hideCandidateTooltip(true);
+  hideError();
   if (clearMapMarkers && _map) {
     clearMarkers();
   }
   $results.classList.add("hidden");
+  $results.replaceChildren();
   hideLoading();
 }
 
@@ -1404,14 +1272,15 @@ function addMarker(latlng, opts) {
  * 주소 → 좌표 변환 (캐시 우선).
  * 자동완성 선택 좌표가 있으면 즉시 반환, 캐시 히트면 네트워크 생략.
  */
-function geocodeQueryToCoords(query, cacheAlias) {
+function geocodeQueryToCoords(query, cacheAlias, signal) {
   var geocodeQuery = String(query || "").trim();
   if (!geocodeQuery) return Promise.resolve(null);
   if (_geocodeCache[geocodeQuery]) return Promise.resolve(_geocodeCache[geocodeQuery]);
   return fetch(
     "/api/geocode?q=" +
       encodeURIComponent(geocodeQuery) +
-      buildMapCenterQueryString()
+      buildMapCenterQueryString(),
+    { signal: signal }
   )
     .then(function (res) { return res.json(); })
     .then(function (data) {
@@ -1432,7 +1301,7 @@ function geocodeQueryToCoords(query, cacheAlias) {
     .catch(function () { return null; });
 }
 
-function resolveCoords(address, selectedCoords) {
+function resolveCoords(address, selectedCoords, signal) {
   var normalizedSelectedCoords = normalizeCoords(selectedCoords);
   if (normalizedSelectedCoords) {
     return Promise.resolve(normalizedSelectedCoords);
@@ -1441,10 +1310,10 @@ function resolveCoords(address, selectedCoords) {
     return Promise.resolve(null);
   }
   var geocodeQuery = String(address || "").trim();
-  return geocodeQuery ? geocodeQueryToCoords(geocodeQuery, address) : Promise.resolve(null);
+  return geocodeQuery ? geocodeQueryToCoords(geocodeQuery, address, signal) : Promise.resolve(null);
 }
 
-function resolveRouteCriticalCoords(address, selectedCoords) {
+function resolveRouteCriticalCoords(address, selectedCoords, signal) {
   var normalizedSelectedCoords = normalizeCoords(selectedCoords);
   if (normalizedSelectedCoords) {
     return Promise.resolve(normalizedSelectedCoords);
@@ -1452,9 +1321,9 @@ function resolveRouteCriticalCoords(address, selectedCoords) {
   if (hasStableSelection(selectedCoords)) {
     var query = getStableSearchQuery(address, selectedCoords);
     if (!query) return Promise.resolve(null);
-    return geocodeQueryToCoords(query, address);
+    return geocodeQueryToCoords(query, address, signal);
   }
-  return resolveCoords(address, selectedCoords);
+  return resolveCoords(address, selectedCoords, signal);
 }
 
 function markSelectionCoordsResolved(selection, coords) {
@@ -1485,31 +1354,40 @@ function fitBounds() {
   });
 }
 
-function fetchAndDrawRoute(lat1, lon1, lat2, lon2, isCurrentRoute) {
+function fetchAndDrawRoute(lat1, lon1, lat2, lon2, isCurrentRoute, signal) {
   if (!_map) return Promise.resolve();
   if (typeof isCurrentRoute === "function" && !isCurrentRoute()) {
     return Promise.resolve();
   }
   var url = "/api/route?olat=" + lat1 + "&olon=" + lon1 +
             "&dlat=" + lat2 + "&dlon=" + lon2;
-  return fetch(url)
+  return fetch(url, { signal: signal })
     .then(function (res) { return res.json(); })
     .then(function (data) {
       if (typeof isCurrentRoute === "function" && !isCurrentRoute()) {
         return;
       }
       if (!data.routes || !data.routes.length) return;
-      var geom = data.routes[0].geometry;
+      var route = data.routes[0];
+      var geom = route.geometry;
       var border = L.geoJSON(geom, {
         style: { color: "#0D47A1", weight: 9, opacity: 0.45, lineCap: "round", lineJoin: "round" },
       });
       var fill = L.geoJSON(geom, {
         style: { color: "#2979FF", weight: 5, opacity: 0.9, lineCap: "round", lineJoin: "round" },
       });
+      clearRouteGroup();
       _routeGroup = L.layerGroup([border, fill]).addTo(_map);
+      var etaSource = /^naver(?:_|$)/.test(resolveProviderName(_config.provider)) ? "예상 시간은 네이버 지도 기준" :
+        isMockProvider(_config.provider) ? "예상 시간은 시험 데이터 기준" : "";
+      var pathSource = route.source === "e2e_fixture" ? "시험 데이터 참고 경로" : "OSRM 참고 경로";
+      $mapRouteNote.textContent = etaSource ? pathSource + " / " + etaSource : pathSource;
+      $mapRouteNote.classList.remove("hidden");
       fitBounds();
     })
-    .catch(function (err) { console.error("route failed:", err); });
+    .catch(function (err) {
+      if (err.name !== "AbortError") console.error("route failed:", err);
+    });
 }
 
 /**
@@ -2000,7 +1878,8 @@ function renderACDropdown($dropdown, items, onSelect) {
     var safeAddress = escapeHtml(it.address || "");
     var typeBadge = safeType ? '<span class="ac-item-type">' + safeType + "</span>" : "";
     html +=
-      '<div class="ac-item" role="option" aria-selected="false" tabindex="-1" data-idx="' + i + '">' +
+      '<div class="ac-item" role="option" id="' + $dropdown.id + '-option-' + i +
+      '" aria-selected="false" tabindex="-1" data-idx="' + i + '">' +
       '  <div class="ac-item-name">' + safeDisplayName + typeBadge + "</div>" +
       '  <div class="ac-item-addr">' + safeAddress + "</div>" +
       "</div>";
@@ -2029,7 +1908,10 @@ function closeACDropdown($dropdown) {
   var $owner = ownerId
     ? document.querySelector('[aria-controls="' + ownerId + '"]')
     : null;
-  if ($owner) $owner.setAttribute("aria-expanded", "false");
+  if ($owner) {
+    $owner.setAttribute("aria-expanded", "false");
+    $owner.removeAttribute("aria-activedescendant");
+  }
 }
 
 function getEndpointForInput($input) {
@@ -2251,464 +2133,121 @@ function strictRouteContractHeaders() {
   };
 }
 
-async function apiEstimateArrival(
-  origin,
-  destination,
-  departureTime,
-  oCoords,
-  dCoords,
-  originSelection,
-  destSelection
-) {
-  var body = {
-    origin: origin,
-    destination: destination,
-    departure_time: departureTime,
+function tripRequestError(payload, status, fallback) {
+  var data = payload || {};
+  var reason = data.reason || (status === 503 ? "capacity_exhausted" : "");
+  var messages = {
+    capacity_exhausted: "검색 요청이 많습니다. 잠시 후 다시 시도해 주세요.",
+    stream_stall_timeout: "검색 응답이 지연되었습니다. 잠시 후 다시 시도해 주세요.",
+    panel_parse_timeout: "네이버 교통 정보를 제시간에 읽지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    arrival_deadline_in_past: "현재 시점 이전으로는 조회를 할 수 없습니다.",
+    provider_retry_exhausted: "네이버 교통 정보 응답이 지연되었습니다. 잠시 후 다시 시도해 주세요.",
+    ncaptcha_backoff: "네이버 교통 정보 조회가 잠시 제한되었습니다. 잠시 후 다시 시도해 주세요.",
+    coords_unresolved: COORDS_UNRESOLVED_ROUTE_MESSAGE,
   };
-  attachRouteContractFields(
-    body,
-    origin,
-    destination,
-    oCoords,
-    dCoords,
-    originSelection,
-    destSelection
-  );
-
-  var res = await fetch("/v1/trip/arrival-time", {
-    method: "POST",
-    headers: strictRouteContractHeaders(),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    var err = await res.json().catch(function () { return {}; });
-    throw new Error(err.detail || "요청 처리 중 오류가 발생했습니다 (" + res.status + ")");
+  var detail = data.detail;
+  if (Array.isArray(detail)) {
+    detail = detail.map(function (item) { return item && item.msg; }).filter(Boolean).join(" / ");
   }
-  return res.json();
+  var message = (Object.hasOwn(messages, data.provider_bucket) && messages[data.provider_bucket]) ||
+    (Object.hasOwn(messages, reason) && messages[reason]) ||
+    (typeof detail === "string" && detail) || fallback;
+  var error = new Error(message);
+  error.retryable = data.provider_bucket !== "coords_unresolved" &&
+    (status >= 500 || reason === "capacity_exhausted" ||
+      reason === "stream_stall_timeout" || reason === "provider_degraded" ||
+      reason === "worker_failed" || (status === 0 && !reason));
+  return error;
 }
 
-async function apiRecommendDeparture(
-  origin,
-  destination,
-  desiredArrivalTime,
-  oCoords,
-  dCoords,
-  originSelection,
-  destSelection
-) {
-  var body = {
-    origin: origin,
-    destination: destination,
-    desired_arrival_time: desiredArrivalTime,
-  };
-  attachRouteContractFields(
-    body,
-    origin,
-    destination,
-    oCoords,
-    dCoords,
-    originSelection,
-    destSelection
-  );
-
-  var res = await fetch("/v1/trip/recommended-departure-time", {
+async function fetchTrip(path, body, signal) {
+  var response = await fetch("/v1/trip/" + path, {
     method: "POST",
     headers: strictRouteContractHeaders(),
     body: JSON.stringify(body),
+    signal: signal,
   });
-  if (!res.ok) {
-    var err = await res.json().catch(function () { return {}; });
-    throw new Error(err.detail || "요청 처리 중 오류가 발생했습니다 (" + res.status + ")");
+  if (!response.ok) {
+    var payload = await response.json().catch(function () { return {}; });
+    throw tripRequestError(payload, response.status,
+      "요청 처리 중 오류가 발생했습니다 (" + response.status + ")");
   }
-  return res.json();
+  return response;
 }
 
-async function apiStreamDepartureRecommendation(
-  origin,
-  destination,
-  desiredArrivalTime,
-  oCoords,
-  dCoords,
-  originSelection,
-  destSelection,
-  handlers
-) {
-  var body = {
-    origin: origin,
-    destination: destination,
-    desired_arrival_time: desiredArrivalTime,
-  };
-  attachRouteContractFields(
-    body,
-    origin,
-    destination,
-    oCoords,
-    dCoords,
-    originSelection,
-    destSelection
-  );
+async function readTripStream(path, body, signal, handlers) {
+  var response = await fetchTrip(path, body, signal);
+  if (!response.body) throw new Error("브라우저가 스트리밍 응답을 지원하지 않습니다.");
 
-  var res = await fetch("/v1/trip/recommended-departure-time/stream", {
-    method: "POST",
-    headers: strictRouteContractHeaders(),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    var err = await res.json().catch(function () { return {}; });
-    throw new Error(err.detail || "스트림 요청 처리 중 오류가 발생했습니다 (" + res.status + ")");
-  }
-  if (!res.body) {
-    throw new Error("브라우저가 스트리밍 응답을 지원하지 않습니다.");
-  }
-
-  var reader = res.body.getReader();
+  signal.throwIfAborted();
+  var reader = response.body.getReader();
+  function cancelReader() { void reader.cancel().catch(function () {}); }
+  signal.addEventListener("abort", cancelReader, { once: true });
   var decoder = new TextDecoder("utf-8");
   var buffer = "";
-  var state = {
-    recommendation: null,
-    candidates: [],
-    progress: {
-      checked: 0,
-      planned: 0,
-      remaining: 0,
-      total_candidates: 0,
-    },
-  };
+  var recommendation = null;
+  var candidates = [];
+  var progress = null;
 
-  function dispatchEvent(evtName, evtData) {
-    if (evtName === "plan") {
-      state.progress = evtData || state.progress;
-      if (handlers && handlers.onPlan) {
-        handlers.onPlan(state.progress);
-      }
-      return;
+  function dispatch(event, data) {
+    if (event === "error" || event === "busy" || (event === "end" && data.ok === false)) {
+      if (event === "busy" && !data.reason) data.reason = "capacity_exhausted";
+      throw tripRequestError(data, 0, "추천 계산 중 오류가 발생했습니다.");
     }
-    if (evtName === "candidate") {
-      var candidatePayload = evtData.candidate || evtData;
-      if (evtData.progress) {
-        state.progress = evtData.progress;
-      }
-      state.candidates.push(candidatePayload);
-      if (handlers && handlers.onCandidate) {
-        handlers.onCandidate(
-          candidatePayload,
-          state.candidates.slice(),
-          state.progress
-        );
-      }
-      return;
-    }
-    if (evtName === "recommendation") {
-      state.recommendation = evtData;
-      state.progress = {
-        checked: evtData.candidates_checked || state.progress.checked || 0,
-        planned: evtData.planned_queries || state.progress.planned || 0,
-        remaining: Math.max(
-          0,
-          (evtData.planned_queries || state.progress.planned || 0) -
-            (evtData.candidates_checked || state.progress.checked || 0)
-        ),
-        total_candidates: evtData.total_candidates || state.progress.total_candidates || 0,
-      };
-      if (handlers && handlers.onRecommendation) {
-        handlers.onRecommendation(
-          evtData,
-          state.candidates.slice(),
-          state.progress
-        );
-      }
-      return;
-    }
-    if (evtName === "error" || evtName === "busy") {
-      var detail = (evtData && evtData.detail) || "추천 계산 스트림 오류";
-      throw new Error(detail);
-    }
-    if (evtName === "end" && evtData && evtData.ok === false) {
-      throw new Error(evtData.detail || "추천 계산 스트림 오류");
+    if (event === "arrival" && handlers.onArrival) {
+      progress = data.progress || progress;
+      handlers.onArrival(data.arrival, data.immediate_safe_departure, progress);
+    } else if (event === "plan" || event === "candidate") {
+      if (event === "candidate") candidates.push(data.candidate || data);
+      progress = event === "plan" ? data : data.progress || progress;
+      handlers.onProgress(progress);
+    } else if (event === "recommendation") {
+      recommendation = data;
     }
   }
 
   function consumeBuffer() {
-    var normalized = buffer.replace(/\r/g, "");
-    var split = normalized.split("\n\n");
-    if (split.length <= 1) {
-      buffer = normalized;
-      return;
-    }
-    buffer = split.pop() || "";
-
-    for (var i = 0; i < split.length; i++) {
-      var block = split[i].trim();
-      if (!block) continue;
-      var lines = block.split("\n");
-      var evtName = "message";
-      var dataLines = [];
-      for (var j = 0; j < lines.length; j++) {
-        var line = lines[j];
-        if (line.indexOf("event:") === 0) {
-          evtName = line.slice(6).trim();
-        } else if (line.indexOf("data:") === 0) {
-          dataLines.push(line.slice(5).trim());
-        }
-      }
-      if (!dataLines.length) continue;
-      var payloadText = dataLines.join("\n");
-      var payload = {};
-      try {
-        payload = JSON.parse(payloadText);
-      } catch (_) {
-        payload = {};
-      }
-      dispatchEvent(evtName, payload);
-    }
+    var events = buffer.split(/\r?\n\r?\n/);
+    buffer = events.pop();
+    events.forEach(function (block) {
+      var event = "message";
+      var data = [];
+      block.split(/\r?\n/).forEach(function (line) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+      });
+      if (data.length) dispatch(event, JSON.parse(data.join("\n")) || {});
+    });
   }
 
-  while (true) {
-    var chunk = await reader.read();
-    if (chunk.done) {
-      break;
+  try {
+    while (true) {
+      var chunk = await reader.read();
+      signal.throwIfAborted();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      consumeBuffer();
     }
-    buffer += decoder.decode(chunk.value, { stream: true });
-    consumeBuffer();
-  }
-  if (buffer.trim()) {
-    buffer += "\n\n";
-    consumeBuffer();
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      buffer += "\n\n";
+      consumeBuffer();
+    }
+  } finally {
+    // Stop the response when an SSE error arrives before its closing frame.
+    signal.removeEventListener("abort", cancelReader);
+    cancelReader();
+    reader.releaseLock();
   }
 
-  if (!state.recommendation) {
-    throw new Error("추천 결과를 수신하지 못했습니다.");
+  if (!recommendation) throw new Error("추천 결과를 수신하지 못했습니다.");
+  if (candidates.length && !recommendation.candidate_evaluations?.length) {
+    recommendation.candidate_evaluations = candidates;
   }
-  if (
-    state.candidates.length > 0 &&
-    (
-      !state.recommendation.candidate_evaluations ||
-      state.recommendation.candidate_evaluations.length === 0
-    )
-  ) {
-    state.recommendation.candidate_evaluations = state.candidates.slice();
-  }
-  return state;
-}
-
-async function apiStreamArrivalWithRecommendation(
-  origin,
-  destination,
-  departureTime,
-  oCoords,
-  dCoords,
-  originSelection,
-  destSelection,
-  handlers
-) {
-  var body = {
-    origin: origin,
-    destination: destination,
-    departure_time: departureTime,
-  };
-  attachRouteContractFields(
-    body,
-    origin,
-    destination,
-    oCoords,
-    dCoords,
-    originSelection,
-    destSelection
-  );
-
-  var res = await fetch("/v1/trip/arrival-time-with-recommendation/stream", {
-    method: "POST",
-    headers: strictRouteContractHeaders(),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    var err = await res.json().catch(function () { return {}; });
-    throw new Error(err.detail || "스트림 요청 처리 중 오류가 발생했습니다 (" + res.status + ")");
-  }
-  if (!res.body) {
-    throw new Error("브라우저가 스트리밍 응답을 지원하지 않습니다.");
-  }
-
-  var reader = res.body.getReader();
-  var decoder = new TextDecoder("utf-8");
-  var buffer = "";
-  var state = {
-    arrival: null,
-    immediate_safe_departure: null,
-    recommendation: null,
-    candidates: [],
-    progress: {
-      checked: 0,
-      planned: 0,
-      remaining: 0,
-      total_candidates: 0,
-    },
-  };
-
-  function dispatchEvent(evtName, evtData) {
-    if (evtName === "arrival") {
-      state.arrival = evtData.arrival || null;
-      state.immediate_safe_departure = evtData.immediate_safe_departure || null;
-      if (evtData.progress) {
-        state.progress = evtData.progress;
-      }
-      if (handlers && handlers.onArrival) {
-        handlers.onArrival(
-          state.arrival,
-          state.immediate_safe_departure,
-          state.progress
-        );
-      }
-      return;
-    }
-    if (evtName === "plan") {
-      state.progress = evtData || state.progress;
-      if (handlers && handlers.onPlan) {
-        handlers.onPlan(state.progress);
-      }
-      return;
-    }
-    if (evtName === "candidate") {
-      var candidatePayload = evtData.candidate || evtData;
-      if (evtData.progress) {
-        state.progress = evtData.progress;
-      }
-      state.candidates.push(candidatePayload);
-      if (handlers && handlers.onCandidate) {
-        handlers.onCandidate(
-          candidatePayload,
-          state.candidates.slice(),
-          state.progress
-        );
-      }
-      return;
-    }
-    if (evtName === "recommendation") {
-      state.recommendation = evtData;
-      state.progress = {
-        checked: evtData.candidates_checked || state.progress.checked || 0,
-        planned: evtData.planned_queries || state.progress.planned || 0,
-        remaining: Math.max(
-          0,
-          (evtData.planned_queries || state.progress.planned || 0) -
-            (evtData.candidates_checked || state.progress.checked || 0)
-        ),
-        total_candidates: evtData.total_candidates || state.progress.total_candidates || 0,
-      };
-      if (handlers && handlers.onRecommendation) {
-        handlers.onRecommendation(
-          evtData,
-          state.candidates.slice(),
-          state.progress
-        );
-      }
-      return;
-    }
-    if (evtName === "error" || evtName === "busy") {
-      var detail = (evtData && evtData.detail) || "추천 계산 스트림 오류";
-      throw new Error(detail);
-    }
-    if (evtName === "end" && evtData && evtData.ok === false) {
-      throw new Error(evtData.detail || "추천 계산 스트림 오류");
-    }
-  }
-
-  function consumeBuffer() {
-    var normalized = buffer.replace(/\r/g, "");
-    var split = normalized.split("\n\n");
-    if (split.length <= 1) {
-      buffer = normalized;
-      return;
-    }
-    buffer = split.pop() || "";
-
-    for (var i = 0; i < split.length; i++) {
-      var block = split[i].trim();
-      if (!block) continue;
-      var lines = block.split("\n");
-      var evtName = "message";
-      var dataLines = [];
-      for (var j = 0; j < lines.length; j++) {
-        var line = lines[j];
-        if (line.indexOf("event:") === 0) {
-          evtName = line.slice(6).trim();
-        } else if (line.indexOf("data:") === 0) {
-          dataLines.push(line.slice(5).trim());
-        }
-      }
-      if (!dataLines.length) continue;
-      var payloadText = dataLines.join("\n");
-      var payload = {};
-      try {
-        payload = JSON.parse(payloadText);
-      } catch (_) {
-        payload = {};
-      }
-      dispatchEvent(evtName, payload);
-    }
-  }
-
-  while (true) {
-    var chunk = await reader.read();
-    if (chunk.done) {
-      break;
-    }
-    buffer += decoder.decode(chunk.value, { stream: true });
-    consumeBuffer();
-  }
-  if (buffer.trim()) {
-    buffer += "\n\n";
-    consumeBuffer();
-  }
-
-  if (!state.recommendation) {
-    throw new Error("추천 결과를 수신하지 못했습니다.");
-  }
-  if (
-    state.candidates.length > 0 &&
-    (
-      !state.recommendation.candidate_evaluations ||
-      state.recommendation.candidate_evaluations.length === 0
-    )
-  ) {
-    state.recommendation.candidate_evaluations = state.candidates.slice();
-  }
-  return state;
+  return recommendation;
 }
 
 /* ── Rendering ────────────────────────────────────── */
-
-function renderArrivalResult(data) {
-  hideCandidateTooltip(true);
-  setProviderName(data.provider);
-  var durationText = formatRoundedDuration(data.duration_seconds);
-  var providerNoticeHtml = buildProviderNoticeCard(data.provider);
-  var html =
-    providerNoticeHtml +
-    '<div class="result-card">' +
-    '  <div class="result-title">&#128663; 예상 도착 시각</div>' +
-    '  <div class="result-rows">' +
-    '    <div class="result-row">' +
-    '      <span class="label">출발</span>' +
-    '      <span class="value">' + formatRoundedDatetime(data.departure_time) + "</span>" +
-    "    </div>" +
-    '    <div class="result-row">' +
-    '      <span class="label">도착</span>' +
-    '      <span class="value">' + formatRoundedDatetime(data.arrival_time) + "</span>" +
-    "    </div>" +
-    "  </div>" +
-    '  <div class="result-duration">' +
-    '    <div class="duration-big">' + durationText + "</div>" +
-    '    <div class="duration-label">예상 소요시간</div>' +
-    "  </div>" +
-    '  <div class="result-meta">' +
-    '    <span class="result-badge ' + (data.cache_hit ? "badge-success" : "badge-warn") + '">' +
-         (data.cache_hit ? "&#9889; 캐시 히트" : "&#128268; 신규 조회") + "</span>" +
-    "  </div>" +
-    "</div>";
-  $results.innerHTML = html;
-  $results.classList.remove("hidden");
-}
 
 var _RENDER_CONTEXT_BY_MODE = {
   arrival: {
@@ -3078,7 +2617,7 @@ function buildImmediateSafeCard(immediateSafe) {
   if (!immediateSafe || !immediateSafe.safe_departure_time) {
     return "";
   }
-  var safeDur = formatRoundedDuration(immediateSafe.safe_duration_seconds || 0);
+  var safeDur = formatDuration(immediateSafe.safe_duration_seconds || 0);
   var clampMsg = immediateSafe.clamped_to_now
     ? '<span class="result-badge badge-warn">&#9888; 현재 시각 하한 적용</span>'
     : '<span class="result-badge badge-success">&#10003; 즉시 산출</span>';
@@ -3088,7 +2627,7 @@ function buildImmediateSafeCard(immediateSafe) {
     '  <div class="result-rows">' +
     '    <div class="result-row">' +
     '      <span class="label">여유 출발</span>' +
-    '      <span class="value">' + formatRoundedDatetime(immediateSafe.safe_departure_time) + "</span>" +
+    '      <span class="value">' + formatDatetime(immediateSafe.safe_departure_time) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">적용 소요시간</span>' +
@@ -3123,31 +2662,11 @@ function buildAnalysisCard(data, context, options) {
     safeDepartureTime,
     safeDurationSeconds
   );
-  var tightRoundedSeconds = latestDurationSeconds != null
-    ? ceilDurationSecondsToMinuteStep(
-      latestDurationSeconds,
-      DATETIME_MINUTE_STEP
-    )
-    : null;
-  var safeRoundedSeconds = safeDurationSeconds != null
-    ? ceilDurationSecondsToMinuteStep(
-      safeDurationSeconds,
-      DATETIME_MINUTE_STEP
-    )
-    : null;
-  var tightDur = tightRoundedSeconds != null
-    ? formatDuration(tightRoundedSeconds)
+  var tightDur = formatDuration(latestDurationSeconds);
+  var safeDur = formatDuration(safeDurationSeconds);
+  var bufferText = latestDurationSeconds != null && safeDurationSeconds != null
+    ? "+" + formatDuration(Math.max(0, safeDurationSeconds - latestDurationSeconds))
     : "-";
-  var safeDur = safeRoundedSeconds != null
-    ? formatDuration(safeRoundedSeconds)
-    : "-";
-  var bufferSec = (
-    tightRoundedSeconds != null &&
-    safeRoundedSeconds != null
-  )
-    ? (safeRoundedSeconds - tightRoundedSeconds)
-    : 0;
-  var bufferMin = Math.ceil(bufferSec / 60);
   var candidateCount = data.candidates_checked || 0;
   var plannedCount = data.planned_queries || 0;
   var totalCount = data.total_candidates || 0;
@@ -3179,11 +2698,11 @@ function buildAnalysisCard(data, context, options) {
     '        <span class="deadline-block-label">' + ctx.tightLabel + "</span>" +
     "      </div>" +
     '      <div class="deadline-time">' +
-            formatRoundedDatetime(latestDepartureTime) +
+            formatDatetime(latestDepartureTime) +
     "</div>" +
     '      <div class="deadline-sub">' +
     '        <span>도착 ' +
-            formatRoundedDatetime(latestArrivalTime) +
+            formatDatetime(latestArrivalTime) +
     "</span>" +
     '        <span class="deadline-dur">' + tightDur + "</span>" +
     "      </div>" +
@@ -3194,11 +2713,11 @@ function buildAnalysisCard(data, context, options) {
     '        <span class="deadline-block-label">' + ctx.safeLabel + "</span>" +
     "      </div>" +
     '      <div class="deadline-time">' +
-            formatRoundedDatetime(safeDepartureTime) +
+            formatDatetime(safeDepartureTime) +
     "</div>" +
     '      <div class="deadline-sub">' +
     '        <span>도착 ' +
-            formatRoundedDatetime(safeArrivalTime) +
+            formatDatetime(safeArrivalTime) +
     "</span>" +
     '        <span class="deadline-dur">' + safeDur + "</span>" +
     "      </div>" +
@@ -3212,9 +2731,9 @@ function buildAnalysisCard(data, context, options) {
           '</span><span class="val">' + tightDur + "</span></div>" +
     '    <div class="calc-explain-row"><span class="label">안정적 보정 계수</span><span class="val">&times;1.25 (25% 여유)</span></div>' +
     '    <div class="calc-explain-row"><span class="label">보정 적용 소요시간</span><span class="val">' + safeDur + "</span></div>" +
-    '    <div class="calc-explain-row"><span class="label">추가된 여유 시간</span><span class="val">+' +
-          bufferMin +
-          '분</span></div>' +
+    '    <div class="calc-explain-row"><span class="label">추가된 여유 시간</span><span class="val">' +
+          bufferText +
+          '</span></div>' +
     '    <div class="calc-explain-row"><span class="label">산출 방식</span><span class="val">' +
           ctx.calcFormulaText +
           "</span></div>" +
@@ -3267,7 +2786,7 @@ function updateLiveProgress(progress) {
 
 function buildBaselineArrivalCard(data, context) {
   var ctx = context || _renderContext("departure");
-  var durationText = formatRoundedDuration(data.duration_seconds);
+  var durationText = formatDuration(data.duration_seconds);
   var cacheBadge = data.cache_hit
     ? "&#9889; 캐시 히트"
     : "&#128268; 신규 조회";
@@ -3278,11 +2797,11 @@ function buildBaselineArrivalCard(data, context) {
     '  <div class="result-rows">' +
     '    <div class="result-row">' +
     '      <span class="label">출발</span>' +
-    '      <span class="value">' + formatRoundedDatetime(data.departure_time) + "</span>" +
+    '      <span class="value">' + formatDatetime(data.departure_time) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">도착</span>' +
-    '      <span class="value">' + formatRoundedDatetime(data.arrival_time) + "</span>" +
+    '      <span class="value">' + formatDatetime(data.arrival_time) + "</span>" +
     "    </div>" +
     "  </div>" +
     '  <div class="result-duration">' +
@@ -3384,12 +2903,12 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
   hideCandidateTooltip(true);
   var ctx = context || _renderContext("departure");
   setProviderName(data.provider);
-  var html = buildProviderNoticeCard(data.provider);
+  var detailsHtml = buildProviderNoticeCard(data.provider);
   if (baselineArrivalData && ctx.mode !== "arrival") {
-    html += buildBaselineArrivalCard(baselineArrivalData, ctx);
+    detailsHtml += buildBaselineArrivalCard(baselineArrivalData, ctx);
   }
   if (immediateSafe && ctx.mode !== "arrival") {
-    html += buildImmediateSafeCard(immediateSafe);
+    detailsHtml += buildImmediateSafeCard(immediateSafe);
   }
 
   var safeDepartureFallback = immediateSafe
@@ -3439,17 +2958,14 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     }
   }
 
-  var durationText = formatRoundedDuration(recommendedDurationDisplaySeconds);
-  var tightDurationText = formatRoundedDuration(latestDurationSeconds);
-  var safeDurationText = formatRoundedDuration(safeDurationSeconds);
+  var durationText = formatDuration(recommendedDurationDisplaySeconds);
+  var tightDurationText = formatDuration(latestDurationSeconds);
+  var safeDurationText = formatDuration(safeDurationSeconds);
   var displayMeetsDeadline = !!data.meets_deadline;
   if (ctx.mode === "departure") {
-    var displayArrival = new Date(expectedArrivalDisplayTime);
-    var desiredArrival = new Date(data.desired_arrival_time);
-    if (
-      !isNaN(displayArrival.getTime()) &&
-      !isNaN(desiredArrival.getTime())
-    ) {
+    var displayArrival = parseIsoDatetime(expectedArrivalDisplayTime);
+    var desiredArrival = parseIsoDatetime(data.desired_arrival_time);
+    if (displayArrival && desiredArrival) {
       displayMeetsDeadline = displayArrival.getTime() <= desiredArrival.getTime();
     }
   }
@@ -3472,7 +2988,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     total_candidates: data.total_candidates,
   };
   if (analysisData.latest_departure_time || analysisData.safe_departure_time) {
-    html += buildAnalysisCard(analysisData, ctx);
+    detailsHtml += buildAnalysisCard(analysisData, ctx);
   }
 
   var candidateTooltipHtml = buildCandidateTooltip(data.candidate_evaluations || [], ctx);
@@ -3495,7 +3011,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     "</span>";
   var recommendedScoreText = formatScorePercent(data.recommended_score_total);
   var baselineScoreText = formatScorePercent(data.baseline_score_total);
-  var baselineDepartureText = formatRoundedDatetime(latestDepartureTime);
+  var baselineDepartureText = formatDatetime(latestDepartureTime);
   var baselineDepartureLabel = ctx.baselineDepartureLabel || "지정 출발 시간";
   var arrivalDeltaLabel = ctx.arrivalDeltaLabel || "지정 출발 대비 도착 시간 차이";
   var baselineScoreLabel = ctx.mode === "arrival"
@@ -3565,14 +3081,13 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     "  </div>" +
     "</div>";
 
-  // ── 추천 출발 시각 카드 (아래 배치) ──
-  html +=
+  var html =
     '<div class="result-card recommendation-card">' +
     '  <div class="result-title">&#128663; 추천 출발 시각</div>' +
     '  <div class="result-rows">' +
     '    <div class="result-row row-recommended-departure">' +
     '      <span class="label">추천 출발 시간</span>' +
-    '      <span class="value">' + formatRoundedDatetime(recommendedDepartureDisplayTime) + "</span>" +
+    '      <span class="value">' + formatDatetime(recommendedDepartureDisplayTime) + "</span>" +
     "    </div>" +
     '    <div class="result-row row-baseline-departure">' +
     '      <span class="label">' + baselineDepartureLabel + "</span>" +
@@ -3580,11 +3095,11 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">추천 출발시 예상 도착 시간</span>' +
-    '      <span class="value">' + formatRoundedDatetime(expectedArrivalDisplayTime) + "</span>" +
+    '      <span class="value">' + formatDatetime(expectedArrivalDisplayTime) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">' + ctx.desiredLabel + "</span>" +
-    '      <span class="value">' + formatRoundedDatetime(data.desired_arrival_time) + "</span>" +
+    '      <span class="value">' + formatDatetime(data.desired_arrival_time) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">' + arrivalDeltaLabel + "</span>" +
@@ -3612,7 +3127,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
          calendarActionsHtml +
     "</div>";
 
-  $results.innerHTML = html;
+  $results.innerHTML = html + detailsHtml;
   $results.classList.remove("hidden");
   setupAnalysisTooltipPanels();
   setupCandidateTooltipPanels();
@@ -3801,6 +3316,7 @@ function refreshMapMarkersLive(endpoint) {
   var refreshDest = endpoint !== "origin";
   var isLiveMarkerRefreshCurrent = function () {
     return (
+      !_searchInProgress &&
       $origin.value.trim() === orig &&
       $destination.value.trim() === dest &&
       _selectedOrigin === originSelection &&
@@ -3873,6 +3389,9 @@ function setSidebarOpen(open) {
   if (open) {
     $sidebar.classList.remove("sheet-hidden");
   }
+  var hidden = $sidebar.classList.contains("sheet-hidden");
+  $sheetRestore.hidden = !hidden;
+  $sidebar.inert = hidden && isMobileViewport();
   if ($mobileToggle) {
     $mobileToggle.setAttribute("aria-expanded", open ? "true" : "false");
   }
@@ -3889,15 +3408,8 @@ function setSidebarOpen(open) {
 
 function setSheetHidden(hidden) {
   $sidebar.classList.toggle("sheet-hidden", hidden);
-  if (hidden) {
-    setSidebarOpen(false);
-    if ($sidebarBackdrop) {
-      $sidebarBackdrop.classList.remove("is-visible");
-    }
-    if (_datetimePickerState.isOpen) {
-      closeDatetimePanel();
-    }
-  }
+  if (hidden && $sidebar.contains(document.activeElement)) document.activeElement.blur();
+  setSidebarOpen(false);
 }
 
 function isMobileViewport() {
@@ -3912,20 +3424,6 @@ function isMobileViewport() {
 
   function pointerY(e) {
     return e.touches && e.touches.length ? e.touches[0].clientY : e.clientY;
-  }
-
-  function dismissToHidden() {
-    $sidebar.classList.remove("open");
-    $sidebar.classList.add("sheet-hidden");
-    if ($sidebarBackdrop) {
-      $sidebarBackdrop.classList.remove("is-visible");
-    }
-    if ($mobileToggle) {
-      $mobileToggle.setAttribute("aria-expanded", "false");
-    }
-    if (_datetimePickerState.isOpen) {
-      closeDatetimePanel();
-    }
   }
 
   $sheetHeader.addEventListener("pointerdown", function (e) {
@@ -3981,12 +3479,12 @@ function isMobileViewport() {
     if (state.dy > threshold || state.dy > window.innerHeight * 0.25) {
       if (state.wasOpen) {
         if (state.dy > window.innerHeight * 0.35) {
-          dismissToHidden();
+          setSheetHidden(true);
         } else {
           setSidebarOpen(false);
         }
       } else {
-        dismissToHidden();
+        setSheetHidden(true);
       }
     }
   }
@@ -3996,10 +3494,74 @@ function isMobileViewport() {
 
   $mobileToggle.addEventListener("click", function () {
     if ($sidebar.classList.contains("sheet-hidden")) {
-      $sidebar.classList.remove("sheet-hidden");
+      setSheetHidden(false);
       return;
     }
     setSidebarOpen(!$sidebar.classList.contains("open"));
+  });
+})();
+
+window.addEventListener("resize", function () {
+  $sidebar.inert = isMobileViewport() && $sidebar.classList.contains("sheet-hidden");
+});
+function restoreSheet() {
+  setSheetHidden(false);
+  $mobileToggle.focus({ preventScroll: true });
+}
+$sheetRestore.addEventListener("click", restoreSheet);
+var restorePointer = null;
+$sheetRestore.addEventListener("pointerdown", function (event) {
+  restorePointer = { id: event.pointerId, startY: event.clientY };
+  $sheetRestore.setPointerCapture(event.pointerId);
+});
+$sheetRestore.addEventListener("pointerup", function (event) {
+  if (restorePointer && restorePointer.id === event.pointerId && restorePointer.startY - event.clientY > 36) {
+    restoreSheet();
+  }
+  restorePointer = null;
+});
+$sheetRestore.addEventListener("pointercancel", function () { restorePointer = null; });
+
+(function () {
+  var viewport = window.visualViewport;
+  if (!viewport) return;
+
+  function updateKeyboardOffset() {
+    var field = document.activeElement;
+    var container = $sidebar.contains(field) ? $sidebar :
+      _datetimePickerState.isOpen && $datetimePanel.contains(field) ? $datetimePanel : null;
+    var textInput = field && container && !field.readOnly &&
+      field.matches('input:not([type]), input[type="text"], input[type="search"], input[type="tel"], input[type="email"], input[type="url"], input[type="number"], textarea');
+    var overlap = Math.round(window.innerHeight - viewport.height - viewport.offsetTop);
+    var showOffset = isMobileViewport() && textInput && document.hasFocus() && !document.hidden &&
+      Math.abs(viewport.scale - 1) < 0.02 && overlap >= 100;
+
+    $sidebar.classList.toggle("kb-tracking", showOffset);
+    $sidebar.style.bottom = showOffset ? overlap + "px" : "";
+    $sidebar.style.maxHeight = showOffset
+      ? Math.min($sidebar.scrollHeight, Math.max(0, Math.round(viewport.height) - 24)) + "px"
+      : "";
+
+    if (_datetimePickerState.isOpen) positionDatetimePanel();
+    if (showOffset) {
+      var bounds = container.getBoundingClientRect();
+      var fieldRect = field.getBoundingClientRect();
+      if (fieldRect.bottom + 12 > bounds.bottom) {
+        container.scrollTop += fieldRect.bottom + 12 - bounds.bottom;
+      } else if (fieldRect.top - 12 < bounds.top) {
+        container.scrollTop -= bounds.top - fieldRect.top + 12;
+      }
+    }
+  }
+  viewport.addEventListener("resize", updateKeyboardOffset);
+  viewport.addEventListener("scroll", updateKeyboardOffset);
+  window.addEventListener("resize", updateKeyboardOffset);
+  window.addEventListener("blur", updateKeyboardOffset);
+  window.addEventListener("focus", updateKeyboardOffset);
+  document.addEventListener("visibilitychange", updateKeyboardOffset);
+  document.addEventListener("focusin", updateKeyboardOffset);
+  document.addEventListener("focusout", function () {
+    window.requestAnimationFrame(updateKeyboardOffset);
   });
 })();
 
@@ -4050,25 +3612,30 @@ async function handleSearch() {
   if (!destination) { showError("도착지를 입력해 주세요."); $destination.focus(); return; }
   if (!datetimeVal) { showError("시각을 선택해 주세요."); $datetimeInput.focus(); return; }
 
-  // 과거 시간 보정 + 10분 올림
-  var datetimeValidation = validateAndCeilDatetime();
-  if (datetimeValidation.invalid) {
-    showError("시각 형식이 올바르지 않습니다. 예: 2026-02-17T10:00");
+  var now = Date.now();
+  var wallDate = parseWallIsoMinutes(datetimeVal);
+  var instant = wallDate && resolveServiceInstant(wallDate, now);
+  if (!instant || instant.getTime() <= now) {
+    showError(!wallDate ? "시각 형식이 올바르지 않습니다." :
+      !instant ? "서비스 시간대에 존재하지 않는 시각입니다." :
+      "현재 시점 이전으로는 조회를 할 수 없습니다.");
     $datetimeInput.focus();
     return;
   }
-  if (datetimeValidation.corrected) {
-    datetimeVal = datetimeValidation.corrected;
-  } else {
-    datetimeVal = $datetimeInput.value;
-  }
+  var isoTime = instant.toISOString();
 
   var searchOriginSelection = _selectedOrigin;
   var searchDestSelection = _selectedDest;
   var searchMode = _currentMode;
   var searchRouteInputRevision = _routeInputRevision;
+  if (_searchController) _searchController.abort();
+  var controller = new AbortController();
+  _searchController = controller;
+  var signal = controller.signal;
   var isSearchStillCurrent = function () {
     return (
+      _searchController === controller &&
+      !signal.aborted &&
       _routeInputRevision === searchRouteInputRevision &&
       isCurrentSearchSnapshot(
         origin,
@@ -4087,21 +3654,11 @@ async function handleSearch() {
   hideDatetimeInputTooltip();
   showLoading();
   $results.classList.add("hidden");
-
-  var isoTime = toApiDatetimeString(datetimeVal);
-  if (!isoTime) {
-    showError("시각 값을 해석할 수 없습니다. 다시 선택해 주세요.");
-    if (_routeInputRevision === searchRouteInputRevision) {
-      _searchInProgress = false;
-      if (!isSearchStillCurrent()) return;
-      hideLoading();
-    }
-    return;
-  }
+  $results.replaceChildren();
 
   try {
     // ── Step 1: 출발/도착 좌표를 병렬 resolve ──
-    var originCoordsPromise = resolveRouteCriticalCoords(origin, searchOriginSelection).then(function (coords) {
+    var originCoordsPromise = resolveRouteCriticalCoords(origin, searchOriginSelection, signal).then(function (coords) {
       if (!isSearchStillCurrent()) return coords;
       if (coords && hasStableSelection(searchOriginSelection) && !hasValidCoords(searchOriginSelection)) {
         searchOriginSelection = markSelectionCoordsResolved(searchOriginSelection, coords);
@@ -4113,7 +3670,7 @@ async function handleSearch() {
       }
       return coords;
     });
-    var destCoordsPromise = resolveRouteCriticalCoords(destination, searchDestSelection).then(function (coords) {
+    var destCoordsPromise = resolveRouteCriticalCoords(destination, searchDestSelection, signal).then(function (coords) {
       if (!isSearchStillCurrent()) return coords;
       if (coords && hasStableSelection(searchDestSelection) && !hasValidCoords(searchDestSelection)) {
         searchDestSelection = markSelectionCoordsResolved(searchDestSelection, coords);
@@ -4181,348 +3738,77 @@ async function handleSearch() {
       }
       fitBounds();
     }
-    var routePromise = oCoords && dCoords
-      ? fetchAndDrawRoute(
-          oCoords.lat,
-          oCoords.lon,
-          dCoords.lat,
-          dCoords.lon,
-          isSearchStillCurrent
-        )
-      : Promise.resolve();
+    void fetchAndDrawRoute(
+      oCoords.lat, oCoords.lon, dCoords.lat, dCoords.lon, isSearchStillCurrent, signal
+    );
 
-    if (_currentMode === "arrival") {
-      var arrivalContext = _renderContext("arrival");
-      var baselineData = null;
-      var immediateSafe = null;
-      var finalRendered = false;
-      var finalRenderScheduled = false;
-      var pendingRenderedAt = 0;
-      var minPendingVisibleMs = 600;
-      var progressState = {
-        checked: 0,
-        planned: 0,
-        remaining: 0,
-        total_candidates: 0,
-      };
-      try {
-        var streamResults = await Promise.all([
-          apiStreamArrivalWithRecommendation(
-            requestOrigin,
-            requestDestination,
-            isoTime,
-            oCoords,
-            dCoords,
-            searchOriginSelection,
-            searchDestSelection,
-            {
-              onArrival: function (arrivalPayload, safePayload, progressPayload) {
-                if (!isSearchStillCurrent()) return;
-                baselineData = withDisplayRoute(
-                  arrivalPayload,
-                  displayOrigin,
-                  displayDestination
-                );
-                immediateSafe = safePayload;
-                if (progressPayload) {
-                  progressState = progressPayload;
-                }
-                renderDeparturePending(
-                  baselineData,
-                  arrivalContext,
-                  immediateSafe,
-                  progressState
-                );
-                pendingRenderedAt = Date.now();
-                hideLoading();
-              },
-              onPlan: function (progressPayload) {
-                if (!isSearchStillCurrent()) return;
-                progressState = progressPayload || progressState;
-                if (!baselineData) {
-                  return;
-                }
-                renderDeparturePending(
-                  baselineData,
-                  arrivalContext,
-                  immediateSafe,
-                  progressState
-                );
-              },
-              onCandidate: function (_candidate, allCandidates, progressPayload) {
-                if (!isSearchStillCurrent()) return;
-                if (!baselineData) return;
-                if (progressPayload) {
-                  progressState = progressPayload;
-                } else {
-                  progressState.checked = allCandidates.length;
-                  progressState.remaining = Math.max(
-                    0,
-                    (progressState.planned || 0) - progressState.checked
-                  );
-                }
-                renderDeparturePending(
-                  baselineData,
-                  arrivalContext,
-                  immediateSafe,
-                  progressState
-                );
-              },
-              onRecommendation: function (recommendPayload, candidates, progressPayload) {
-                if (!isSearchStillCurrent()) return;
-                recommendPayload = withDisplayRoute(
-                  recommendPayload,
-                  displayOrigin,
-                  displayDestination
-                );
-                if (
-                  candidates &&
-                  candidates.length > 0 &&
-                  (
-                    !recommendPayload.candidate_evaluations ||
-                    recommendPayload.candidate_evaluations.length === 0
-                  )
-                ) {
-                  recommendPayload.candidate_evaluations = candidates.slice();
-                }
-                if (progressPayload) {
-                  progressState = progressPayload;
-                }
-                var renderFinalRecommendation = function () {
-                  if (!isSearchStillCurrent()) {
-                    finalRenderScheduled = false;
-                    return;
-                  }
-                  renderDepartureResult(
-                    recommendPayload,
-                    baselineData,
-                    arrivalContext,
-                    immediateSafe
-                  );
-                  finalRendered = true;
-                  finalRenderScheduled = false;
-                };
-                if (pendingRenderedAt > 0) {
-                  var elapsedSincePending = Date.now() - pendingRenderedAt;
-                  var delayMs = Math.max(
-                    0,
-                    minPendingVisibleMs - elapsedSincePending
-                  );
-                  finalRenderScheduled = true;
-                  setTimeout(function () {
-                    if (finalRendered) {
-                      finalRenderScheduled = false;
-                      return;
-                    }
-                    if (!isSearchStillCurrent()) {
-                      finalRenderScheduled = false;
-                      return;
-                    }
-                    renderFinalRecommendation();
-                  }, delayMs);
-                  return;
-                }
-                renderFinalRecommendation();
-              },
-            }
-          ),
-          routePromise,
-        ]);
+    var routeBody = { origin: requestOrigin, destination: requestDestination };
+    attachRouteContractFields(
+      routeBody, requestOrigin, requestDestination, oCoords, dCoords,
+      searchOriginSelection, searchDestSelection
+    );
+    var context = _renderContext(searchMode);
+    var baselineData = null;
+    var immediateSafe = null;
+    var progress = null;
 
-        if (!isSearchStillCurrent()) return;
-        if (
-          !finalRendered &&
-          !finalRenderScheduled &&
-          streamResults[0].recommendation
-        ) {
-          renderDepartureResult(
-            withDisplayRoute(
-              streamResults[0].recommendation,
-              displayOrigin,
-              displayDestination
-            ),
-            withDisplayRoute(
-              streamResults[0].arrival || baselineData,
-              displayOrigin,
-              displayDestination
-            ),
-            arrivalContext,
-            streamResults[0].immediate_safe_departure || immediateSafe
-          );
-        }
-      } catch (arrivalRecommendErr) {
-        if (!isSearchStillCurrent()) return;
-        console.warn("arrival mode recommendation failed:", arrivalRecommendErr);
-        if (baselineData) {
-          renderArrivalResult(baselineData);
-        } else {
-          throw arrivalRecommendErr;
-        }
-      }
-    } else {
-      var departureContext = _renderContext("departure");
-      var progressState = {
-        checked: 0,
-        planned: 0,
-        remaining: 0,
-        total_candidates: 0,
-      };
-      var baselineDepartureLocal = nowCeilToStep();
-      var baselineDepartureTime = toApiDatetimeString(baselineDepartureLocal) || isoTime;
-      var baselinePromise = apiEstimateArrival(
-        requestOrigin,
-        requestDestination,
-        baselineDepartureTime,
-        oCoords,
-        dCoords,
-        searchOriginSelection,
-        searchDestSelection
-      );
-
-      var baselineData = null;
-      var recommendationData = null;
-      var baselineResolved = false;
-      var streamErr = null;
-      var recommendStreamPromise = apiStreamDepartureRecommendation(
-        requestOrigin,
-        requestDestination,
-        isoTime,
-        oCoords,
-        dCoords,
-        searchOriginSelection,
-        searchDestSelection,
-        {
-          onPlan: function (progressPayload) {
-            if (!isSearchStillCurrent()) return;
-            progressState = progressPayload || progressState;
-            if (!baselineResolved) {
-              return;
-            }
-            renderDeparturePending(
-              baselineData,
-              departureContext,
-              null,
-              progressState
-            );
-          },
-          onCandidate: function (_candidate, allCandidates, progressPayload) {
-            if (!isSearchStillCurrent()) return;
-            if (progressPayload) {
-              progressState = progressPayload;
-            } else {
-              progressState.checked = allCandidates.length;
-              progressState.remaining = Math.max(
-                0,
-                (progressState.planned || 0) - progressState.checked
-              );
-            }
-            if (!baselineResolved) {
-              return;
-            }
-            renderDeparturePending(
-              baselineData,
-              departureContext,
-              null,
-              progressState
-            );
-          },
-          onRecommendation: function (recommendPayload, candidates, progressPayload) {
-            if (!isSearchStillCurrent()) return;
-            recommendPayload = withDisplayRoute(
-              recommendPayload,
-              displayOrigin,
-              displayDestination
-            );
-            if (
-              candidates &&
-              candidates.length > 0 &&
-              (
-                !recommendPayload.candidate_evaluations ||
-                recommendPayload.candidate_evaluations.length === 0
-              )
-            ) {
-              recommendPayload.candidate_evaluations = candidates.slice();
-            }
-            if (progressPayload) {
-              progressState = progressPayload;
-            }
-            recommendationData = recommendPayload;
-          },
-        }
-      ).catch(function (err) {
-        streamErr = err;
-        console.warn("departure mode recommendation stream failed:", err);
-        return null;
-      });
-
-      try {
-        baselineData = await baselinePromise;
-        if (!isSearchStillCurrent()) return;
-        baselineData = withDisplayRoute(
-          baselineData,
-          displayOrigin,
-          displayDestination
-        );
-        baselineResolved = true;
-        renderDeparturePending(
-          baselineData,
-          departureContext,
-          null,
-          progressState
-        );
-      } catch (baselineErr) {
-        if (!isSearchStillCurrent()) return;
-        console.warn("baseline arrival failed:", baselineErr);
-        baselineResolved = true;
-        renderDeparturePending(
-          null,
-          departureContext,
-          null,
-          progressState
-        );
-      }
-
-      hideLoading();
-
-      var departureResults = await Promise.all([recommendStreamPromise, routePromise]);
+    function renderPending() {
       if (!isSearchStillCurrent()) return;
-      if (
-        !recommendationData &&
-        departureResults[0] &&
-        departureResults[0].recommendation
-      ) {
-        recommendationData = withDisplayRoute(
-          departureResults[0].recommendation,
-          displayOrigin,
-          displayDestination
-        );
-      }
-      if (!recommendationData) {
-        if (streamErr) {
-          console.warn("falling back to single departure recommendation API");
-        }
-        recommendationData = await apiRecommendDeparture(
-          requestOrigin,
-          requestDestination,
-          isoTime,
-          oCoords,
-          dCoords,
-          searchOriginSelection,
-          searchDestSelection
-        );
+      $loading.classList.add("hidden");
+      renderDeparturePending(baselineData, context, immediateSafe, progress);
+    }
+
+    function receiveBaseline(data, safe, currentProgress) {
+      if (!isSearchStillCurrent()) return;
+      baselineData = withDisplayRoute(data, displayOrigin, displayDestination);
+      if (baselineData) $searchStatus.textContent = "기준 조회 결과가 나왔습니다. 추천 출발 시각을 계산하고 있습니다.";
+      immediateSafe = safe || null;
+      progress = currentProgress || progress;
+      renderPending();
+    }
+
+    var handlers = {
+      onArrival: receiveBaseline,
+      onProgress: function (currentProgress) {
         if (!isSearchStillCurrent()) return;
-        recommendationData = withDisplayRoute(
-          recommendationData,
-          displayOrigin,
-          displayDestination
-        );
-      }
+        progress = currentProgress || progress;
+        if (baselineData) renderPending();
+      },
+    };
+
+    var streamPath = "arrival-time-with-recommendation/stream";
+    var streamBody = { ...routeBody, departure_time: isoTime };
+    if (searchMode === "departure") {
+      // The baseline and recommendation share server capacity.
+      var baselineDeparture = new Date(Math.ceil(Date.now() / 60000) * 60000);
+      var baselineResponse = await fetchTrip("arrival-time", {
+        ...routeBody, departure_time: baselineDeparture.toISOString(),
+      }, signal);
+      var baseline = await baselineResponse.json();
+      if (!isSearchStillCurrent()) return;
+      receiveBaseline(baseline);
+      streamPath = "recommended-departure-time/stream";
+      streamBody = { ...routeBody, desired_arrival_time: isoTime };
+    }
+
+    try {
+      var recommendation = await readTripStream(streamPath, streamBody, signal, handlers);
+      if (!isSearchStillCurrent()) return;
       renderDepartureResult(
-        recommendationData,
-        baselineData,
-        departureContext,
-        null
+        withDisplayRoute(recommendation, displayOrigin, displayDestination),
+        baselineData, context, immediateSafe
       );
+      $searchStatus.textContent = "추천 출발 시각을 확인할 수 있습니다.";
+    } catch (streamError) {
+      if (!isSearchStillCurrent()) return;
+      if (!baselineData) throw streamError;
+      $results.innerHTML = buildBaselineArrivalCard(baselineData, context) +
+        (immediateSafe ? buildImmediateSafeCard(immediateSafe) : "");
+      $results.classList.remove("hidden");
+      showError("기준 조회 결과를 표시합니다. 추천 출발 시각을 계산하지 못했습니다. " + streamError.message, {
+        keepResults: true,
+        retry: streamError.retryable !== false,
+      });
     }
 
     // ── Step 3: 최근 검색 저장 ──
@@ -4583,7 +3869,9 @@ async function handleSearch() {
     // Bottom sheet stays expanded so results remain visible.
   } catch (err) {
     if (!isSearchStillCurrent()) return;
-    showError(err.message || "알 수 없는 오류가 발생했습니다.");
+    showError(err.message || "알 수 없는 오류가 발생했습니다.", {
+      retry: err.retryable !== false,
+    });
   } finally {
     if (isSearchStillCurrent()) {
       _searchInProgress = false;
@@ -4593,15 +3881,17 @@ async function handleSearch() {
 }
 
 $searchBtn.addEventListener("click", handleSearch);
+$retrySearch.addEventListener("click", handleSearch);
 
-// 시간 변경 시 입력값만 동기화 (강제 보정은 검색 시점 수행)
-$datetimeInput.addEventListener("change", function () {
-  if (syncDatetimeStateFromInputValue()) {
-    invalidateSearchOnlyState();
-    hideDatetimeInputTooltip();
-    hideError();
-  }
-});
+function onDatetimeInputEdit() {
+  var selected = _datetimePickerState.selected;
+  if (selected && toWallIsoMinutes(selected) === $datetimeInput.value) return;
+  invalidateSearchOnlyState();
+  syncDatetimeStateFromInputValue();
+  hideDatetimeInputTooltip();
+}
+$datetimeInput.addEventListener("input", onDatetimeInputEdit);
+$datetimeInput.addEventListener("change", onDatetimeInputEdit);
 
 // Enter key in inputs triggers search (autocomplete 미선택 시)
 [$origin, $destination, $datetimeInput].forEach(function (el) {
@@ -4670,7 +3960,7 @@ document.getElementById("recent-clear").addEventListener("click", function () {
 
 async function bootstrap() {
   try {
-    _config = await fetchConfig();
+    _config = { ..._config, ...await fetchConfig() };
     if (Number.isFinite(Number(_config.step_minutes)) && Number(_config.step_minutes) > 0) {
       DATETIME_MINUTE_STEP = Number(_config.step_minutes);
     }
@@ -4682,11 +3972,12 @@ async function bootstrap() {
     setVersionBadge("v0.0.0.0");
   }
 
-  $datetimeInput.value = nowCeilToStep();
+  document.getElementById("service-timezone").textContent = "기준 시간대 " + _config.timezone;
+  $datetimeInput.value = defaultDatetimeValue();
   initDatetimePicker();
-  enforceMinDatetime();
-  // 매 30초마다 min 속성 갱신 (시간 경과에 따른 과거 시간 차단)
-  setInterval(enforceMinDatetime, 30000);
+  setInterval(function () {
+    if (_datetimePickerState.isOpen) renderDatetimeCalendar();
+  }, 30000);
 
   initMap();
   queueAutocompleteWarmup();

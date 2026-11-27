@@ -219,11 +219,15 @@ def test_launch_browser_session_uses_persistent_context_for_user_data_dir(
 def test_close_browser_with_timeout_force_kills_hung_browser(monkeypatch) -> None:
     browser = _FakeCloseable(close_behavior="hang")
     killed: list[object] = []
+    cleanup_finished = threading.Event()
 
     def _fake_force_kill(target: object) -> None:
         killed.append(target)
         assert target is browser
         browser.force_killed.set()
+        # The close returns while the OS cleanup command is still unwinding.
+        time.sleep(0.05)
+        cleanup_finished.set()
 
     monkeypatch.setattr(
         "trip_time_service.browser.playwright_runtime.force_kill_playwright_process",
@@ -241,6 +245,7 @@ def test_close_browser_with_timeout_force_kills_hung_browser(monkeypatch) -> Non
     assert isinstance(result, PlaywrightCloseResult)
     assert result.timed_out is True
     assert killed == [browser]
+    assert cleanup_finished.is_set()
     assert browser.close_thread_ids == [threading.get_ident()]
     assert elapsed < 1.0
 
@@ -291,9 +296,10 @@ def test_force_kill_playwright_process_kills_browser_process(monkeypatch) -> Non
     browser = SimpleNamespace(_impl_obj=SimpleNamespace(_process=process))
     killed_pids: list[int] = []
 
-    def _fake_taskkill(pid: int) -> None:
+    def _fake_taskkill(pid: int) -> bool:
         killed_pids.append(pid)
         process.poll.return_value = 0
+        return True
 
     monkeypatch.setattr(
         "trip_time_service.browser.playwright_runtime._taskkill_pid_tree",
@@ -303,6 +309,29 @@ def test_force_kill_playwright_process_kills_browser_process(monkeypatch) -> Non
     force_kill_playwright_process(browser)
 
     assert killed_pids == [4321]
+
+
+@pytest.mark.parametrize("returncode", [None, 0])
+def test_force_kill_uses_driver_transport_and_skips_exited_process(
+    monkeypatch, returncode
+) -> None:
+    process = SimpleNamespace(pid=4321, returncode=returncode, kill=MagicMock())
+    transport = SimpleNamespace(_proc=process)
+    connection = SimpleNamespace(_transport=transport)
+    context = SimpleNamespace(_impl_obj=SimpleNamespace(_connection=connection))
+    taskkill = MagicMock(return_value=False)
+    monkeypatch.setattr(
+        "trip_time_service.browser.playwright_runtime._taskkill_pid_tree", taskkill
+    )
+
+    force_kill_playwright_process(context)
+
+    if returncode is None:
+        taskkill.assert_called_once_with(4321)
+        process.kill.assert_called_once_with()
+    else:
+        taskkill.assert_not_called()
+        process.kill.assert_not_called()
 
 
 def test_session_close_skips_page_and_closes_context_browser_playwright(

@@ -13,8 +13,9 @@ import os
 import re
 import threading
 import time as _time
+from concurrent.futures import CancelledError
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +27,10 @@ from trip_time_service.browser.playwright_runtime import (
     launch_browser_session,
 )
 from trip_time_service.config import Settings
+from trip_time_service.core.cache import LruTtlCache
 from trip_time_service.core.models import DriveDuration, Route
 from trip_time_service.privacy import redact_route, redact_text
-from trip_time_service.providers.base import ProviderError
+from trip_time_service.providers.base import ProviderError, check_cancelled
 from trip_time_service.providers.naver_map_parsing import (
     _PANEL_DIAGNOSTIC_SAMPLE_LIMIT,
     _PANEL_DIAGNOSTIC_SELECTORS,
@@ -113,15 +115,12 @@ def _wait_until(
 
 
 class _NaverDirectionsSearchAdapter:
-    def __init__(self, provider: NaverMapsPlaywrightProvider) -> None:
-        self._provider = provider
-
     def build_directions_url(self, route: Route) -> str | None:
         return build_directions_url(
             route.origin,
             route.destination,
-            self._provider._coords.get(route.origin),
-            self._provider._coords.get(route.destination),
+            route.origin_coords,
+            route.dest_coords,
         )
 
     def navigate_and_search(self, page: Any, route: Route) -> None:
@@ -138,18 +137,16 @@ class _NaverDirectionsSearchAdapter:
                     timeout=_PAGE_DEFAULT_TIMEOUT_MS,
                 )
             except Exception:
-                _log.warning("URL 직접 접속 실패, 자동완성으로 전환")
-                self.navigate_and_search_ac(page, route)
-                return
+                raise ProviderError(
+                    "선택한 좌표의 경로에 접속하지 못했습니다."
+                ) from None
 
             found = _wait_until(
                 lambda: bool(page.query_selector("button.later_departure_btn")),
                 timeout=20,
             )
             if not found:
-                _log.warning("URL 직접 접속 후 결과 로딩 실패, 자동완성으로 전환")
-                self.navigate_and_search_ac(page, route)
-                return
+                raise ProviderError("선택한 좌표의 경로를 불러오지 못했습니다.")
             _sleep(0.5)
             return
 
@@ -885,47 +882,68 @@ class NaverMapsPlaywrightProvider:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._lock = threading.Lock()
+        self._coords_lock = threading.Lock()
         self._owner = PlaywrightOwnerThread(name="naver-playwright-owner")
         self._session: PlaywrightBrowserSession | None = None
         self._current_route: Route | None = None
         self._modal_open = False
-        # (origin, dest, date_iso, hour24, min10) → duration_seconds
-        self._dur_cache: dict[tuple, int] = {}
+        self._dur_cache = LruTtlCache[tuple[Route, date, int, int], DriveDuration](
+            maxsize=512,
+            ttl_seconds=settings.cache_ttl.total_seconds(),
+        )
         self._coords: dict[str, tuple[float, float]] = {}
-        self._search_adapter = _NaverDirectionsSearchAdapter(self)
+        self._search_adapter = _NaverDirectionsSearchAdapter()
         self._departure_picker = _NaverDeparturePickerAdapter(self)
 
     # ── public API ──
 
     def set_coords(self, place: str, lat: float, lon: float) -> None:
-        with self._lock:
+        with self._coords_lock:
             self._coords[place] = (lat, lon)
+
+    def route_with_legacy_coords(self, route: Route) -> Route:
+        if route.origin_coords is not None and route.dest_coords is not None:
+            return route
+        with self._coords_lock:
+            origin_coords = route.origin_coords or self._coords.get(route.origin)
+            dest_coords = route.dest_coords or self._coords.get(route.destination)
+            if origin_coords is None or dest_coords is None:
+                return route
+            return replace(
+                route, origin_coords=origin_coords, dest_coords=dest_coords
+            )
 
     def get_drive_duration(
         self, route: Route, departure_time: datetime,
     ) -> DriveDuration:
-        m10 = (departure_time.minute // _MINUTE_RESOLUTION) * _MINUTE_RESOLUTION
-        cache_key = (
-            route.origin,
-            route.destination,
-            departure_time.date().isoformat(),
-            departure_time.hour,
-            m10,
+        return self.get_drive_duration_for_route(
+            self.route_with_legacy_coords(route), departure_time
         )
 
-        with self._lock:
-            if cache_key in self._dur_cache:
-                secs = self._dur_cache[cache_key]
-                return DriveDuration(
-                    duration_seconds=secs,
-                    fetched_at=datetime.now(tz=departure_time.tzinfo),
-                    raw_text=f"네이버 지도 (캐시): {secs // 60}분",
-                )
+    def get_drive_duration_for_route(
+        self,
+        route: Route,
+        departure_time: datetime,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> DriveDuration:
+        check_cancelled(cancel_event)
+        if (route.origin_coords is None) != (route.dest_coords is None):
+            raise ProviderError(
+                "경로의 다른 장소 좌표를 확인하지 못했습니다.",
+                is_retryable=False,
+            )
+        m10 = (departure_time.minute // _MINUTE_RESOLUTION) * _MINUTE_RESOLUTION
+        cache_key = (route, departure_time.date(), departure_time.hour, m10)
+
+        cached = self._dur_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
         # Playwright create/use must stay on the dedicated owner thread.
         return self._owner.call(
             lambda: self._get_drive_duration_on_owner(
-                route, departure_time, m10, cache_key
+                route, departure_time, m10, cache_key, cancel_event
             )
         )
 
@@ -934,23 +952,31 @@ class NaverMapsPlaywrightProvider:
         route: Route,
         departure_time: datetime,
         m10: int,
-        cache_key: tuple,
+        cache_key: tuple[Route, date, int, int],
+        cancel_event: threading.Event | None,
     ) -> DriveDuration:
         with self._lock:
-            if cache_key in self._dur_cache:
-                secs = self._dur_cache[cache_key]
-                return DriveDuration(
-                    duration_seconds=secs,
-                    fetched_at=datetime.now(tz=departure_time.tzinfo),
-                    raw_text=f"네이버 지도 (캐시): {secs // 60}분",
-                )
+            check_cancelled(cancel_event)
+            cached = self._dur_cache.get(cache_key)
+            if cached is not None:
+                return cached
 
             session = self._ensure_session_locked()
             try:
-                secs = self._query_locked(
-                    session.page, route, departure_time, m10
+                cancel_args = (
+                    {"cancel_event": cancel_event} if cancel_event is not None else {}
                 )
+                secs = self._query_locked(
+                    session.page, route, departure_time, m10, **cancel_args
+                )
+                check_cancelled(cancel_event)
+            except CancelledError:
+                self._reset_state()
+                raise
             except ProviderError as exc:
+                if cancel_event is not None and cancel_event.is_set():
+                    self._reset_state()
+                    raise CancelledError() from exc
                 if not exc.is_retryable:
                     _log.warning(
                         "Naver non-retryable provider error route=%s error=%s",
@@ -973,22 +999,24 @@ class NaverMapsPlaywrightProvider:
                     exc_info=True,
                 )
                 self._reset_state()
+                check_cancelled(cancel_event)
                 raise ProviderError(
                     "네이버 지도 조회 실패", cause=exc,
                 ) from exc
 
-            self._dur_cache[cache_key] = secs
+            duration = DriveDuration(
+                duration_seconds=secs,
+                fetched_at=datetime.now(tz=departure_time.tzinfo),
+                raw_text=f"네이버 지도: {secs // 60}분",
+            )
+            self._dur_cache.set(cache_key, duration)
             _log.info(
                 "Naver: route=%s [%02d:%02d] = %d초 (%d분)",
                 redact_route(route.origin, route.destination),
                 departure_time.hour, m10,
                 secs, secs // 60,
             )
-            return DriveDuration(
-                duration_seconds=secs,
-                fetched_at=datetime.now(tz=departure_time.tzinfo),
-                raw_text=f"네이버 지도: {secs // 60}분",
-            )
+            return duration
 
     def get_drive_duration_once(
         self,
@@ -1099,18 +1127,23 @@ class NaverMapsPlaywrightProvider:
         route: Route,
         departure_time: datetime,
         m10: int,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> int:
+        check_cancelled(cancel_event)
         # 1) 경로가 바뀌면 새로 검색
         if self._current_route != route:
             self._search_adapter.navigate_and_search(page, route)
             self._current_route = route
             self._modal_open = False
 
+        check_cancelled(cancel_event)
         # 2) "나중에 출발" 모달 열기
         if not self._modal_open:
             self._departure_picker.open_later_modal(page)
             self._modal_open = True
 
+        check_cancelled(cancel_event)
         # 3) 시간 설정 + 결과 읽기
         return self._departure_picker.set_time_and_read(
             page, departure_time.hour, m10, departure_time,
@@ -1119,7 +1152,9 @@ class NaverMapsPlaywrightProvider:
     # ── seam wrappers (테스트/호환용) ──
 
     def _build_directions_url(self, route: Route) -> str | None:
-        return self._search_adapter.build_directions_url(route)
+        return self._search_adapter.build_directions_url(
+            self.route_with_legacy_coords(route)
+        )
 
     def _navigate_and_search(self, page: Any, route: Route) -> None:
         self._search_adapter.navigate_and_search(page, route)
@@ -1198,6 +1233,21 @@ class NaverMapsPlaywrightPoolProvider:
     def set_coords(self, place: str, lat: float, lon: float) -> None:
         for worker in self._workers:
             worker.set_coords(place, lat, lon)
+
+    def route_with_legacy_coords(self, route: Route) -> Route:
+        return self._workers[0].route_with_legacy_coords(route)
+
+    def get_drive_duration_for_route(
+        self,
+        route: Route,
+        departure_time: datetime,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> DriveDuration:
+        check_cancelled(cancel_event)
+        return self._pick_worker().get_drive_duration_for_route(
+            route, departure_time, cancel_event=cancel_event
+        )
 
     def get_drive_duration(
         self,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import CancelledError
 from datetime import datetime
+from threading import Event
 from typing import Protocol, runtime_checkable
 
 from trip_time_service.core.models import DriveDuration, Route
@@ -41,3 +43,23 @@ class CoordinateAwareProvider(Protocol):
         lat: float,
         lon: float,
     ) -> None: ...
+
+
+@runtime_checkable
+class RequestRouteProvider(Protocol):
+    """A provider that can query a route without consulting its legacy map."""
+
+    def route_with_legacy_coords(self, route: Route) -> Route: ...
+
+    def get_drive_duration_for_route(
+        self,
+        route: Route,
+        departure_time: datetime,
+        *,
+        cancel_event: Event | None = None,
+    ) -> DriveDuration: ...
+
+
+def check_cancelled(cancel_event: Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise CancelledError()

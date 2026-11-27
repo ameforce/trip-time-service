@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -9,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from trip_time_service import config
-from trip_time_service.api import routes_trip
+from trip_time_service.api import routes_trip, streaming
 from trip_time_service.config import Settings
 from trip_time_service.core.models import (
     ArrivalEstimate,
@@ -46,6 +47,7 @@ class _FakeTripService:
     def __init__(self) -> None:
         self.arrival_calls = 0
         self.recommend_calls = 0
+        self.routes: list[Route] = []
 
     def estimate_arrival(
         self,
@@ -53,11 +55,15 @@ class _FakeTripService:
         origin: str,
         destination: str,
         departure_time: datetime,
+        route: Route | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> ArrivalEstimate:
         self.arrival_calls += 1
+        route = route or Route.of(origin, destination)
+        self.routes.append(route)
         duration = DriveDuration(duration_seconds=900, fetched_at=departure_time)
         return ArrivalEstimate(
-            route=Route.of(origin, destination),
+            route=route,
             departure_time=departure_time,
             arrival_time=departure_time + timedelta(seconds=duration.duration_seconds),
             duration=duration,
@@ -72,11 +78,14 @@ class _FakeTripService:
         destination: str,
         desired_arrival_time: datetime,
         analysis_start_time: datetime | None = None,
+        route: Route | None = None,
+        cancel_event: threading.Event | None = None,
         on_search_initialized=None,
         on_candidate_evaluated=None,
     ) -> DepartureRecommendation:
         self.recommend_calls += 1
-        route = Route.of(origin, destination)
+        route = route or Route.of(origin, destination)
+        self.routes.append(route)
         departure = analysis_start_time or desired_arrival_time - timedelta(minutes=30)
         duration = DriveDuration(duration_seconds=900, fetched_at=departure)
         arrival = departure + timedelta(seconds=duration.duration_seconds)
@@ -192,7 +201,7 @@ def test_unresolved_route_place_rejects_before_provider_for_all_trip_routes(
     pre_geocode_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
         routes_trip,
-        "pre_geocode_for_provider",
+        "resolve_route_for_provider",
         lambda *args, **kwargs: pre_geocode_calls.append(kwargs),
     )
     client = _client(service)
@@ -217,7 +226,7 @@ def test_strict_text_only_request_requires_coords_before_provider(
     pre_geocode_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
         routes_trip,
-        "pre_geocode_for_provider",
+        "resolve_route_for_provider",
         lambda *args, **kwargs: pre_geocode_calls.append(kwargs),
     )
     client = _client(service)
@@ -234,22 +243,14 @@ def test_strict_text_only_request_requires_coords_before_provider(
     assert service.arrival_calls == 0
 
 
-def test_default_warn_text_only_request_preserves_legacy_provider_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_default_warn_text_only_request_preserves_legacy_provider_path() -> None:
     service = _FakeTripService()
-    pre_geocode_calls: list[dict[str, Any]] = []
-
-    def record_pre_geocode(*args, **kwargs) -> None:
-        pre_geocode_calls.append(kwargs)
-
-    monkeypatch.setattr(routes_trip, "pre_geocode_for_provider", record_pre_geocode)
     client = _client(service)
 
     response = client.post("/v1/trip/arrival-time", json=_arrival_body())
 
     assert response.status_code == 200
-    assert pre_geocode_calls == [{"coords_map": {}}]
+    assert service.routes == [Route.of("강남역", "판교역")]
     assert service.arrival_calls == 1
 
 
@@ -260,7 +261,7 @@ def test_conflicting_route_place_and_legacy_coords_rejects_before_provider(
     pre_geocode_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
         routes_trip,
-        "pre_geocode_for_provider",
+        "resolve_route_for_provider",
         lambda *args, **kwargs: pre_geocode_calls.append(kwargs),
     )
     client = _client(service)
@@ -287,7 +288,7 @@ def test_malformed_route_place_returns_stable_contract_reason(
     pre_geocode_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
         routes_trip,
-        "pre_geocode_for_provider",
+        "resolve_route_for_provider",
         lambda *args, **kwargs: pre_geocode_calls.append(kwargs),
     )
     client = _client(service)
@@ -313,7 +314,7 @@ def test_invalid_contract_header_returns_400_stable_reason(
     pre_geocode_calls: list[dict[str, Any]] = []
     monkeypatch.setattr(
         routes_trip,
-        "pre_geocode_for_provider",
+        "resolve_route_for_provider",
         lambda *args, **kwargs: pre_geocode_calls.append(kwargs),
     )
     client = _client(service)
@@ -349,21 +350,14 @@ def test_invalid_env_contract_mode_defaults_to_warn(
     assert "Invalid TTS_ROUTE_INPUT_CONTRACT" in caplog.text
 
 
-def test_route_place_coords_populate_provider_coordinate_map(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_route_preserves_distinct_endpoints_with_the_same_label() -> None:
     service = _FakeTripService()
-    pre_geocode_calls: list[dict[str, Any]] = []
-
-    def record_pre_geocode(*args, **kwargs) -> None:
-        pre_geocode_calls.append(kwargs)
-
-    monkeypatch.setattr(routes_trip, "pre_geocode_for_provider", record_pre_geocode)
     client = _client(service)
 
     response = client.post(
         "/v1/trip/arrival-time",
         json=_arrival_body(
+            destination="강남역",
             origin_place=_ready_place(37.4979, 127.0276),
             dest_place=_ready_place(37.3947, 127.1112),
         ),
@@ -371,7 +365,68 @@ def test_route_place_coords_populate_provider_coordinate_map(
     )
 
     assert response.status_code == 200
-    assert pre_geocode_calls == [
-        {"coords_map": {"강남역": (37.4979, 127.0276), "판교역": (37.3947, 127.1112)}}
+    assert service.routes == [
+        Route.of(
+            "강남역",
+            "강남역",
+            origin_coords=(37.4979, 127.0276),
+            dest_coords=(37.3947, 127.1112),
+        )
     ]
+    assert service.arrival_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "body_builder", "time_key"),
+    [
+        ("/v1/trip/arrival-time", _arrival_body, "departure_time"),
+        (
+            "/v1/trip/recommended-departure-time",
+            _departure_body,
+            "desired_arrival_time",
+        ),
+    ],
+)
+def test_off_step_requested_time_is_preserved(path, body_builder, time_key) -> None:
+    client = _client(_FakeTripService())
+    requested = (datetime.now(tz=_TZ) + timedelta(hours=2)).replace(
+        minute=31, second=0, microsecond=0
+    )
+    response = client.post(
+        path, json=body_builder(**{time_key: requested.isoformat()})
+    )
+
+    assert response.status_code == 200
+    assert datetime.fromisoformat(response.json()[time_key]) == requested
+
+
+@pytest.mark.parametrize("suffix", ["", "/stream"])
+def test_past_arrival_deadline_is_rejected_instead_of_moved(suffix: str) -> None:
+    service = _FakeTripService()
+    client = _client(service)
+    past = datetime.now(tz=_TZ) - timedelta(hours=1)
+    response = client.post(
+        "/v1/trip/recommended-departure-time" + suffix,
+        json=_departure_body(desired_arrival_time=past.isoformat()),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["reason"] == "arrival_deadline_in_past"
+    assert service.recommend_calls == 0
+
+
+def test_sync_api_shares_stream_admission(monkeypatch: pytest.MonkeyPatch) -> None:
+    semaphore = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(streaming, "_STREAM_WORKER_SEMAPHORE", semaphore)
+    service = _FakeTripService()
+    client = _client(service)
+
+    with semaphore:
+        busy = client.post("/v1/trip/arrival-time", json=_arrival_body())
+        assert busy.status_code == 503
+        assert busy.json()["reason"] == "capacity_exhausted"
+        assert service.arrival_calls == 0
+
+    accepted = client.post("/v1/trip/arrival-time", json=_arrival_body())
+    assert accepted.status_code == 200
     assert service.arrival_calls == 1

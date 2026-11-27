@@ -12,12 +12,24 @@ def normalize_place(value: str) -> str:
 class Route:
     origin: str
     destination: str
+    origin_coords: tuple[float, float] | None = None
+    dest_coords: tuple[float, float] | None = None
 
     @classmethod
-    def of(cls, origin: str, destination: str) -> Route:
+    def of(
+        cls,
+        origin: str,
+        destination: str,
+        *,
+        origin_coords: tuple[float, float] | None = None,
+        dest_coords: tuple[float, float] | None = None,
+    ) -> Route:
+        """Build a route with optional (latitude, longitude) endpoint pairs."""
         return cls(
             origin=normalize_place(origin),
             destination=normalize_place(destination),
+            origin_coords=origin_coords,
+            dest_coords=dest_coords,
         )
 
 

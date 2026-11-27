@@ -54,11 +54,14 @@ TripTime를 Jenkins 기반으로 빌드하고 `enm-server`에 Docker 컨테이�
    - `Deploy To ENM`
      - 빌드 워크스페이스에 ENM SSH known_hosts 파일을 생성한 뒤 `StrictHostKeyChecking=yes`로 배포
    - `Smoke Verify`
+     - 공개 `/api/config`의 버전과 제공자를 확인한 뒤 자동완성과 출발 시각·도착 시각 기준 경로 API의 최종 응답을 검증
+     - 단계별 결과와 실패 유형은 Jenkins의 `.ci-artifacts/release-smoke-<build-number>.json`에 보관
 3. 배포 스크립트
    - `deploy/enm/deploy.sh`
-   - 기존 컨테이너 이미지 백업 후 신규 이미지 배포
-   - `/healthz` 체크 실패 시 자동 롤백 시도
+   - 새 이미지를 확보한 뒤 기존 이미지 정보를 저장하고 컨테이너 교체
+   - 새 컨테이너 기동 또는 내부 `/healthz` 검증에 실패하면 스크립트가 자동 롤백 시도
    - `/healthz` 체크 성공 후 원격 빌드 디렉터리와 오래된 같은 저장소 이미지 태그 정리
+   - 배포 스크립트가 성공한 뒤 공개 API 검증에 실패하면 Jenkins가 해당 이미지의 롤백 시도
 
 ## 6) 롤백 절차
 
@@ -86,6 +89,18 @@ bash deploy/enm/rollback.sh
 
 - [ ] `https://triptime.enmsoftware.com/healthz` (main)
 - [ ] `https://dev.triptime.enmsoftware.com/healthz` (non-main)
+- [ ] 공개 API 검증 아티팩트에서 배포 이미지 태그와 실제 버전 일치 확인
+- [ ] 같은 아티팩트에서 실시간 자동완성과 출발 시각·도착 시각 기준 검색의 최종 응답 성공 확인
+
+직접 배포할 때는 배포 스크립트가 끝난 뒤 `--expected-version`에 방금 배포한
+이미지 태그를 지정해 같은 검증을 실행한다.
+
+```bash
+uv run --no-sync python deploy/enm/smoke.py \
+  --base-url "https://${DEPLOY_DOMAIN}" \
+  --expected-version "${APP_VERSION}" \
+  --artifact .ci-artifacts/release-smoke.json
+```
 
 ### UI/버전
 

@@ -192,15 +192,6 @@ cleanup_deploy_build_dir() {
   fi
 }
 
-previous_image=""
-if docker container inspect "\${CONTAINER_NAME}" >/dev/null 2>&1; then
-  previous_image="\$(docker inspect --format '{{.Config.Image}}' "\${CONTAINER_NAME}" || true)"
-  if [[ -n "\${previous_image}" ]]; then
-    printf '%s\n' "\${previous_image}" > "\${ROLLBACK_DIR}/previous-image.txt"
-  fi
-  docker rm -f "\${CONTAINER_NAME}" >/dev/null
-fi
-
 if ! docker image inspect "\${IMAGE_REF}" >/dev/null 2>&1; then
   if ! docker pull "\${IMAGE_REF}" >/dev/null 2>&1; then
     if [[ -z "\${SOURCE_ARCHIVE_REMOTE}" || ! -f "\${SOURCE_ARCHIVE_REMOTE}" ]]; then
@@ -232,8 +223,6 @@ run_container() {
     --name "\${CONTAINER_NAME}"
     --restart unless-stopped
     --env-file "\${ENV_FILE}"
-    # Runtime version must come from the deployed image/tag, not a stale env file.
-    --env "TTS_VERSION=\${APP_VERSION}"
     --env "TTS_CHROME_NO_SANDBOX=\${TTS_CHROME_NO_SANDBOX}"
     --publish "127.0.0.1:\${HOST_PORT}:\${CONTAINER_PORT}"
     --label "service=\${CONTAINER_PREFIX}"
@@ -244,6 +233,8 @@ run_container() {
   # Auto-rollback to previous_image must NOT force naver_playwright — older
   # images may only accept naver / naver_selenium from the env file.
   if [[ -n "\${override_provider}" ]]; then
+    # Keep the new release version out of containers restored during rollback.
+    args+=(--env "TTS_VERSION=\${APP_VERSION}")
     args+=(--env "TTS_PROVIDER=\${override_provider}")
   fi
 
@@ -272,24 +263,48 @@ run_container() {
 }
 
 check_health() {
-  curl --fail --silent --show-error "http://127.0.0.1:\${HOST_PORT}/healthz" >/dev/null
+  curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:\${HOST_PORT}/healthz" >/dev/null
 }
 
-run_container "\${IMAGE_REF}" "\${TTS_PROVIDER}"
-
-for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
-  if check_health; then
-    printf '%s\n' "\${IMAGE_REF}" > "\${ROLLBACK_DIR}/current-image.txt"
-    date -u +"%Y-%m-%dT%H:%M:%SZ" > "\${ROLLBACK_DIR}/last-deployed-at.txt"
-    echo "[deploy] health check passed (\${i}/\${HEALTHCHECK_RETRIES})"
-    cleanup_deploy_build_dir
-    cleanup_deploy_images "\${IMAGE_REF}"
-    exit 0
+previous_image=""
+if docker container inspect "\${CONTAINER_NAME}" >/dev/null 2>&1; then
+  previous_image="\$(docker inspect --format '{{.Config.Image}}' "\${CONTAINER_NAME}")"
+  if [[ "\${previous_image}" == "\${IMAGE_REF}" ]]; then
+    # A rerun for the same image must preserve the preceding rollback target.
+    previous_image=""
+    if [[ -f "\${ROLLBACK_DIR}/previous-image.txt" ]]; then
+      previous_image="\$(cat "\${ROLLBACK_DIR}/previous-image.txt")"
+    fi
   fi
-  sleep "\${HEALTHCHECK_DELAY_SECONDS}"
-done
+  if [[ "\${previous_image}" == "\${IMAGE_REF}" ]]; then
+    previous_image=""
+  fi
+  printf '%s\n' "\${previous_image}" > "\${ROLLBACK_DIR}/previous-image.txt"
+  docker rm -f "\${CONTAINER_NAME}" >/dev/null
+else
+  printf '\n' > "\${ROLLBACK_DIR}/previous-image.txt"
+fi
 
-echo "[deploy] health check failed for image=\${IMAGE_REF}" >&2
+wait_for_health() {
+  for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
+    if check_health; then
+      return 0
+    fi
+    sleep "\${HEALTHCHECK_DELAY_SECONDS}"
+  done
+  return 1
+}
+
+if run_container "\${IMAGE_REF}" "\${TTS_PROVIDER}" && wait_for_health \
+  && printf '%s\n' "\${IMAGE_REF}" > "\${ROLLBACK_DIR}/current-image.txt" \
+  && date -u +"%Y-%m-%dT%H:%M:%SZ" > "\${ROLLBACK_DIR}/last-deployed-at.txt"; then
+  echo "[deploy] health check passed"
+  cleanup_deploy_build_dir
+  cleanup_deploy_images "\${IMAGE_REF}"
+  exit 0
+fi
+
+echo "[deploy] container startup, health check or deployment state update failed for image=\${IMAGE_REF}" >&2
 
 if [[ -n "\${previous_image}" ]]; then
   echo "[deploy] auto rollback to previous image=\${previous_image}"
@@ -298,15 +313,11 @@ if [[ -n "\${previous_image}" ]]; then
     docker pull "\${previous_image}" >/dev/null 2>&1 || true
   fi
   # Omit provider override so previous image uses env-file / image defaults.
-  run_container "\${previous_image}"
-  for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
-    if check_health; then
-      printf '%s\n' "\${previous_image}" > "\${ROLLBACK_DIR}/current-image.txt"
-      echo "[deploy] rollback health check passed"
-      exit 1
-    fi
-    sleep "\${HEALTHCHECK_DELAY_SECONDS}"
-  done
+  if run_container "\${previous_image}" && wait_for_health \
+    && printf '%s\n' "\${previous_image}" > "\${ROLLBACK_DIR}/current-image.txt"; then
+    echo "[deploy] rollback health check passed"
+    exit 1
+  fi
 fi
 
 echo "[deploy] rollback failed or previous image unavailable" >&2

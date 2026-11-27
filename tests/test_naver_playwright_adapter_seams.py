@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from threading import Event, get_ident
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from trip_time_service.config import Settings
+from trip_time_service.core.cache import LruTtlCache
 from trip_time_service.core.models import Route
 from trip_time_service.providers import naver_playwright
+from trip_time_service.providers.base import ProviderError
 from trip_time_service.providers.naver_playwright import (
     NaverMapsPlaywrightPoolProvider,
     NaverMapsPlaywrightProvider,
 )
+from trip_time_service.services.trip_time_service import TripTimeService
 
 
 def _make_settings(**overrides) -> Settings:
@@ -191,6 +197,188 @@ def test_build_directions_url_uses_coord_first_epsg3857_path() -> None:
     assert url is not None
     assert url.startswith("https://map.naver.com/p/directions/")
     assert url.endswith("/-/car")
+
+
+def test_build_directions_url_preserves_order_and_escapes_route_labels() -> None:
+    provider = NaverMapsPlaywrightProvider(_make_settings())
+    route = Route.of(
+        "입구/후문", "입구/후문",
+        origin_coords=(37.1, 127.1), dest_coords=(37.2, 127.2),
+    )
+    try:
+        url = provider._build_directions_url(route)
+        assert url is not None
+        origin, destination, _, _ = url.split("/p/directions/")[1].split("/")
+        assert float(origin.split(",")[0]) < float(destination.split(",")[0])
+        assert "%2F" in origin and "%2F" in destination
+    finally:
+        provider.close()
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+def test_same_names_separate_service_cache_naver_cache_and_prepared_route(
+    monkeypatch, concurrent: bool,
+) -> None:
+    settings = _make_settings()
+    provider = NaverMapsPlaywrightProvider(settings)
+    service = TripTimeService(settings=settings, provider=provider)
+    clock = [0.0]
+    provider._dur_cache = LruTtlCache(
+        maxsize=512, ttl_seconds=600, clock=lambda: clock[0]
+    )
+    page = object()
+    monkeypatch.setattr(
+        provider,
+        "_ensure_session_locked",
+        lambda: SimpleNamespace(page=page),
+    )
+    search = _FakeSearchAdapter(calls=[])
+    picker = _FakeDeparturePicker(open_calls=[], read_calls=[])
+    provider._search_adapter = search
+    provider._departure_picker = picker
+
+    routes = (
+        Route.of(
+            "지점", "지점", origin_coords=(37.1, 127.1), dest_coords=(37.2, 127.2)
+        ),
+        Route.of(
+            "지점", "지점", origin_coords=(37.3, 127.3), dest_coords=(37.4, 127.4)
+        ),
+    )
+    durations = dict(zip(routes, (900, 1800), strict=True))
+    departure = datetime(2026, 4, 1, 9, 30, tzinfo=settings.timezone)
+    original_read = picker.set_time_and_read
+
+    def read(*args) -> int:
+        original_read(*args)
+        return durations[search.calls[-1][1]]
+
+    monkeypatch.setattr(picker, "set_time_and_read", read)
+
+    def estimate(route: Route):
+        return service.estimate_arrival(
+            origin=route.origin,
+            destination=route.destination,
+            route=route,
+            departure_time=departure,
+        )
+
+    try:
+        if concurrent:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                estimates = list(executor.map(estimate, routes))
+        else:
+            estimates = [estimate(route) for route in routes]
+
+        assert [estimate.duration.duration_seconds for estimate in estimates] == [
+            durations[route] for route in routes
+        ]
+        assert {route for _, route in search.calls} == set(routes)
+        assert len(search.calls) == len(picker.read_calls) == 2
+
+        for route, first in zip(routes, estimates, strict=True):
+            repeated = estimate(route)
+            assert repeated.cache_hit is True
+            assert provider.get_drive_duration(route, departure) is first.duration
+        assert len(picker.read_calls) == 2
+
+        current_route = search.calls[-1][1]
+        other_route = routes[1] if current_route == routes[0] else routes[0]
+        later = departure + timedelta(minutes=10)
+        assert provider.get_drive_duration(current_route, later).duration_seconds == (
+            durations[current_route]
+        )
+        assert len(search.calls) == 2
+        assert provider.get_drive_duration(other_route, later).duration_seconds == (
+            durations[other_route]
+        )
+        assert search.calls[-1] == (page, other_route)
+        assert len(search.calls) == 3
+        assert len(picker.read_calls) == 4
+
+        clock[0] += 601
+        refreshed = provider.get_drive_duration(other_route, departure)
+        original = estimates[routes.index(other_route)].duration
+        assert refreshed is not original
+        assert refreshed.fetched_at >= original.fetched_at
+        assert len(picker.read_calls) == 5
+    finally:
+        service.close()
+
+
+def test_provider_cancellation_releases_session_on_owner(monkeypatch) -> None:
+    provider = NaverMapsPlaywrightProvider(_make_settings())
+    cancelled = Event()
+    owner_thread_calls: list[int] = []
+    page = object()
+
+    def close(**_kwargs):
+        owner_thread_calls.append(get_ident())
+        return SimpleNamespace(timed_out=False, close_error=None)
+
+    provider._session = SimpleNamespace(page=page, close=close)
+
+    def search(*_args):
+        cancelled.set()
+
+    monkeypatch.setattr(provider._search_adapter, "navigate_and_search", search)
+    monkeypatch.setattr(
+        provider._departure_picker,
+        "open_later_modal",
+        lambda *_args: pytest.fail("cancelled route must not enter the picker"),
+    )
+    try:
+        with pytest.raises(CancelledError):
+            provider.get_drive_duration_for_route(
+                Route.of("출발", "도착"),
+                datetime(2026, 4, 1, 9, 30),
+                cancel_event=cancelled,
+            )
+        assert owner_thread_calls == [provider._owner.thread_ident]
+        assert provider._session is None
+    finally:
+        provider.close()
+
+
+def test_coordinate_route_search_failure_does_not_select_by_name(monkeypatch) -> None:
+    provider = NaverMapsPlaywrightProvider(_make_settings())
+
+    def fail_goto(*_args, **_kwargs):
+        raise TimeoutError("navigation failed")
+
+    monkeypatch.setattr(
+        provider._search_adapter,
+        "navigate_and_search_ac",
+        lambda *_args: pytest.fail("must preserve the supplied endpoints"),
+    )
+    try:
+        route = Route.of(
+            "지점", "지점", origin_coords=(37.1, 127.1), dest_coords=(37.2, 127.2)
+        )
+        with pytest.raises(ProviderError):
+            provider._navigate_and_search(SimpleNamespace(goto=fail_goto), route)
+    finally:
+        provider.close()
+
+
+def test_provider_fails_before_browser_when_only_one_coordinate_is_available(
+    monkeypatch,
+) -> None:
+    provider = NaverMapsPlaywrightProvider(_make_settings())
+    monkeypatch.setattr(
+        provider,
+        "_ensure_session_locked",
+        lambda: pytest.fail("must resolve endpoints before browser search"),
+    )
+    try:
+        with pytest.raises(ProviderError) as exc:
+            provider.get_drive_duration_for_route(
+                Route.of("출발", "도착", origin_coords=(37.1, 127.1)),
+                datetime(2026, 4, 1, 9, 30),
+            )
+        assert exc.value.is_retryable is False
+    finally:
+        provider.close()
 
 
 def test_select_place_ac_clicks_visible_dom_item_not_arrow_keys(monkeypatch) -> None:

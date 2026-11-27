@@ -43,15 +43,31 @@ uv run trip-time-service
 
 ### 1) 출발 시각 입력 → 도착 시각
 
-```cmd
-curl -X POST http://127.0.0.1:8500/v1/trip/arrival-time -H "Content-Type: application/json" -d "{\"origin\":\"강남역\",\"destination\":\"판교역\",\"departure_time\":\"2026-01-24T08:10:00+09:00\"}"
+```powershell
+$body = @{
+    origin = '강남역'
+    destination = '판교역'
+    departure_time = [DateTimeOffset]::UtcNow.AddHours(1).ToString('o')
+} | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8500/v1/trip/arrival-time `
+    -ContentType 'application/json; charset=utf-8' -Body $body
 ```
 
 ### 2) 도착 시각 입력 → 추천 출발 시각
 
-```cmd
-curl -X POST http://127.0.0.1:8500/v1/trip/recommended-departure-time -H "Content-Type: application/json" -d "{\"origin\":\"강남역\",\"destination\":\"판교역\",\"desired_arrival_time\":\"2026-01-24T09:00:00+09:00\"}"
+```powershell
+$body = @{
+    origin = '강남역'
+    destination = '판교역'
+    desired_arrival_time = [DateTimeOffset]::UtcNow.AddHours(3).ToString('o')
+} | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post `
+    -Uri http://127.0.0.1:8500/v1/trip/recommended-departure-time `
+    -ContentType 'application/json; charset=utf-8' -Body $body
 ```
+
+미래 시각은 입력값을 사용합니다. 이미 지난 희망 도착 시각에는 HTTP 422와
+`arrival_deadline_in_past`가 반환됩니다.
 
 ## Provider 선택
 
@@ -75,7 +91,7 @@ uv run trip-time-service
 - 출발지/도착지 텍스트 입력
 - **출발 시각 기준**: 입력한 출발 시각으로 단일 조회를 먼저 표시한 뒤, 추천 출발 분석 카드로 갱신
 - **도착 시각 기준**: 희망 도착 시각 기준 추천 출발 시각 계산 (현재 시각 출발 단일 조회는 참고용 카드로 별도 표시)
-- 네이버 맵 연동(선택): `TTS_NAVER_MAP_CLIENT_ID`를 설정하면 지도에 출발지/도착지 마커 표시
+- 웹 지도는 OpenStreetMap 배경과 OSRM 참고 경로를 사용합니다. 네이버가 계산한 예상 소요시간은 검색 결과에서 확인할 수 있습니다.
 
 ## 주요 설정(환경변수)
 
@@ -86,6 +102,7 @@ uv run trip-time-service
 - `TTS_LOOKBACK_HOURS` (기본 3)
 - `TTS_MAX_QUERIES` (기본 120)
 - `TTS_RECOMMEND_MIN_SAMPLES` (기본 12, 도착 시각 기준 추천 시 최소 분석 샘플 수)
+- `TTS_STREAM_WORKERS` (일반 및 스트리밍 검색이 함께 사용하는 동시 작업 한도. 미설정 시 `TTS_NAVER_SESSION_POOL_SIZE`, `TTS_RECOMMEND_WORKERS`, 2 순서로 기본값 결정)
 - `TTS_PORT_STRICT` (기본 `false`, `1`이면 지정 포트 점유 시 fallback 없이 시작 실패. E2E에서 harness/app 포트 불일치 방지용)
 - `TTS_NAVER_MAP_CLIENT_ID` (선택, 네이버 클라우드 플랫폼 Maps API Client ID)
 - `TTS_CORS_ALLOW_ORIGINS` (선택, CORS 허용 오리진 CSV. 예: `http://localhost:3000,https://example.com`)

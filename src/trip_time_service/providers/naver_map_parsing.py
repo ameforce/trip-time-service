@@ -86,8 +86,8 @@ def build_directions_url(
     ox, oy = latlon_to_epsg3857(o_coords[0], o_coords[1])
     dx, dy = latlon_to_epsg3857(d_coords[0], d_coords[1])
 
-    o_name = urllib.parse.quote(origin)
-    d_name = urllib.parse.quote(destination)
+    o_name = urllib.parse.quote(origin, safe="")
+    d_name = urllib.parse.quote(destination, safe="")
 
     return (
         f"https://map.naver.com/p/directions/"

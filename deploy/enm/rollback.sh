@@ -36,6 +36,7 @@ TRAEFIK_TLS_CERTRESOLVER="${TRAEFIK_TLS_CERTRESOLVER:-}"
 HEALTHCHECK_RETRIES="${HEALTHCHECK_RETRIES:-30}"
 HEALTHCHECK_DELAY_SECONDS="${HEALTHCHECK_DELAY_SECONDS:-2}"
 ROLLBACK_IMAGE_REF="${ROLLBACK_IMAGE_REF:-}"
+ROLLBACK_EXPECTED_IMAGE_REF="${ROLLBACK_EXPECTED_IMAGE_REF:-}"
 SSH_STRICT_HOST_KEY_CHECKING="${SSH_STRICT_HOST_KEY_CHECKING:-yes}"
 SSH_KNOWN_HOSTS_FILE="${SSH_KNOWN_HOSTS_FILE:-${HOME}/.ssh/known_hosts}"
 # Do not force TTS_PROVIDER on rollback: previous images may only accept
@@ -79,6 +80,7 @@ TRAEFIK_TLS_CERTRESOLVER="$(printf '%q' "${TRAEFIK_TLS_CERTRESOLVER}")"
 HEALTHCHECK_RETRIES="$(printf '%q' "${HEALTHCHECK_RETRIES}")"
 HEALTHCHECK_DELAY_SECONDS="$(printf '%q' "${HEALTHCHECK_DELAY_SECONDS}")"
 ROLLBACK_IMAGE_REF="$(printf '%q' "${ROLLBACK_IMAGE_REF}")"
+ROLLBACK_EXPECTED_IMAGE_REF="$(printf '%q' "${ROLLBACK_EXPECTED_IMAGE_REF}")"
 TTS_CHROME_NO_SANDBOX="$(printf '%q' "${TTS_CHROME_NO_SANDBOX}")"
 
 normalize_optional() {
@@ -93,6 +95,7 @@ normalize_optional() {
 NETWORK_NAME="\$(normalize_optional "\${NETWORK_NAME}")"
 TRAEFIK_TLS_CERTRESOLVER="\$(normalize_optional "\${TRAEFIK_TLS_CERTRESOLVER}")"
 ROLLBACK_IMAGE_REF="\$(normalize_optional "\${ROLLBACK_IMAGE_REF}")"
+ROLLBACK_EXPECTED_IMAGE_REF="\$(normalize_optional "\${ROLLBACK_EXPECTED_IMAGE_REF}")"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "[rollback] docker command not found on remote host" >&2
@@ -121,10 +124,31 @@ if [[ -z "\${target_image}" ]]; then
   exit 1
 fi
 
-if ! docker image inspect "\${target_image}" >/dev/null 2>&1; then
-  docker pull "\${target_image}" >/dev/null 2>&1 || true
+check_health() {
+  curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:\${HOST_PORT}/healthz" >/dev/null
+}
+
+current_image=""
+if docker container inspect "\${CONTAINER_NAME}" >/dev/null 2>&1; then
+  current_image="\$(docker inspect --format '{{.Config.Image}}' "\${CONTAINER_NAME}")"
 fi
-docker rm -f "\${CONTAINER_NAME}" >/dev/null 2>&1 || true
+if [[ -n "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
+  if [[ "\${current_image}" == "\${target_image}" ]] && check_health; then
+    echo "[rollback] previous image is already running and healthy"
+    exit 0
+  fi
+  if [[ "\${current_image}" != "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
+    echo "[rollback] active container no longer runs the failed deployment image" >&2
+    exit 1
+  fi
+fi
+
+if ! docker image inspect "\${target_image}" >/dev/null 2>&1; then
+  docker pull "\${target_image}" >/dev/null
+fi
+if [[ -n "\${current_image}" ]]; then
+  docker rm -f "\${CONTAINER_NAME}" >/dev/null
+fi
 
 run_container() {
   local image_ref="\$1"
@@ -162,10 +186,6 @@ run_container() {
   fi
 
   docker run "\${args[@]}" "\${image_ref}" >/dev/null
-}
-
-check_health() {
-  curl --fail --silent --show-error "http://127.0.0.1:\${HOST_PORT}/healthz" >/dev/null
 }
 
 run_container "\${target_image}"

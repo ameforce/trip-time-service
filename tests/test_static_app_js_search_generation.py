@@ -45,12 +45,19 @@ def test_mode_and_datetime_changes_invalidate_search_without_clearing_markers() 
         "$tabArrival.addEventListener",
     )
     datetime_change = _between(
-        '$datetimeInput.addEventListener("change", function () {',
+        "function onDatetimeInputEdit() {",
         "// Enter key in inputs triggers search",
     )
 
     assert "invalidateSearchOnlyState();" in mode_switch
     assert "invalidateSearchOnlyState();" in datetime_change
+    assert (
+        '$datetimeInput.addEventListener("input", onDatetimeInputEdit);'
+        in datetime_change
+    )
+    assert "invalidateSearchOnlyState();" in _between(
+        "function setDatetimeFromDate(", "function syncDatetimePickerFromInput("
+    )
 
 
 def test_search_cleanup_uses_full_current_snapshot_guard() -> None:
@@ -73,6 +80,7 @@ def test_autocomplete_dropdown_exposes_listbox_option_contract() -> None:
     )
 
     assert 'role="listbox"' in INDEX_HTML
+    assert 'role="combobox"' in INDEX_HTML
     assert 'aria-haspopup="listbox"' in INDEX_HTML
     assert 'role="option"' in render_dropdown
     assert 'aria-selected="' in render_dropdown

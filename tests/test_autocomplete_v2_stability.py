@@ -92,8 +92,34 @@ def test_autocomplete_response_exposes_progressive_headers(monkeypatch) -> None:
     )
     payload = response.json()
     assert payload[0]["coords_ready"] is False
+    assert payload[0]["coords_status"] == "unresolved"
     assert payload[0]["selection_kind"] == "poi"
     assert payload[0]["autocomplete_mode"] == "progressive"
+
+
+def test_progressive_metadata_preserves_source_when_coordinates_are_ready() -> None:
+    item = {
+        "display_name": "카카오 판교아지트",
+        "lat": "37.395",
+        "lon": "127.111",
+        "coords_status": "unresolved",
+        "source": "naver_browser_suggest",
+        "geocode_source": "naver_instant_search",
+        "autocomplete_mode": "progressive",
+    }
+    ready, unresolved = routes_geo._serialize_autocomplete_items(
+        [item, {**item, "lon": "invalid", "coords_status": "ready"}]
+    )
+
+    assert ready["coords_ready"] is True
+    assert ready["coords_status"] == "ready"
+    assert ready["source"] == item["source"]
+    assert ready["geocode_source"] == item["geocode_source"]
+    assert ready["autocomplete_mode"] == "progressive"
+    assert (ready["lat"], ready["lon"]) == (37.395, 127.111)
+    assert unresolved["coords_ready"] is False
+    assert unresolved["coords_status"] == "unresolved"
+    assert (unresolved["lat"], unresolved["lon"]) == (None, None)
 
 
 def test_autocomplete_budget_constant_matches_evaluator_contract() -> None:

@@ -132,24 +132,17 @@ test.describe('cross-device rendering', () => {
       await expect(panel).toBeVisible({ timeout: 10_000 });
     }
 
-    // 앱은 과거 시각 선택을 현재로 클램프하므로(정상 도메인 동작)
-    // 브라우저 시각 기준 +6시간의 명확한 미래를 선택한다.
-    const target = await page.evaluate(() => {
-      const t = new Date(Date.now() + 6 * 60 * 60 * 1000);
-      const minute = Math.floor(t.getMinutes() / 10) * 10;
-      return {
-        year: t.getFullYear(),
-        month: t.getMonth(),
-        day: t.getDate(),
-        period: t.getHours() >= 12 ? 'pm' : 'am',
-        hour12: String(t.getHours() % 12 || 12).padStart(2, '0'),
-        minute: String(minute).padStart(2, '0'),
-      };
-    });
-
-    // 시간만 먼저 바꾸면 오늘 날짜 기준 과거 조합이 하한 클램프로 되돌아가
-    // 값이 고정될 수 있다. 먼저 대상 '날짜'를 선택해 미래로 만든 뒤 시간을
-    // 선택한다. 달이 바뀌는 경우 다음 달로 이동한다(+6시간이라 최대 1개월).
+    // 날짜 입력의 서비스 달력에서 다음 날을 고른다.
+    const tomorrow = new Date(before + ':00Z');
+    tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+    const target = {
+      year: tomorrow.getUTCFullYear(),
+      month: tomorrow.getUTCMonth(),
+      day: tomorrow.getUTCDate(),
+      period: 'pm',
+      hour12: '04',
+      minute: '27',
+    };
     const view = await page.evaluate(() => {
       const title = document
         .getElementById('datetime-calendar-title')!
@@ -166,9 +159,6 @@ test.describe('cross-device rendering', () => {
     await page.locator('#datetime-hour').selectOption(target.hour12);
     await page.locator('#datetime-minute').selectOption(target.minute);
 
-    // 선택이 예약 시각(input)에 반영되는지 — 값 고정이 아니라 변경 자체를 검증
-    await expect
-      .poll(() => input.inputValue(), { timeout: 5_000 })
-      .not.toBe(before);
+    await expect(input).toHaveValue(tomorrow.toISOString().slice(0, 10) + 'T16:27');
   });
 });

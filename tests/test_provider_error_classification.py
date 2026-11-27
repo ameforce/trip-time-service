@@ -91,12 +91,7 @@ def test_provider_error_keeps_legacy_constructor_and_optional_code_bucket() -> N
     )
 
 
-def test_stream_error_exposes_safe_bucket_not_raw_provider_text(monkeypatch) -> None:
-    monkeypatch.setattr(
-        routes_trip,
-        "pre_geocode_for_provider",
-        lambda *args, **kwargs: None,
-    )
+def test_stream_error_exposes_safe_bucket_not_raw_provider_text() -> None:
     payload = DepartureRecommendationRequest(
         origin="강남역",
         destination="판교역",
@@ -118,12 +113,7 @@ def test_stream_error_exposes_safe_bucket_not_raw_provider_text(monkeypatch) -> 
     assert "판교역" not in body
 
 
-def test_stream_error_exposes_retry_exhausted_bucket(monkeypatch) -> None:
-    monkeypatch.setattr(
-        routes_trip,
-        "pre_geocode_for_provider",
-        lambda *args, **kwargs: None,
-    )
+def test_stream_error_exposes_retry_exhausted_bucket() -> None:
     payload = DepartureRecommendationRequest(
         origin="강남역",
         destination="판교역",
