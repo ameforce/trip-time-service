@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import os
 import queue
 import subprocess
@@ -75,10 +74,14 @@ class PlaywrightBrowserSession:
             timed_out = timed_out or browser_result.timed_out
             close_error = close_error or browser_result.close_error
 
-        try:
-            self.playwright.stop()
-        except Exception as exc:  # noqa: BLE001 - best-effort cleanup
-            close_error = close_error or exc
+        stop_result = _close_with_timeout(
+            self.playwright,
+            close_timeout_seconds=close_timeout_seconds,
+            close_thread_name="playwright-driver-stop",
+            close=self.playwright.stop,
+        )
+        timed_out = timed_out or stop_result.timed_out
+        close_error = close_error or stop_result.close_error
 
         return PlaywrightCloseResult(timed_out=timed_out, close_error=close_error)
 
@@ -199,20 +202,21 @@ class PlaywrightOwnerThread:
                     future.set_exception(exc)
 
 
-def _taskkill_pid_tree(pid: int) -> None:
+def _taskkill_pid_tree(pid: int) -> bool:
     if os.name == "nt":
-        subprocess.run(
+        result = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=1.5,
         )
-        return
+        return result.returncode == 0
     try:
         os.kill(pid, 9)
     except OSError:
-        pass
+        return False
+    return True
 
 
 def _extract_browser_process(target: Any) -> Any | None:
@@ -222,12 +226,15 @@ def _extract_browser_process(target: Any) -> Any | None:
     process = getattr(impl, "_process", None)
     if process is not None:
         return process
-    # Persistent contexts may expose the browser process via browser.
-    browser = getattr(impl, "_browser", None) or getattr(target, "browser", None)
-    if browser is None:
-        return None
-    browser_impl = getattr(browser, "_impl_obj", browser)
-    return getattr(browser_impl, "_process", None)
+    # In the Python SDK Chromium is a child of the local driver. The driver
+    # process lives on the pipe transport, even for persistent contexts.
+    connection = getattr(impl, "_connection", None)
+    transport = getattr(connection, "_transport", None)
+    driver = getattr(transport, "_proc", None)
+    if driver is not None:
+        return driver
+    browser = getattr(impl, "_browser", None)
+    return getattr(browser, "_process", None)
 
 
 def force_kill_playwright_process(target: Any) -> None:
@@ -235,37 +242,24 @@ def force_kill_playwright_process(target: Any) -> None:
     if process is None:
         return
 
-    pid = getattr(process, "pid", None)
+    poll = getattr(process, "poll", None)
+
+    def exited() -> bool:
+        return (poll() if callable(poll) else process.returncode) is not None
+
     try:
-        if process.poll() is not None:
+        if exited():
             return
-        if isinstance(pid, int):
-            _taskkill_pid_tree(pid)
+        pid = getattr(process, "pid", None)
+        if isinstance(pid, int) and pid > 0 and _taskkill_pid_tree(pid):
             return
-        process.kill()
-        process.wait(timeout=1.0)
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired):
         pass
-
-
-def _interrupt_thread(thread_ident: int, exc_type: type[BaseException]) -> None:
-    """Best-effort interrupt for a hung owner-thread close during shutdown."""
     try:
-        result = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-            ctypes.c_ulong(thread_ident),
-            ctypes.py_object(exc_type),
-        )
-        if result > 1:
-            ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                ctypes.c_ulong(thread_ident),
-                None,
-            )
-    except Exception:
+        if not exited():
+            process.kill()
+    except OSError:
         pass
-
-
-class _PlaywrightCloseTimeout(TimeoutError):
-    """Raised into the owner thread when close exceeds the shutdown budget."""
 
 
 def _close_with_timeout(
@@ -273,23 +267,17 @@ def _close_with_timeout(
     *,
     close_timeout_seconds: float,
     close_thread_name: str,
+    close: Callable[[], None] | None = None,
 ) -> PlaywrightCloseResult:
-    """Close on the calling (owner) thread; force-kill + interrupt on hang.
-
-    Playwright close/stop must not run on a helper thread. The watchdog thread
-    only force-kills the OS process and interrupts the hung owner-thread close
-    so callers can return within ``close_timeout_seconds``.
-    """
+    """Keep Playwright on its owner thread and disconnect hung driver I/O."""
     close_done = threading.Event()
     timed_out = threading.Event()
-    close_errors: list[Exception] = []
-    close_thread_ident = threading.get_ident()
+    close_error = None
 
     def _watchdog() -> None:
         if not close_done.wait(timeout=close_timeout_seconds):
             timed_out.set()
             force_kill_playwright_process(target)
-            _interrupt_thread(close_thread_ident, _PlaywrightCloseTimeout)
 
     watchdog = threading.Thread(
         target=_watchdog,
@@ -298,19 +286,18 @@ def _close_with_timeout(
     )
     watchdog.start()
     try:
-        # Playwright API must run on the owner/caller thread (not the watchdog).
-        assert threading.get_ident() == close_thread_ident
-        target.close()
-    except _PlaywrightCloseTimeout:
-        pass
+        (close if close is not None else target.close)()
     except Exception as exc:
-        close_errors.append(exc)
+        close_error = exc
     finally:
         close_done.set()
+        # The close can return while taskkill is still unwinding. Finish the
+        # bounded watchdog before this owner starts another Playwright operation.
+        watchdog.join()
 
     return PlaywrightCloseResult(
         timed_out=timed_out.is_set(),
-        close_error=close_errors[0] if close_errors else None,
+        close_error=close_error,
     )
 
 

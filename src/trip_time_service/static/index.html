@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
   <title>Trip Time Service</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -42,7 +42,7 @@
         <label for="origin">출발지</label>
         <div class="input-wrap">
           <svg class="input-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="#03C75A"/><circle cx="12" cy="12" r="8" fill="none" stroke="#03C75A" stroke-width="2"/></svg>
-          <input id="origin" type="text" placeholder="예: 강남역" autocomplete="off" aria-haspopup="listbox" aria-expanded="false" aria-controls="origin-ac">
+          <input id="origin" type="text" placeholder="예: 강남역" autocomplete="off" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="origin-ac">
           <div id="origin-ac" class="ac-dropdown hidden" role="listbox" aria-label="출발지 후보"></div>
         </div>
       </div>
@@ -55,7 +55,7 @@
         <label for="destination">도착지</label>
         <div class="input-wrap">
           <svg class="input-icon" viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" fill="#E53935"/><circle cx="12" cy="9" r="2.5" fill="#fff"/></svg>
-          <input id="destination" type="text" placeholder="예: 판교역" autocomplete="off" aria-haspopup="listbox" aria-expanded="false" aria-controls="dest-ac">
+          <input id="destination" type="text" placeholder="예: 판교역" autocomplete="off" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="dest-ac">
           <div id="dest-ac" class="ac-dropdown hidden" role="listbox" aria-label="도착지 후보"></div>
         </div>
       </div>
@@ -84,7 +84,10 @@
 
     <!-- DateTime input -->
     <section class="datetime-section">
-      <label id="datetime-label" for="datetime-input">출발 시각</label>
+      <div class="datetime-heading">
+        <label id="datetime-label" for="datetime-input">출발 시각</label>
+        <span id="service-timezone">기준 시간대 Asia/Seoul</span>
+      </div>
       <div id="datetime-picker" class="datetime-picker">
         <div class="datetime-input-wrap">
           <input
@@ -92,6 +95,7 @@
             type="datetime-local"
             inputmode="numeric"
             autocomplete="off"
+            aria-describedby="service-timezone"
             aria-haspopup="dialog"
             aria-expanded="false"
             step="60"
@@ -162,14 +166,15 @@
       검색
     </button>
 
-    <!-- Results -->
-    <section id="results" class="results-section hidden">
-      <!-- dynamically populated -->
-    </section>
+    <div id="search-status" class="sr-only" role="status"></div>
 
-    <!-- Error -->
     <section id="error-box" class="error-box hidden">
       <p id="error-msg"></p>
+      <button id="retry-search" class="retry-search hidden" type="button">다시 시도</button>
+    </section>
+
+    <section id="results" class="results-section hidden">
+      <!-- dynamically populated -->
     </section>
 
     <!-- Search status -->
@@ -186,9 +191,10 @@
     <div id="map-placeholder" class="map-placeholder">
       <div class="map-placeholder-inner">
         <svg viewBox="0 0 24 24" width="48" height="48"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5A2.5 2.5 0 1112 6.5a2.5 2.5 0 010 5z" fill="#adb5bd"/></svg>
-        <p>지도를 불러오는 중…</p>
+        <p id="map-status" role="status">지도를 불러오는 중…</p>
       </div>
     </div>
+    <p id="map-route-note" class="map-route-note hidden"></p>
   </main>
 
   <!-- Mobile backdrop -->
@@ -199,9 +205,12 @@
     <svg viewBox="0 0 24 24" width="24" height="24"><path d="M3 12h18M3 6h18M3 18h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
   </button>
 
+  <button id="sheet-restore" class="sheet-restore" type="button" aria-label="검색 패널 다시 열기" aria-controls="sidebar" hidden>
+    <span></span>
+  </button>
+
   <div id="version-badge" class="version-badge" aria-live="polite">v0.0.0.0</div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/static/js/app.js"></script>
   <script src="/static/js/autocomplete-controller.js"></script>
 </body>

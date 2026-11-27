@@ -11,6 +11,7 @@ import urllib.request
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
+from dataclasses import replace
 from functools import lru_cache
 
 from trip_time_service.api.e2e_fixtures import is_fixture_mode_enabled
@@ -23,8 +24,9 @@ from trip_time_service.api.naver_playwright_autocomplete import (
     warmup_naver_browser_pool,
 )
 from trip_time_service.api.naver_playwright_geo import geocode_naver
+from trip_time_service.core.models import Route
 from trip_time_service.privacy import redact_text
-from trip_time_service.providers.base import CoordinateAwareProvider
+from trip_time_service.providers.base import CoordinateAwareProvider, check_cancelled
 from trip_time_service.services.trip_time_service import TripTimeService
 
 _log = logging.getLogger(__name__)
@@ -208,10 +210,10 @@ def _get_geo_pool() -> ThreadPoolExecutor | None:
         return _GEO_POOL
 
 
-def _submit_geo_pool_task(
-    func: Callable[..., object],
+def _submit_geo_pool_task[T](
+    func: Callable[..., T],
     *args: object,
-) -> Future[object] | None:
+) -> Future[T] | None:
     global _GEO_POOL
     while True:
         pool = _get_geo_pool()
@@ -984,7 +986,6 @@ def _mark_progressive_browser_autocomplete_results(
     progressive: list[dict] = []
     for candidate in candidates:
         item = dict(candidate)
-        item.setdefault("coords_status", "unresolved")
         item.setdefault("degraded_reason", reason)
         item["deadline_hit"] = bool(deadline_hit)
         item["autocomplete_mode"] = "progressive"
@@ -1544,11 +1545,55 @@ def fetch_osrm_route(
         return {"code": "Error", "routes": []}
 
 
+def resolve_route_for_provider(
+    service: TripTimeService,
+    origin: str,
+    destination: str,
+    *,
+    origin_coords: tuple[float, float] | None = None,
+    dest_coords: tuple[float, float] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> Route:
+    """Resolve missing endpoints within the request's existing geocode budget."""
+    check_cancelled(cancel_event)
+    route = Route.of(
+        origin, destination, origin_coords=origin_coords, dest_coords=dest_coords
+    )
+    if origin_coords is not None and dest_coords is not None:
+        return route
+    if not isinstance(getattr(service, "_provider", None), CoordinateAwareProvider):
+        return route
+
+    unresolved_places = tuple(
+        place
+        for place, coords in (
+            (route.origin, route.origin_coords),
+            (route.destination, route.dest_coords),
+        )
+        if coords is None
+    )
+    resolved = _resolve_provider_coordinates(unresolved_places, cancel_event)
+    resolved_origin = origin_coords or resolved.get(route.origin)
+    resolved_dest = dest_coords or resolved.get(route.destination)
+    if origin_coords is None and dest_coords is None and (
+        resolved_origin is None or resolved_dest is None
+    ):
+        # Both endpoint labels remain available for the browser text search.
+        return route
+    return replace(
+        route,
+        origin_coords=resolved_origin,
+        dest_coords=resolved_dest,
+        allow_text_fallback=origin_coords is None and dest_coords is None,
+    )
+
+
 def pre_geocode_for_provider(
     service: TripTimeService,
     *places: str,
     coords_map: dict[str, tuple[float, float]] | None = None,
 ) -> None:
+    """Populate the coordinate map for legacy programmatic provider callers."""
     provider = service._provider
     if not isinstance(provider, CoordinateAwareProvider):
         return
@@ -1556,61 +1601,80 @@ def pre_geocode_for_provider(
     coords_map = coords_map or {}
     need_geocode: list[str] = []
     for place in places:
-        if place in coords_map:
-            lat, lon = coords_map[place]
-            provider.set_coords(place, lat, lon)
-            _log.info(
-                "Pre-geocoded frontend coords query=%s",
-                _redact_query(place),
-            )
-            continue
-        need_geocode.append(place)
+        coords = coords_map.get(place)
+        if coords is None:
+            need_geocode.append(place)
+        else:
+            provider.set_coords(place, *coords)
+    for place, coords in _resolve_provider_coordinates(need_geocode).items():
+        provider.set_coords(place, *coords)
 
-    if not need_geocode:
-        return
 
-    def _do_geocode(place_name: str) -> None:
+def _resolve_provider_coordinates(
+    places: tuple[str, ...] | list[str],
+    cancel_event: threading.Event | None = None,
+) -> dict[str, tuple[float, float]]:
+    stopped = threading.Event()
+
+    def _do_geocode(place_name: str) -> tuple[float, float] | None:
         for query in _iter_provider_geocode_queries(place_name):
+            check_cancelled(cancel_event)
+            if stopped.is_set():
+                break
             result = geocode_one(query)
             if not result:
                 continue
-            provider.set_coords(place_name, float(result["lat"]), float(result["lon"]))
-            if query == place_name:
-                _log.info(
-                    "Pre-geocoded query=%s",
-                    _redact_query(place_name),
+            try:
+                lat, lon = float(result["lat"]), float(result["lon"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                return lat, lon
+        return None
+
+    futures: dict[Future[tuple[float, float] | None], str] = {}
+    try:
+        for place in dict.fromkeys(places):
+            check_cancelled(cancel_event)
+            future = _submit_geo_pool_task(_do_geocode, place)
+            if future is None:
+                _log.warning(
+                    "Pre-geocode skipped because geo pool is unavailable query=%s",
+                    _redact_query(place),
                 )
             else:
-                _log.info(
-                    "Pre-geocoded query=%s via variant=%s",
-                    _redact_query(place_name),
-                    _redact_query(query),
-                )
-            return
+                futures[future] = place
 
-    futures: list[Future[object]] = []
-    for place in need_geocode:
-        future = _submit_geo_pool_task(_do_geocode, place)
-        if future is None:
-            _log.warning(
-                "Pre-geocode skipped because geo pool is unavailable query=%s",
-                _redact_query(place),
-            )
-            continue
-        futures.append(future)
-
-    if futures:
-        done, pending = wait(futures, timeout=_PRE_GEOCODE_TIMEOUT_SECONDS)
-        for future in pending:
-            future.cancel()
+        pending = set(futures)
+        done = set()
+        deadline = time.monotonic() + _PRE_GEOCODE_TIMEOUT_SECONDS
+        while pending:
+            check_cancelled(cancel_event)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            wait_time = min(0.1, remaining) if cancel_event is not None else remaining
+            completed, pending = wait(pending, timeout=wait_time)
+            done.update(completed)
+        check_cancelled(cancel_event)
         if pending:
             _log.warning(
                 "Pre-geocode timed out unfinished=%d total=%d",
                 len(pending),
                 len(futures),
             )
+        resolved: dict[str, tuple[float, float]] = {}
         for future in done:
             try:
-                future.result()
+                coords = future.result()
             except Exception:
                 _log.warning("Pre-geocode task failed", exc_info=True)
+            else:
+                if coords is not None:
+                    resolved[futures[future]] = coords
+        return resolved
+    finally:
+        stopped.set()
+        for future in futures:
+            if not future.done():
+                future.cancel()

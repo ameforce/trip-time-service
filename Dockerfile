@@ -34,6 +34,8 @@ RUN uv run playwright install --with-deps chromium \
     && chown -R appuser:appuser /ms-playwright /app /home/appuser
 
 ARG APP_VERSION=v0.0.0.0
+ARG APP_REVISION=""
+LABEL org.opencontainers.image.revision=${APP_REVISION}
 ENV TTS_VERSION=${APP_VERSION}
 ENV HOME=/home/appuser
 ENV PATH="/app/.venv/bin:${PATH}"

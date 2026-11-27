@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 
 function buildSseBody(events: Array<{ event: string; data: unknown }>): string {
-  return events
+  const completed = events.some(({ event }) => event === 'recommendation');
+  return (completed ? [...events, { event: 'end', data: { ok: true } }] : events)
     .map(({ event, data }) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
     .join('');
 }

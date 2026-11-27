@@ -54,11 +54,19 @@ TripTime를 Jenkins 기반으로 빌드하고 `enm-server`에 Docker 컨테이�
    - `Deploy To ENM`
      - 빌드 워크스페이스에 ENM SSH known_hosts 파일을 생성한 뒤 `StrictHostKeyChecking=yes`로 배포
    - `Smoke Verify`
+     - 공개 `/api/config`의 버전과 제공자를 확인한 뒤 자동완성과 출발 시각·도착 시각 기준 경로 API의 최종 응답을 검증
+     - 단계별 결과와 실패 유형은 Jenkins의 `.ci-artifacts/release-smoke-<build-number>.json`에 보관
 3. 배포 스크립트
    - `deploy/enm/deploy.sh`
-   - 기존 컨테이너 이미지 백업 후 신규 이미지 배포
-   - `/healthz` 체크 실패 시 자동 롤백 시도
+   - 새 이미지를 확보한 뒤 기존 이미지 정보를 저장하고 컨테이너 교체
+   - Jenkins 배포에서는 이미지의 OCI 리비전 레이블과 체크아웃 커밋 SHA가 일치할 때만 교체
+   - 새 컨테이너 기동 또는 내부 `/healthz` 검증에 실패하면 스크립트가 자동 롤백 시도
    - `/healthz` 체크 성공 후 원격 빌드 디렉터리와 오래된 같은 저장소 이미지 태그 정리
+   - Jenkins가 공개 API 검증을 완료하기 전에 빌드가 실패하거나 중단되면 해당 빌드에서 생성한 컨테이너만 이전 이미지로 복구 시도
+   - 복구가 중단되면 같은 배포 시도의 기록과 이미지 ID를 확인해 이전 컨테이너를 생성하거나 이미 생성한 컨테이너의 시작 및 상태 검증을 재시도
+   - 이전 컨테이너의 상태 검증이 성공할 때까지 복구 기록을 보존하며 새 배포는 시작되지 않음
+   - 이전 이미지에 저장된 유효한 버전을 복구 컨테이너에 전달해 env 파일의 기본 버전을 덮어씀
+   - 배포와 롤백은 환경별 `flock`을 공유하며 최대 120초 동안 잠금 획득을 대기
 
 ## 6) 롤백 절차
 
@@ -73,6 +81,11 @@ export ENM_SSH_KEY=<ssh_key_path>
 bash deploy/enm/rollback.sh
 ```
 
+Jenkins 복구를 재시도할 때는 실패한 원래 빌드의 `BUILD_TAG`와 `IMAGE_REF`를
+각각 `ROLLBACK_EXPECTED_ATTEMPT_ID`와 `ROLLBACK_EXPECTED_IMAGE_REF`로 전달한다.
+이미 생성한 컨테이너를 이어서 시작하거나 재시작하면 Jenkins에 해당 동작이 표시된다.
+`[rollback] health check passed`에서 이전 이미지의 상태 검증과 복구 기록 정리를 확인한다.
+
 특정 이미지로 강제 롤백:
 
 ```bash
@@ -86,6 +99,18 @@ bash deploy/enm/rollback.sh
 
 - [ ] `https://triptime.enmsoftware.com/healthz` (main)
 - [ ] `https://dev.triptime.enmsoftware.com/healthz` (non-main)
+- [ ] 공개 API 검증 아티팩트에서 배포 이미지 태그와 실제 버전 일치 확인
+- [ ] 같은 아티팩트에서 실시간 자동완성과 출발 시각·도착 시각 기준 검색의 최종 응답 성공 확인
+
+직접 배포할 때는 배포 스크립트가 끝난 뒤 `--expected-version`에 방금 배포한
+이미지 태그를 지정해 같은 검증을 실행한다.
+
+```bash
+uv run --no-sync python deploy/enm/smoke.py \
+  --base-url "https://${DEPLOY_DOMAIN}" \
+  --expected-version "${APP_VERSION}" \
+  --artifact .ci-artifacts/release-smoke.json
+```
 
 ### UI/버전
 

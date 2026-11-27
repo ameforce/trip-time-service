@@ -136,7 +136,7 @@ def test_naver_autocomplete_fallback_log_omits_raw_query(monkeypatch, caplog) ->
         "trip_time_service.providers.naver_playwright._sleep",
         lambda *_args, **_kwargs: None,
     )
-    adapter = _NaverDirectionsSearchAdapter(provider=object())
+    adapter = _NaverDirectionsSearchAdapter()
 
     with caplog.at_level(logging.WARNING, logger=naver_log.name):
         adapter.select_place_ac(_Page(), _Input(), "강남역")

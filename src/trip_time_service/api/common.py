@@ -22,7 +22,5 @@ def ensure_future_time(
     normalized = ensure_tzaware(dt, tz)
     now = datetime.now(tz=tz)
     if normalized <= now:
-        normalized = ceil_time_to_minutes(now, step_minutes)
-    else:
-        normalized = ceil_time_to_minutes(normalized, step_minutes)
+        return ceil_time_to_minutes(now, step_minutes)
     return normalized
