@@ -11,16 +11,19 @@ ROOT = Path(__file__).resolve().parents[1]
 SHA = "1" * 40
 OLD_ID = "a" * 64
 OLD_IMAGE_ID = "sha256:" + "b" * 64
+NEW_IMAGE_ID = "sha256:" + "f" * 64
 OLD_VERSION = "v0.4.2.1-hotfix-v0.4.3-39c8c736"
 CANDIDATE_ID = "d" * 64
 RESTORED_ID = "e" * 64
-CANDIDATE = f"{CANDIDATE_ID}|triptime:new|job-43|triptime:old|sha256:new|{OLD_IMAGE_ID}"
+CANDIDATE = (
+    f"{CANDIDATE_ID}|triptime:new|job-43|triptime:old|{NEW_IMAGE_ID}|{OLD_IMAGE_ID}"
+)
 PREVIOUS = f"{OLD_ID}|triptime:old|||{OLD_IMAGE_ID}"
 RESTORE_BASE = f"{RESTORED_ID}|{OLD_IMAGE_ID}|||{OLD_IMAGE_ID}||"
 RESTORED_STOPPED = RESTORE_BASE + "job-43|triptime:new|triptime:old|false"
 RESTORED_RUNNING = RESTORE_BASE + "job-43|triptime:new|triptime:old|true"
 MANUALLY_RESTORED = RESTORE_BASE + "||triptime:old|true"
-REPLACEMENT = "new-id|triptime:new|job-44|triptime:old|sha256:new"
+REPLACEMENT = f"new-id|triptime:new|job-44|triptime:old|{NEW_IMAGE_ID}"
 MOCK_DOCKER = r"""#!/usr/bin/env bash
 echo "$*" >> "$MOCK_LOG"
 IFS='|' read -r id image attempt previous image_id previous_image_id \
@@ -29,6 +32,13 @@ running="${running:-true}"
 case "$1 $2" in
   "container inspect")
     [[ -n "$id" && ("$5" == "$id" || "$5" == triptime-dev) ]] || exit 1
+    if [[ "$MOCK_MODE" == "legacy-labels" \
+      && "$4" != *'{{with .Config.Labels}}'* ]]; then
+      restored_ref="${restored_ref:-<no value>}"
+      previous="${previous:-<no value>}"
+      previous_image_id="${previous_image_id:-<no value>}"
+      attempt="${attempt:-<nil>}"
+    fi
     case "$4" in
       *println*)
         printf '%s\n' "$id" "$image" "$attempt" "$previous" "$previous_image_id"
@@ -60,14 +70,14 @@ case "$1 $2" in
     case "$4" in
       '{{.Id}}')
         if [[ "$5" == "triptime:new" ]]; then
-          printf 'sha256:new\n'
+          printf '%s\n' "$MOCK_NEW_IMAGE_ID"
         elif [[ "$MOCK_MODE" == *previous-tag-moved ]]; then
           printf '%s\n' "$MOCK_MOVED_IMAGE_ID"
         else
           printf '%s\n' "$MOCK_OLD_IMAGE_ID"
         fi
         ;;
-      *revision*) printf 'sha256:new|%s\n' "$MOCK_REVISION" ;;
+      *revision*) printf '%s|%s\n' "$MOCK_NEW_IMAGE_ID" "$MOCK_REVISION" ;;
       *TTS_VERSION=*)
         if [[ "$5" == "$MOCK_OLD_IMAGE_ID" ]]; then
           printf '%s' "$MOCK_OLD_VERSION_ENV"
@@ -79,6 +89,7 @@ case "$1 $2" in
     ;;
   "rm -f")
     [[ "$3" == "$id" ]] || exit 1
+    if [[ -f "$MOCK_HANDOFF" ]]; then cat "$MOCK_HANDOFF" > "$MOCK_REMOVAL_HANDOFF"; fi
     : > "$MOCK_STATE"
     if [[ "$MOCK_MODE" == "interrupted-after-removal" ]]; then kill -TERM "$PPID"; fi
     ;;
@@ -191,7 +202,10 @@ def deploy_mock(tmp_path):
             "MOCK_REVISION": revision,
             "MOCK_CANDIDATE": CANDIDATE.replace("|job-43|", f"|{deploy_attempt}|"),
             "MOCK_CANDIDATE_ID": CANDIDATE_ID,
-            "MOCK_CHANGED_IMAGE": CANDIDATE.replace("sha256:new", "sha256:other"),
+            "MOCK_CHANGED_IMAGE": CANDIDATE.replace(NEW_IMAGE_ID, "sha256:other"),
+            "MOCK_NEW_IMAGE_ID": NEW_IMAGE_ID,
+            "MOCK_HANDOFF": (markers / "deploy-handoff.txt").as_posix(),
+            "MOCK_REMOVAL_HANDOFF": (tmp_path / "removal-handoff.txt").as_posix(),
             "MOCK_RESTORED_ID": RESTORED_ID,
             "MOCK_OLD_IMAGE_ID": OLD_IMAGE_ID,
             "MOCK_MOVED_IMAGE_ID": "sha256:" + "c" * 64,
@@ -272,7 +286,7 @@ def test_rollback_binds_the_attempt_and_container_id(
         (PREVIOUS, "2" * 40, "", "image revision does not match"),
         (PREVIOUS, "2" * 40, "registry", "image revision does not match"),
         (
-            CANDIDATE.replace("sha256:new", "sha256:original"),
+            CANDIDATE.replace(NEW_IMAGE_ID, "sha256:original"),
             SHA,
             "",
             "different bytes",
@@ -396,6 +410,78 @@ def test_explicit_image_only_deploy_without_expected_revision_remains_supported(
 HANDOFF = (
     "\n".join(("job-43", "triptime:new", OLD_ID, "triptime:old", OLD_IMAGE_ID)) + "\n"
 )
+
+
+@pytest.mark.parametrize(
+    ("stored_ref", "pinned_id", "restored_label"),
+    [("", "", ""), ("<no value>", OLD_IMAGE_ID, ""), ("<nil>", OLD_IMAGE_ID, "<nil>")],
+)
+def test_existing_container_deploy_handles_raw_and_stored_missing_labels(
+    deploy_mock, tmp_path, stored_ref, pinned_id, restored_label
+) -> None:
+    current = (
+        f"{OLD_ID}|triptime:old||{stored_ref}|{OLD_IMAGE_ID}|{pinned_id}"
+        f"|||{restored_label}|true"
+    )
+    result, state, actions = deploy_mock("deploy", current, mode="legacy-labels")
+
+    assert result.returncode == 0 and state == CANDIDATE, result
+    assert any("{{with .Config.Labels}}" in action for action in actions)
+    snapshot = tmp_path / "removal-handoff.txt"
+    assert snapshot.read_text(encoding="utf-8") == HANDOFF
+
+
+@pytest.mark.parametrize("predecessor_id", [OLD_IMAGE_ID, "<nil>"])
+def test_same_tag_rerun_uses_pinned_predecessor_or_skips_missing_marker(
+    deploy_mock, tmp_path, predecessor_id
+) -> None:
+    marker = tmp_path / "rollback/dev/previous-image.txt"
+    marker.write_text("<no value>\n", encoding="utf-8", newline="\n")
+    current = CANDIDATE.replace("|triptime:old|", "|<no value>|")
+    current = current.replace(OLD_IMAGE_ID, predecessor_id)
+
+    result, state, actions = deploy_mock("deploy", current, mode="legacy-labels")
+
+    assert result.returncode == 0 and state == CANDIDATE, result
+    expected_previous = OLD_IMAGE_ID if predecessor_id == OLD_IMAGE_ID else ""
+    create = next(action for action in actions if action.startswith("create "))
+    assert f"triptime_previous_image={expected_previous} " in create
+    assert marker.read_text(encoding="utf-8").strip() == expected_previous
+
+
+@pytest.mark.parametrize("sentinel", ["<no value>", "<nil>"])
+def test_guarded_rollback_never_treats_a_sentinel_as_ownership_or_image(
+    deploy_mock, sentinel
+) -> None:
+    no_owner = CANDIDATE.replace("|job-43|", f"|{sentinel}|")
+    no_previous = CANDIDATE.replace("|triptime:old|", f"|{sentinel}|")
+    no_previous = no_previous.replace(OLD_IMAGE_ID, sentinel)
+    for current, status in ((no_owner, 3), (no_previous, 1)):
+        result, state, actions = deploy_mock("rollback", current, mode="legacy-labels")
+        assert result.returncode == status and state == current, result
+        assert any("{{with .Config.Labels}}" in action for action in actions)
+        assert not any(action.startswith(("rm -f ", "create ")) for action in actions)
+
+
+def test_guarded_rollback_uses_pinned_id_when_legacy_display_ref_is_missing(
+    deploy_mock,
+) -> None:
+    current = CANDIDATE.replace("|triptime:old|", "|<no value>|")
+    result, state, actions = deploy_mock("rollback", current, mode="previous-tag-moved")
+
+    assert result.returncode == 0, result
+    assert state == RESTORED_RUNNING.replace("|triptime:old|", f"|{OLD_IMAGE_ID}|")
+    create = next(action for action in actions if action.startswith("create "))
+    assert create.endswith(OLD_IMAGE_ID)
+
+
+def test_deploy_refuses_invalid_legacy_predecessor_before_switch(deploy_mock) -> None:
+    current = CANDIDATE.replace("|triptime:old|", "|invalid legacy ref|")
+    result, state, actions = deploy_mock("deploy", current)
+
+    assert result.returncode == 1 and state == current, result
+    assert "active container has invalid rollback metadata" in result.stderr
+    assert not any(action.startswith(("rm -f ", "create ")) for action in actions)
 
 
 @pytest.mark.parametrize(

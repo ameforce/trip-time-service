@@ -153,6 +153,13 @@ read_image_version() {
   fi
 }
 
+container_label() {
+  case "\$1" in
+    '<no value>'|'<nil>') ;;
+    *) printf '%s' "\$1" ;;
+  esac
+}
+
 current_id=""
 current_image=""
 current_attempt=""
@@ -163,18 +170,18 @@ current_restore_attempt=""
 current_restore_candidate=""
 current_restored_ref=""
 current_running=""
-container_format='{{println .Id}}{{println .Config.Image}}{{println (index .Config.Labels "triptime_deploy_attempt")}}{{println (index .Config.Labels "triptime_previous_image")}}{{println (index .Config.Labels "triptime_previous_image_id")}}{{println .Image}}{{println (index .Config.Labels "triptime_restore_attempt")}}{{println (index .Config.Labels "triptime_restore_candidate")}}{{println (index .Config.Labels "triptime_restored_image_ref")}}{{.State.Running}}'
+container_format='{{println .Id}}{{println .Config.Image}}{{with .Config.Labels}}{{with index . "triptime_deploy_attempt"}}{{.}}{{end}}{{end}}{{println}}{{with .Config.Labels}}{{with index . "triptime_previous_image"}}{{.}}{{end}}{{end}}{{println}}{{with .Config.Labels}}{{with index . "triptime_previous_image_id"}}{{.}}{{end}}{{end}}{{println}}{{println .Image}}{{with .Config.Labels}}{{with index . "triptime_restore_attempt"}}{{.}}{{end}}{{end}}{{println}}{{with .Config.Labels}}{{with index . "triptime_restore_candidate"}}{{.}}{{end}}{{end}}{{println}}{{with .Config.Labels}}{{with index . "triptime_restored_image_ref"}}{{.}}{{end}}{{end}}{{println}}{{.State.Running}}'
 if current="\$(docker container inspect --format "\${container_format}" "\${CONTAINER_NAME}" 2>/dev/null)"; then
   mapfile -t fields <<< "\${current}"
   current_id="\${fields[0]}"
   current_image="\${fields[1]:-}"
-  current_attempt="\${fields[2]:-}"
-  current_previous="\${fields[3]:-}"
-  current_previous_id="\${fields[4]:-}"
+  current_attempt="\$(container_label "\${fields[2]:-}")"
+  current_previous="\$(container_label "\${fields[3]:-}")"
+  current_previous_id="\$(container_label "\${fields[4]:-}")"
   current_image_id="\${fields[5]:-}"
-  current_restore_attempt="\${fields[6]:-}"
-  current_restore_candidate="\${fields[7]:-}"
-  current_restored_ref="\${fields[8]:-}"
+  current_restore_attempt="\$(container_label "\${fields[6]:-}")"
+  current_restore_candidate="\$(container_label "\${fields[7]:-}")"
+  current_restored_ref="\$(container_label "\${fields[8]:-}")"
   current_running="\${fields[9]:-}"
 elif ! active_id="\$(docker container ls --all --quiet --filter "name=^/\${CONTAINER_NAME}$")" \
   || [[ -n "\${active_id}" ]]; then
@@ -217,6 +224,13 @@ if [[ -n "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" ]]; then
   else
     target_image="\${current_previous}"
     target_image_id="\${current_previous_id}"
+    if [[ -z "\${target_image}" && -n "\${target_image_id}" ]]; then
+      if [[ "\${target_image_id}" == "\${handoff_previous_id}" ]]; then
+        target_image="\${handoff_previous_ref}"
+      else
+        target_image="\${target_image_id}"
+      fi
+    fi
     if [[ "\${target_image}" == "\${handoff_previous_ref}" ]]; then
       if [[ -n "\${target_image_id}" && "\${target_image_id}" != "\${handoff_previous_id}" ]]; then
         echo "[rollback] recorded previous image IDs disagree" >&2
@@ -229,6 +243,7 @@ else
   target_image="\${ROLLBACK_IMAGE_REF}"
   if [[ -z "\${target_image}" && -f "\${ROLLBACK_DIR}/previous-image.txt" ]]; then
     target_image="\$(cat "\${ROLLBACK_DIR}/previous-image.txt")"
+    target_image="\$(container_label "\${target_image}")"
   fi
   if [[ -n "\${ROLLBACK_EXPECTED_IMAGE_REF}" && "\${current_image}" != "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
     if [[ -n "\${target_image}" && "\${current_image}" == "\${target_image}" ]] && check_health; then

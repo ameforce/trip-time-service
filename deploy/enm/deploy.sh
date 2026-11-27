@@ -216,12 +216,28 @@ cleanup_deploy_build_dir() {
   fi
 }
 
+container_label() {
+  case "\$1" in
+    '<no value>'|'<nil>') ;;
+    *) printf '%s' "\$1" ;;
+  esac
+}
+
 previous_id=""
 previous_image=""
 previous_image_id=""
-if previous="\$(docker container inspect --format '{{.Id}}|{{.Config.Image}}|{{.Image}}|{{index .Config.Labels "triptime_restored_image_ref"}}|{{index .Config.Labels "triptime_previous_image"}}|{{index .Config.Labels "triptime_previous_image_id"}}' "\${CONTAINER_NAME}" 2>/dev/null)"; then
+if previous="\$(docker container inspect --format '{{.Id}}|{{.Config.Image}}|{{.Image}}|{{with .Config.Labels}}{{with index . "triptime_restored_image_ref"}}{{.}}{{end}}{{end}}|{{with .Config.Labels}}{{with index . "triptime_previous_image"}}{{.}}{{end}}{{end}}|{{with .Config.Labels}}{{with index . "triptime_previous_image_id"}}{{.}}{{end}}{{end}}' "\${CONTAINER_NAME}" 2>/dev/null)"; then
   IFS='|' read -r previous_id previous_image previous_image_id restored_ref \
     predecessor_ref predecessor_id <<< "\${previous}"
+  restored_ref="\$(container_label "\${restored_ref}")"
+  predecessor_ref="\$(container_label "\${predecessor_ref}")"
+  predecessor_id="\$(container_label "\${predecessor_id}")"
+  if [[ (-n "\${restored_ref}" && ! "\${restored_ref}" =~ ^[-0-9A-Za-z._:/@]+$) \
+    || (-n "\${predecessor_ref}" && ! "\${predecessor_ref}" =~ ^[-0-9A-Za-z._:/@]+$) \
+    || (-n "\${predecessor_id}" && ! "\${predecessor_id}" =~ ^sha256:[0-9a-f]{64}$) ]]; then
+    echo "[deploy] active container has invalid rollback metadata" >&2
+    exit 1
+  fi
   previous_image="\${restored_ref:-\${previous_image}}"
 elif ! active_id="\$(docker container ls --all --quiet --filter "name=^/\${CONTAINER_NAME}$")" \
   || [[ -n "\${active_id}" ]]; then
@@ -387,15 +403,28 @@ if [[ -n "\${previous_id}" ]]; then
   write_handoff "\${previous_id}" "\${previous_image}" "\${previous_image_id}"
   if [[ "\${previous_image}" == "\${IMAGE_REF}" ]]; then
     # A rerun for the same image must preserve the preceding rollback target.
+    replaced_image_id="\${previous_image_id}"
     previous_image="\${predecessor_ref}"
     previous_image_id="\${predecessor_id}"
-    if [[ -z "\${previous_image}" && -f "\${ROLLBACK_DIR}/previous-image.txt" ]]; then
-      previous_image="\$(cat "\${ROLLBACK_DIR}/previous-image.txt")"
+    if [[ -n "\${previous_image_id}" && "\${previous_image_id}" == "\${replaced_image_id}" ]]; then
+      previous_image=""
+      previous_image_id=""
+    elif [[ -z "\${previous_image}" ]]; then
+      if [[ -n "\${previous_image_id}" ]]; then
+        previous_image="\${previous_image_id}"
+      elif [[ -f "\${ROLLBACK_DIR}/previous-image.txt" ]]; then
+        previous_image="\$(cat "\${ROLLBACK_DIR}/previous-image.txt")"
+        previous_image="\$(container_label "\${previous_image}")"
+      fi
     fi
   fi
   if [[ "\${previous_image}" == "\${IMAGE_REF}" ]]; then
     previous_image=""
     previous_image_id=""
+  fi
+  if [[ -n "\${previous_image}" && ! "\${previous_image}" =~ ^[-0-9A-Za-z._:/@]+$ ]]; then
+    echo "[deploy] previous image reference is invalid" >&2
+    exit 1
   fi
   if [[ -n "\${previous_image}" && -z "\${previous_image_id}" ]]; then
     previous_image_id="\$(docker image inspect --format '{{.Id}}' "\${previous_image}" 2>/dev/null || true)"
