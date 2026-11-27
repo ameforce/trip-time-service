@@ -104,22 +104,11 @@ def _click(element: Any) -> None:
 
 
 def _calendar_day_is_selected(button: Any) -> bool:
-    if button is None:
-        return False
     try:
-        markers = [
-            button.get_attribute(name)
-            for name in ("aria-selected", "aria-pressed", "data-selected")
-        ]
-        if any(marker is not None for marker in markers):
-            return "true" in markers
-        classes = (button.get_attribute("class") or "").split()
+        # Naver switches aria-current between "false" and "true" on day buttons.
+        return button is not None and button.get_attribute("aria-current") == "true"
     except Exception:
         return False
-    return bool(
-        {"selected", "is_selected", "is-selected", "active", "is_active", "on"}
-        .intersection(classes)
-    )
 
 
 def _query_all(page: Any, selector: str) -> list:

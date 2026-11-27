@@ -109,44 +109,103 @@ if ! command -v curl >/dev/null 2>&1; then
   echo "[rollback] curl command not found on remote host (required for health check)" >&2
   exit 1
 fi
+if ! command -v flock >/dev/null 2>&1; then
+  echo "[rollback] flock is required for coordinated deployment recovery" >&2
+  exit 1
+fi
+mkdir -p "\${ROLLBACK_DIR}"
+handoff_file="\${ROLLBACK_DIR}/deploy-handoff.txt"
+exec 9>>"\${ROLLBACK_DIR}/deploy.lock"
+if ! flock -w 120 9; then
+  echo "[rollback] timed out acquiring the environment deployment lock" >&2
+  exit 1
+fi
 
 check_health() {
   curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:\${HOST_PORT}/healthz" >/dev/null
+}
+
+load_handoff() {
+  local -a record=()
+  [[ -f "\${handoff_file}" ]] || return 1
+  mapfile -t -n 6 record < "\${handoff_file}" || return 1
+  [[ "\${#record[@]}" == 5 ]] || return 1
+  if [[ "\${record[0]}" != "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" \
+    || "\${record[1]}" != "\${ROLLBACK_EXPECTED_IMAGE_REF}" \
+    || ! "\${record[2]}" =~ ^[0-9a-f]{64}$ \
+    || ! "\${record[3]}" =~ ^[-0-9A-Za-z._:/@]+$ \
+    || ! "\${record[4]}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    return 1
+  fi
+  handoff_previous_ref="\${record[3]}"
+  handoff_previous_id="\${record[4]}"
+}
+
+read_image_version() {
+  local version
+  version="\$(docker image inspect --format '{{range .Config.Env}}{{if eq (printf "%.12s" .) "TTS_VERSION="}}{{println .}}{{end}}{{end}}' "\$1")" || return 1
+  [[ "\${version}" == TTS_VERSION=* ]] || return 0
+  version="\${version#TTS_VERSION=}"
+  if [[ "\${#version}" -le 128 && "\${version}" != "v0.0.0.0" \
+    && "\${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-[A-Za-z0-9._-]+)?$ ]]; then
+    printf '%s' "\${version}"
+  fi
 }
 
 current_id=""
 current_image=""
 current_attempt=""
 current_previous=""
-container_format='{{println .Id}}{{println .Config.Image}}{{println (index .Config.Labels "triptime_deploy_attempt")}}{{index .Config.Labels "triptime_previous_image"}}'
+current_previous_id=""
+container_format='{{println .Id}}{{println .Config.Image}}{{println (index .Config.Labels "triptime_deploy_attempt")}}{{println (index .Config.Labels "triptime_previous_image")}}{{index .Config.Labels "triptime_previous_image_id"}}'
 if current="\$(docker container inspect --format "\${container_format}" "\${CONTAINER_NAME}" 2>/dev/null)"; then
   mapfile -t fields <<< "\${current}"
   current_id="\${fields[0]}"
   current_image="\${fields[1]:-}"
   current_attempt="\${fields[2]:-}"
   current_previous="\${fields[3]:-}"
+  current_previous_id="\${fields[4]:-}"
 elif ! active_id="\$(docker container ls --all --quiet --filter "name=^/\${CONTAINER_NAME}$")" \
   || [[ -n "\${active_id}" ]]; then
   echo "[rollback] cannot determine active container state" >&2
   exit 1
 fi
 
+target_image_id=""
 if [[ -n "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" ]]; then
-  if [[ -z "\${current_id}" || "\${current_attempt}" != "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" \
+  handoff_previous_ref=""
+  handoff_previous_id=""
+  if [[ -n "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]] && load_handoff; then
+    echo "[rollback] found a recovery record for this deployment attempt"
+  fi
+  if [[ -z "\${current_id}" && -n "\${handoff_previous_id}" ]]; then
+    target_image="\${handoff_previous_ref}"
+    target_image_id="\${handoff_previous_id}"
+    echo "[rollback] recovering the previous image after an interrupted switch"
+  elif [[ -z "\${current_id}" || "\${current_attempt}" != "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" \
     || "\${current_image}" != "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
+    if [[ -n "\${handoff_previous_id}" ]]; then
+      rm -f -- "\${handoff_file}"
+    fi
     echo "[rollback] no active candidate from this deployment attempt"
     exit 3
+  else
+    target_image="\${current_previous}"
+    target_image_id="\${current_previous_id}"
+    if [[ "\${target_image}" == "\${handoff_previous_ref}" ]]; then
+      if [[ -n "\${target_image_id}" && "\${target_image_id}" != "\${handoff_previous_id}" ]]; then
+        echo "[rollback] recorded previous image IDs disagree" >&2
+        exit 1
+      fi
+      target_image_id="\${handoff_previous_id}"
+    fi
   fi
-  target_image="\${current_previous}"
 else
   target_image="\${ROLLBACK_IMAGE_REF}"
   if [[ -z "\${target_image}" && -f "\${ROLLBACK_DIR}/previous-image.txt" ]]; then
     target_image="\$(cat "\${ROLLBACK_DIR}/previous-image.txt")"
   fi
-fi
-
-if [[ -n "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
-  if [[ "\${current_image}" != "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
+  if [[ -n "\${ROLLBACK_EXPECTED_IMAGE_REF}" && "\${current_image}" != "\${ROLLBACK_EXPECTED_IMAGE_REF}" ]]; then
     if [[ -n "\${target_image}" && "\${current_image}" == "\${target_image}" ]] && check_health; then
       echo "[rollback] previous image is already running and healthy"
       exit 0
@@ -164,8 +223,16 @@ if [[ ! -f "\${ENV_FILE}" ]]; then
   echo "[rollback] env file not found on remote host: \${ENV_FILE}" >&2
   exit 1
 fi
-if ! docker image inspect "\${target_image}" >/dev/null 2>&1; then
-  docker pull "\${target_image}" >/dev/null
+if [[ -z "\${target_image_id}" ]]; then
+  if ! docker image inspect "\${target_image}" >/dev/null 2>&1; then
+    docker pull "\${target_image}" >/dev/null
+  fi
+  target_image_id="\$(docker image inspect --format '{{.Id}}' "\${target_image}")"
+fi
+if [[ ! "\${target_image_id}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+  || ! restore_version="\$(read_image_version "\${target_image_id}")"; then
+  echo "[rollback] the previous image ID is invalid or unavailable" >&2
+  exit 1
 fi
 if [[ -n "\${current_id}" ]]; then
   docker rm -f "\${current_id}" >/dev/null
@@ -184,6 +251,10 @@ run_container() {
     --label "service=\${CONTAINER_PREFIX}"
     --label "deploy_env=\${DEPLOY_ENV}"
   )
+  args+=(--label "triptime_restored_image_ref=\${target_image}")
+  if [[ -n "\${restore_version}" ]]; then
+    args+=(--env "TTS_VERSION=\${restore_version}")
+  fi
 
   if [[ -n "\${NETWORK_NAME}" ]]; then
     args+=(--network "\${NETWORK_NAME}")
@@ -209,11 +280,12 @@ run_container() {
   docker run "\${args[@]}" "\${image_ref}" >/dev/null
 }
 
-run_container "\${target_image}"
+run_container "\${target_image_id}"
 
 for ((i=1; i<=HEALTHCHECK_RETRIES; i++)); do
   if check_health; then
     printf '%s\n' "\${target_image}" > "\${ROLLBACK_DIR}/current-image.txt"
+    rm -f -- "\${handoff_file}"
     echo "[rollback] health check passed"
     exit 0
   fi

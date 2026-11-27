@@ -413,13 +413,27 @@ test('shows a different provider sample time without changing the requested trip
     departure_time: '2030-06-04T05:04:00Z',
     arrival_time: '2030-06-04T05:35:12Z',
   };
+  const sampledRecommendation = {
+    ...recommendationFor('2030-06-04T05:44:00Z'),
+    latest_departure_time: '2030-06-04T05:10:00Z',
+    latest_departure_duration_seconds: 2040,
+    safe_departure_time: '2030-06-04T05:10:00Z',
+    safe_departure_duration_seconds: 2550,
+    recommended_departure_time: '2030-06-04T05:20:00Z',
+    expected_arrival_time: '2030-06-04T05:52:00Z',
+    duration_seconds: 1920,
+  };
+  const immediateSafe = { safe_departure_time: offGridArrival.departure_time, safe_duration_seconds: 2340 };
   const samples = ['2030-06-04T05:10:00Z', '2030-06-04T14:04:00+09:00'];
   await page.route('**/v1/trip/arrival-time-with-recommendation/stream', (request) => {
     expect(request.request().postDataJSON().departure_time).toBe('2030-06-04T05:04:00.000Z');
     return request.fulfill({
       contentType: 'text/event-stream',
-      body: frame('arrival', { arrival: { ...offGridArrival, sampled_departure_time: samples.shift() } }) +
-        frame('recommendation', recommendationFor(offGridArrival.arrival_time)) +
+      body: frame('arrival', {
+        arrival: { ...offGridArrival, sampled_departure_time: samples.shift() },
+        immediate_safe_departure: immediateSafe,
+      }) +
+        frame('recommendation', sampledRecommendation) +
         frame('end', { ok: true }),
     });
   });
@@ -429,8 +443,20 @@ test('shows a different provider sample time without changing the requested trip
   await page.locator('#search-btn').click();
   await expect(page.locator('.row-baseline-departure .value')).toHaveText('2030-06-04 14:04');
   await expect(page.locator('.sample-time-note')).toHaveText('교통 정보 조회 기준 시각 2030-06-04 14:10');
-  const calendar = await page.getByRole('link', { name: '추천 일정 추가' }).getAttribute('href');
-  expect(new URL(calendar!).searchParams.get('dates')).toBe('20300604T050400Z/20300604T053512Z');
+  await expect(page.locator('.row-recommended-departure .value')).toHaveText('2030-06-04 14:20');
+  const result = page.locator('.recommendation-card');
+  const comparison = (label: string) => result.locator('.result-row').filter({ hasText: label }).locator('.value');
+  await expect(comparison('지정 출발시 예상 도착 시간')).toHaveText('2030-06-04 14:35:12');
+  await expect(comparison('지정 출발 대비 도착 시간 차이')).toHaveText('16분 48초 늦음');
+  await expect(comparison('타이트 소요시간')).toHaveText('31분 12초');
+  await expect(comparison('안정적 소요시간')).toHaveText('39분');
+  await expect(result.locator('.badge-danger')).toContainText('지정 출발 소요 시간보다 느림');
+  await expect(page.locator('.safe-block .deadline-time')).toHaveText('2030-06-04 14:04');
+
+  const recommendedCalendar = await page.getByRole('link', { name: '추천 일정 추가' }).getAttribute('href');
+  expect(new URL(recommendedCalendar!).searchParams.get('dates')).toBe('20300604T052000Z/20300604T055200Z');
+  const tightCalendar = await page.getByRole('link', { name: '타이트 일정 추가' }).getAttribute('href');
+  expect(new URL(tightCalendar!).searchParams.get('dates')).toBe('20300604T050400Z/20300604T053512Z');
 
   await page.locator('#search-btn').click();
   await expect(page.locator('.recommendation-card')).toBeVisible();

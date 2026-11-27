@@ -62,8 +62,7 @@ def test_enm_deploy_scripts_override_tts_provider_to_playwright() -> None:
     assert 'TTS_PROVIDER="${TTS_PROVIDER' not in rollback
     assert 'TTS_PROVIDER="$(printf' not in rollback
     assert '--env "TTS_PROVIDER=' not in rollback
-    assert 'run_container "\\${previous_image}"' in deploy
-    assert 'run_container "\\${previous_image}" "\\${TTS_PROVIDER}"' not in deploy
+    assert r'run_container "\${previous_image_id}" "" "\${restore_version}"' in deploy
     assert "must NOT force" in deploy
 
 

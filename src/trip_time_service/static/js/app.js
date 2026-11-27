@@ -2947,34 +2947,20 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     detailsHtml += buildImmediateSafeCard(immediateSafe);
   }
 
-  var safeDepartureFallback = immediateSafe
-    ? immediateSafe.safe_departure_time
-    : null;
-  var safeDurationFallback = immediateSafe
-    ? immediateSafe.safe_duration_seconds
-    : null;
-  var latestDepartureTime = data.latest_departure_time || null;
-  var latestArrivalTime = data.latest_departure_arrival_time || null;
-  var latestDurationSeconds = data.latest_departure_duration_seconds != null
-    ? data.latest_departure_duration_seconds
-    : null;
-
-  if (ctx.mode === "arrival" && baselineArrivalData) {
-    if (!latestDepartureTime) {
-      latestDepartureTime = baselineArrivalData.departure_time;
-    }
-    if (!latestArrivalTime) {
-      latestArrivalTime = baselineArrivalData.arrival_time;
-    }
-    if (latestDurationSeconds == null) {
-      latestDurationSeconds = baselineArrivalData.duration_seconds;
-    }
+  // Forward analysis can use a sampled slot for its baseline candidate.
+  // Compare the recommendation to the actual trip returned in the arrival frame.
+  var requestedBaseline = ctx.mode === "arrival" ? baselineArrivalData : null;
+  var latestDepartureTime = requestedBaseline?.departure_time || data.latest_departure_time || null;
+  var latestArrivalTime = requestedBaseline?.arrival_time || data.latest_departure_arrival_time || null;
+  var latestDurationSeconds = requestedBaseline?.duration_seconds ?? data.latest_departure_duration_seconds ?? null;
+  var comparisonArrivalTime = requestedBaseline?.arrival_time || data.desired_arrival_time;
+  var safeDepartureTime = data.safe_departure_time || immediateSafe?.safe_departure_time || null;
+  var safeDurationSeconds = data.safe_departure_duration_seconds ?? immediateSafe?.safe_duration_seconds ?? null;
+  if (requestedBaseline && immediateSafe?.safe_departure_time && immediateSafe.safe_duration_seconds != null) {
+    safeDepartureTime = immediateSafe.safe_departure_time;
+    safeDurationSeconds = immediateSafe.safe_duration_seconds;
   }
 
-  var safeDepartureTime = data.safe_departure_time || safeDepartureFallback;
-  var safeDurationSeconds = data.safe_departure_duration_seconds != null
-    ? data.safe_departure_duration_seconds
-    : safeDurationFallback;
   var recommendedDepartureDisplayTime = data.recommended_departure_time || null;
   var recommendedDurationDisplaySeconds = data.duration_seconds != null
     ? data.duration_seconds
@@ -3000,17 +2986,20 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
   var displayMeetsDeadline = !!data.meets_deadline;
   if (ctx.mode === "departure") {
     var displayArrival = parseIsoDatetime(expectedArrivalDisplayTime);
-    var desiredArrival = parseIsoDatetime(data.desired_arrival_time);
+    var desiredArrival = parseIsoDatetime(comparisonArrivalTime);
     if (displayArrival && desiredArrival) {
       displayMeetsDeadline = displayArrival.getTime() <= desiredArrival.getTime();
     }
+  } else if (requestedBaseline && Number.isFinite(recommendedDurationDisplaySeconds) &&
+      Number.isFinite(latestDurationSeconds)) {
+    displayMeetsDeadline = recommendedDurationDisplaySeconds <= latestDurationSeconds;
   }
   var deadlineBadge = displayMeetsDeadline
     ? ctx.statusPass
     : ctx.statusFail;
   var arrivalDeltaText = formatArrivalDelta(
     expectedArrivalDisplayTime,
-    data.desired_arrival_time
+    comparisonArrivalTime
   );
 
   var analysisData = {
@@ -3025,7 +3014,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
   };
   if (analysisData.latest_departure_time || analysisData.safe_departure_time) {
     detailsHtml += buildAnalysisCard(analysisData, ctx, {
-      baseline: ctx.mode === "arrival" ? baselineArrivalData : null,
+      baseline: requestedBaseline,
     });
   }
 
@@ -3087,7 +3076,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     route: data.route,
     departureIso: recommendedDepartureDisplayTime,
     arrivalIso: recommendedArrivalForCalendar,
-    desiredArrivalIso: data.desired_arrival_time,
+    desiredArrivalIso: comparisonArrivalTime,
     durationSeconds: recommendedDurationDisplaySeconds,
   });
   var tightCalendarEvent = buildCalendarEventPayload({
@@ -3095,7 +3084,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     route: data.route,
     departureIso: latestDepartureTime,
     arrivalIso: tightArrivalForCalendar,
-    desiredArrivalIso: data.desired_arrival_time,
+    desiredArrivalIso: comparisonArrivalTime,
     durationSeconds: latestDurationSeconds,
   });
   var recommendedCalendarUrl = buildGoogleCalendarTemplateUrl(
@@ -3137,7 +3126,7 @@ function renderDepartureResult(data, baselineArrivalData, context, immediateSafe
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">' + ctx.desiredLabel + "</span>" +
-    '      <span class="value">' + formatDatetime(data.desired_arrival_time) + "</span>" +
+    '      <span class="value">' + formatDatetime(comparisonArrivalTime) + "</span>" +
     "    </div>" +
     '    <div class="result-row">' +
     '      <span class="label">' + arrivalDeltaLabel + "</span>" +

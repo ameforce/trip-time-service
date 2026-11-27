@@ -38,7 +38,7 @@ class _FakeCalendarButton:
         return self.text
 
     def get_attribute(self, name: str) -> str | None:
-        if name == "aria-pressed":
+        if name == "aria-current":
             return "true" if self._page.selected_day is self else "false"
         return None
 
