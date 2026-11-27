@@ -235,6 +235,22 @@ if [[ ! "\${target_image_id}" =~ ^sha256:[0-9a-f]{64}$ ]] \
   exit 1
 fi
 if [[ -n "\${current_id}" ]]; then
+  if [[ -n "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" ]]; then
+    if [[ ! "\${current_id}" =~ ^[0-9a-f]{64}$ \
+      || ! "\${target_image}" =~ ^[-0-9A-Za-z._:/@]+$ ]]; then
+      echo "[rollback] cannot record the active container or previous image" >&2
+      exit 1
+    fi
+    # A retry must know what to restore even if this run stops after removal.
+    handoff_tmp="\$(mktemp "\${ROLLBACK_DIR}/.deploy-handoff.XXXXXX")"
+    if ! printf '%s\n' "\${ROLLBACK_EXPECTED_ATTEMPT_ID}" "\${ROLLBACK_EXPECTED_IMAGE_REF}" \
+      "\${current_id}" "\${target_image}" "\${target_image_id}" > "\${handoff_tmp}" \
+      || ! mv -fT -- "\${handoff_tmp}" "\${handoff_file}"; then
+      rm -f -- "\${handoff_tmp}"
+      echo "[rollback] could not record the rollback handoff" >&2
+      exit 1
+    fi
+  fi
   docker rm -f "\${current_id}" >/dev/null
 fi
 

@@ -12,7 +12,8 @@ SHA = "1" * 40
 OLD_ID = "a" * 64
 OLD_IMAGE_ID = "sha256:" + "b" * 64
 OLD_VERSION = "v0.4.2.1-hotfix-v0.4.3-39c8c736"
-CANDIDATE = f"candidate-id|triptime:new|job-43|triptime:old|sha256:new|{OLD_IMAGE_ID}"
+CANDIDATE_ID = "d" * 64
+CANDIDATE = f"{CANDIDATE_ID}|triptime:new|job-43|triptime:old|sha256:new|{OLD_IMAGE_ID}"
 PREVIOUS = f"{OLD_ID}|triptime:old|||{OLD_IMAGE_ID}"
 REPLACEMENT = "new-id|triptime:new|job-44|triptime:old|sha256:new"
 MOCK_DOCKER = r"""#!/usr/bin/env bash
@@ -79,17 +80,18 @@ case "$1 $2" in
       else
         printf '%s\n' "$MOCK_CANDIDATE" > "$MOCK_STATE"
       fi
-      echo candidate-id
+      echo "$MOCK_CANDIDATE_ID"
     else
       [[ "${@: -1}" == "$MOCK_OLD_IMAGE_ID" ]] || exit 1
       printf '%s\n' "$MOCK_PREVIOUS" > "$MOCK_STATE"
       echo old-id
     fi
     ;;
-  "start candidate-id")
+  "start $MOCK_CANDIDATE_ID")
     [[ "$MOCK_MODE" != start-fails* ]]
     ;;
   "run --detach")
+    [[ "$MOCK_MODE" != "restore-run-fails" ]] || exit 1
     [[ -z "$id" ]] || exit 1
     [[ "${@: -1}" == "triptime:old" || "${@: -1}" == "$MOCK_OLD_IMAGE_ID" ]] || exit 1
     printf '%s\n' "$MOCK_PREVIOUS" > "$MOCK_STATE"
@@ -154,6 +156,7 @@ def deploy_mock(tmp_path):
             "MOCK_MODE": mode,
             "MOCK_REVISION": revision,
             "MOCK_CANDIDATE": CANDIDATE,
+            "MOCK_CANDIDATE_ID": CANDIDATE_ID,
             "MOCK_CHANGED_IMAGE": CANDIDATE.replace("sha256:new", "sha256:other"),
             "MOCK_PREVIOUS": PREVIOUS,
             "MOCK_OLD_IMAGE_ID": OLD_IMAGE_ID,
@@ -203,11 +206,17 @@ exec bash "$1"
 @pytest.mark.parametrize(
     ("initial", "mode", "status", "active", "removal"),
     [
-        (CANDIDATE, "", 0, PREVIOUS, "rm -f candidate-id"),
+        (CANDIDATE, "", 0, PREVIOUS, f"rm -f {CANDIDATE_ID}"),
         ("", "", 3, "", None),
         (PREVIOUS, "", 3, PREVIOUS, None),
         (REPLACEMENT, "", 3, REPLACEMENT, None),
-        (CANDIDATE, "changed-while-restoring", 1, REPLACEMENT, "rm -f candidate-id"),
+        (
+            CANDIDATE,
+            "changed-while-restoring",
+            1,
+            REPLACEMENT,
+            f"rm -f {CANDIDATE_ID}",
+        ),
     ],
 )
 def test_rollback_binds_the_attempt_and_container_id(
@@ -258,8 +267,8 @@ def test_deploy_never_starts_a_container_from_a_tag_changed_after_verification(
     assert result.returncode == 1
     assert "created from a different image ID" in result.stderr
     assert state == PREVIOUS
-    assert "start candidate-id" not in actions
-    assert "rm -f candidate-id" in actions
+    assert f"start {CANDIDATE_ID}" not in actions
+    assert f"rm -f {CANDIDATE_ID}" in actions
 
 
 def test_deploy_auto_rollback_uses_failed_container_id_without_new_config(
@@ -270,7 +279,7 @@ def test_deploy_auto_rollback_uses_failed_container_id_without_new_config(
     )
     assert result.returncode == 1 and "rollback health check passed" in result.stdout
     assert state == PREVIOUS
-    assert "rm -f candidate-id" in actions
+    assert f"rm -f {CANDIDATE_ID}" in actions
     restores = [action for action in actions if action.startswith("create ")]
     assert len(restores) == 2
     assert "--label triptime_deploy_attempt=job-43" in restores[0]
@@ -291,7 +300,7 @@ def test_active_candidate_rollback_uses_prior_id_and_overrides_placeholder(
         "rollback", CANDIDATE, mode="previous-tag-moved"
     )
     assert result.returncode == 0 and state == PREVIOUS, result
-    assert "rm -f candidate-id" in actions
+    assert f"rm -f {CANDIDATE_ID}" in actions
     assert not any(action.endswith(" triptime:old") for action in actions)
     restore = next(action for action in actions if action.startswith("run "))
     assert restore.endswith(OLD_IMAGE_ID)
@@ -352,6 +361,29 @@ def test_explicit_image_only_deploy_without_expected_revision_remains_supported(
 HANDOFF = (
     "\n".join(("job-43", "triptime:new", OLD_ID, "triptime:old", OLD_IMAGE_ID)) + "\n"
 )
+
+
+@pytest.mark.parametrize(
+    "mode", ["interrupted-after-removal", "restore-run-fails"]
+)
+def test_rollback_retry_restores_the_previous_image_after_candidate_removal(
+    deploy_mock, tmp_path, mode
+) -> None:
+    handoff = tmp_path / "rollback/dev/deploy-handoff.txt"
+    result, state, actions = deploy_mock("rollback", CANDIDATE, mode=mode)
+
+    assert result.returncode != 0 and state == "", result
+    assert f"rm -f {CANDIDATE_ID}" in actions
+    assert handoff.read_text(encoding="utf-8") == HANDOFF.replace(OLD_ID, CANDIDATE_ID)
+
+    result, state, actions = deploy_mock("rollback", state, mode="previous-tag-moved")
+
+    assert result.returncode == 0 and state == PREVIOUS, result
+    assert not handoff.exists()
+    assert not any(action.startswith("rm -f ") for action in actions)
+    restore = next(action for action in actions if action.startswith("run "))
+    assert restore.endswith(OLD_IMAGE_ID)
+    assert f"--env TTS_VERSION={OLD_VERSION}" in restore
 
 
 def test_interrupted_deploy_recovers_exact_previous_image_with_no_candidate(
