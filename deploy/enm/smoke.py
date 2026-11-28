@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import http.client
 import json
 import queue
 import re
+import secrets
 import threading
 import time
 from collections.abc import Callable
@@ -36,6 +38,13 @@ ROUTE = {
     "origin_coords": {"lat": 37.554648, "lon": 126.970633},
     "destination": "서울시청",
     "dest_coords": {"lat": 37.566295, "lon": 126.977945},
+}
+ACCOUNT_REQUEST_SECONDS = 8
+MAX_ACCOUNT_BODY_BYTES = 64 * 1024
+ACCOUNT_FAVORITE = {
+    "name": "서울역",
+    "address": "서울특별시 용산구 한강대로 405",
+    **ROUTE["origin_coords"],
 }
 
 
@@ -251,11 +260,238 @@ def _run_check(
     return {**outcome, "elapsed_ms": round((time.monotonic() - started) * 1000)}
 
 
+def _account_snapshot(snapshot: object) -> tuple[object, list]:
+    data = _object(snapshot)
+    favorites = data.get("favorites")
+    if "user" not in data or not isinstance(favorites, list):
+        raise SmokeFailure("account_state_mismatch")
+    return data["user"], favorites
+
+
+def _signed_in_snapshot(
+    snapshot: object,
+    username: str,
+    expected_id: str | None = None,
+) -> tuple[str, list]:
+    user, favorites = _account_snapshot(snapshot)
+    if not isinstance(user, dict) or user.get("username") != username:
+        raise SmokeFailure("account_state_mismatch")
+    account_id = user.get("id")
+    if (
+        not isinstance(account_id, str)
+        or re.fullmatch(r"[!-~]+", account_id) is None
+        or (expected_id is not None and account_id != expected_id)
+    ):
+        raise SmokeFailure("account_state_mismatch")
+    return account_id, favorites
+
+
+def _favorite_id(favorites: list) -> int:
+    if len(favorites) != 1:
+        raise SmokeFailure("favorite_mismatch")
+    favorite = _object(favorites[0])
+    favorite_id = favorite.get("id")
+    if type(favorite_id) is not int or any(
+        favorite.get(key) != value for key, value in ACCOUNT_FAVORITE.items()
+    ):
+        raise SmokeFailure("favorite_mismatch")
+    return favorite_id
+
+
+async def _check_accounts(origin: str) -> dict:
+    # The account check is opt-in for callers without the development dependencies.
+    import httpx
+
+    started = time.monotonic()
+    username = "smoke_" + secrets.token_hex(12)
+    password = "Aa1!" + secrets.token_urlsafe(32)
+    credentials = {"username": username, "password": password}
+
+    def open_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=origin,
+            trust_env=False,
+            follow_redirects=False,
+            timeout=ACCOUNT_REQUEST_SECONDS,
+        )
+
+    async def request(
+        client: httpx.AsyncClient,
+        method: str,
+        path: str,
+        status: int,
+        *,
+        payload: dict | None = None,
+        account_id: str | None = None,
+        snapshot: bool = False,
+    ) -> object:
+        headers = {
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
+            "Cache-Control": "no-cache",
+        }
+        if method != "GET":
+            headers.update({"Origin": origin, "X-Requested-With": "TripTime"})
+        if account_id is not None:
+            headers["X-TripTime-Account"] = account_id
+        try:
+            async with (
+                asyncio.timeout(ACCOUNT_REQUEST_SECONDS),
+                client.stream(method, path, headers=headers, json=payload) as response,
+            ):
+                if response.status_code != status:
+                    raise SmokeFailure("http_error", http_status=response.status_code)
+                if not snapshot:
+                    return None
+                body = bytearray()
+                async for chunk in response.aiter_raw():
+                    if len(body) + len(chunk) > MAX_ACCOUNT_BODY_BYTES:
+                        raise SmokeFailure("response_too_large")
+                    body.extend(chunk)
+                return json.loads(body.decode("utf-8"))
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            raise SmokeFailure("request_timeout") from exc
+        except (OSError, httpx.HTTPError) as exc:
+            raise SmokeFailure("network_error") from exc
+        except (UnicodeError, ValueError, RecursionError) as exc:
+            raise SmokeFailure("invalid_response") from exc
+
+    async def delete(client: httpx.AsyncClient, account_id: str) -> None:
+        await request(
+            client,
+            "DELETE",
+            "/api/auth/account",
+            204,
+            payload={"password": password},
+            account_id=account_id,
+        )
+
+    async def cleanup(
+        client: httpx.AsyncClient | None, known_id: str | None
+    ) -> None:
+        if client is not None and known_id is not None:
+            try:
+                await delete(client, known_id)
+                return
+            except SmokeFailure:
+                pass
+        async with open_client() as recovery:
+            logged_in = await request(
+                recovery,
+                "POST",
+                "/api/auth/login",
+                200,
+                payload=credentials,
+                snapshot=True,
+            )
+            recovered_id, _ = _signed_in_snapshot(logged_in, username, known_id)
+            await delete(recovery, recovered_id)
+
+    async with open_client() as original, open_client() as fresh:
+        stage = "register"
+        account_id: str | None = None
+        active: httpx.AsyncClient | None = None
+        # Registration can commit before the client receives the response.
+        cleanup_required = True
+        outcome: dict = {"ok": True}
+        try:
+            registered = await request(
+                original,
+                "POST",
+                "/api/auth/register",
+                201,
+                payload=credentials,
+                snapshot=True,
+            )
+            account_id, favorites = _signed_in_snapshot(registered, username)
+            active = original
+            if favorites:
+                raise SmokeFailure("account_state_mismatch")
+
+            stage = "save_favorite"
+            saved = await request(
+                original,
+                "POST",
+                "/api/favorites",
+                201,
+                payload=ACCOUNT_FAVORITE,
+                account_id=account_id,
+                snapshot=True,
+            )
+            active = None
+            _, favorites = _signed_in_snapshot(saved, username, account_id)
+            active = original
+            favorite_id = _favorite_id(favorites)
+
+            stage = "logout"
+            await request(
+                original,
+                "POST",
+                "/api/auth/logout",
+                204,
+                account_id=account_id,
+            )
+            active = None
+            stage = "verify_anonymous"
+            guest = await request(original, "GET", "/api/auth/me", 200, snapshot=True)
+            user, favorites = _account_snapshot(guest)
+            if user is not None or favorites:
+                raise SmokeFailure("account_state_mismatch")
+
+            stage = "login"
+            logged_in = await request(
+                fresh,
+                "POST",
+                "/api/auth/login",
+                200,
+                payload=credentials,
+                snapshot=True,
+            )
+            _signed_in_snapshot(logged_in, username, account_id)
+            active = fresh
+            stage = "verify_favorite"
+            persisted = await request(fresh, "GET", "/api/auth/me", 200, snapshot=True)
+            active = None
+            _, favorites = _signed_in_snapshot(persisted, username, account_id)
+            active = fresh
+            if _favorite_id(favorites) != favorite_id:
+                raise SmokeFailure("favorite_mismatch")
+
+            stage = "delete_account"
+            await delete(fresh, account_id)
+            cleanup_required = False
+            outcome.update(roundtrip=True, cleanup="deleted")
+        except SmokeFailure as exc:
+            outcome = {"ok": False, "stage": stage, **exc.evidence}
+            if stage == "register" and exc.evidence.get("http_status") == 409:
+                cleanup_required = False
+                outcome["cleanup"] = "not_needed"
+        finally:
+            if cleanup_required:
+                try:
+                    await cleanup(
+                        None if stage == "delete_account" else active, account_id
+                    )
+                    outcome["cleanup"] = "deleted"
+                except SmokeFailure as exc:
+                    outcome["cleanup"] = "unconfirmed"
+                    outcome["cleanup_bucket"] = exc.evidence["bucket"]
+                    if "http_status" in exc.evidence:
+                        outcome["cleanup_http_status"] = exc.evidence["http_status"]
+
+    return {**outcome, "elapsed_ms": round((time.monotonic() - started) * 1000)}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--artifact", required=True, type=Path)
+    parser.add_argument(
+        "--check-accounts",
+        action="store_true",
+        help="verify favorite persistence using a temporary account",
+    )
     args = parser.parse_args()
     base = urlsplit(args.base_url)
     if (
@@ -267,6 +503,12 @@ def main() -> int:
         or base.fragment
     ):
         parser.error("--base-url must be an HTTP(S) origin")
+    if (
+        args.check_accounts
+        and base.scheme == "http"
+        and base.hostname not in {"localhost", "127.0.0.1", "::1"}
+    ):
+        parser.error("--check-accounts requires HTTPS or a loopback origin")
     if (
         len(args.expected_version) > 128
         or not VERSION_PATTERN.fullmatch(args.expected_version)
@@ -289,6 +531,14 @@ def main() -> int:
         )
     }
     if checks["config"]["ok"]:
+        if args.check_accounts:
+            host = base.hostname
+            host = f"[{host}]" if ":" in host else host.encode("idna").decode("ascii")
+            default_port = 443 if base.scheme == "https" else 80
+            port = "" if base.port in (None, default_port) else f":{base.port}"
+            checks["accounts"] = asyncio.run(
+                _check_accounts(f"{base.scheme}://{host}{port}")
+            )
         checks["autocomplete"] = _run_check(connect, _check_autocomplete, 30)
         checks["depart_at"] = _run_check(
             connect,

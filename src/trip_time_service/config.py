@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import lru_cache
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 _log = logging.getLogger(__name__)
@@ -93,6 +94,8 @@ class Settings:
     recommend_min_samples: int = 12
     route_input_contract: str = "warn"
     enable_docs: bool = False
+    account_db_path: Path | None = None
+    account_allowed_origin: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -139,6 +142,7 @@ def load_settings() -> Settings:
     chrome_user_data_dir = _getenv_stripped("TTS_CHROME_USER_DATA_DIR")
     chrome_no_sandbox = _getenv_bool("TTS_CHROME_NO_SANDBOX", False)
     naver_map_client_id = _getenv_stripped("TTS_NAVER_MAP_CLIENT_ID")
+    account_db_path = _getenv_stripped("TTS_ACCOUNT_DB_PATH")
     cors_allowed_origins = _getenv_csv("TTS_CORS_ALLOW_ORIGINS")
     enable_docs = _getenv_bool("TTS_ENABLE_DOCS", False)
     route_input_contract = _getenv_choice(
@@ -180,4 +184,6 @@ def load_settings() -> Settings:
         recommend_min_samples=recommend_min_samples,
         route_input_contract=route_input_contract,
         enable_docs=enable_docs,
+        account_db_path=Path(account_db_path) if account_db_path is not None else None,
+        account_allowed_origin=_getenv_stripped("TTS_ACCOUNT_ALLOWED_ORIGIN"),
     )

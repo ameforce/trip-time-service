@@ -119,8 +119,8 @@
   }
 
   function fetchAutocompleteInstrumented(query, abortState, timerKey, requestMeta) {
-    var cacheKey = buildAutocompleteCacheKey(query);
-    var cachedItems = getCachedAutocompleteItems(cacheKey);
+    var cacheKey = _privateRouteEndpoints[timerKey] ? null : buildAutocompleteCacheKey(query);
+    var cachedItems = cacheKey === null ? null : getCachedAutocompleteItems(cacheKey);
     if (Array.isArray(cachedItems) && cachedItems.length > 0) {
       record(
         timerKey,
@@ -194,7 +194,7 @@
           );
           return [];
         }
-        setCachedAutocompleteItems(cacheKey, items);
+        if (cacheKey !== null) setCachedAutocompleteItems(cacheKey, items);
         record(
           timerKey,
           "response",
@@ -318,6 +318,10 @@
         return;
       }
       setSelected(null);
+      if (!displayQuery && _privateRouteEndpoints[timerKey]) {
+        setPrivateRouteEndpoint(timerKey, false);
+        resetRouteAutocomplete($input);
+      }
       if (event || reason === "compositionend") invalidateRouteInputState(timerKey);
       if (!derived.trailingJamo && q.length >= AUTOCOMPLETE_MIN_QUERY_LENGTH) {
         state.lastStableQuery = q;
@@ -408,6 +412,7 @@
     }
 
     function handleFocusRetry() {
+      if (_privateRouteEndpoints[timerKey] && hasStableSelection(getSelectedState(timerKey))) return;
       var derived = deriveEffectiveQuery($input.value);
       var q = derived.effectiveQuery;
       if (q.length < AUTOCOMPLETE_MIN_QUERY_LENGTH) return;
@@ -424,6 +429,22 @@
       }
       handleInput(null, "focus-retry");
     }
+
+    $input.addEventListener("tts:reset-autocomplete", function () {
+      clearAutocompleteTimer(timerKey);
+      if (abortState.ctrl) abortState.ctrl.abort();
+      abortState.ctrl = null;
+      requestSeq += 1;
+      currentItems = [];
+      state.phase = "idle";
+      state.composing = false;
+      state.lastScheduledQuery = "";
+      state.lastRenderedQuery = "";
+      state.lastStableQuery = "";
+      $dropdown.replaceChildren();
+      closeACDropdown($dropdown);
+      resetActiveIndex();
+    });
 
     $input.addEventListener(
       "input",

@@ -16,6 +16,10 @@ let _currentMode = "arrival"; // "arrival" | "departure"
 // 자동완성/최근/즐겨찾기에서 확정된 stable selection payload 저장
 let _selectedOrigin = null;   // {lat, lon, display_name, address, coords_ready, selection_kind, canonical_query}
 let _selectedDest = null;     // {lat, lon, display_name, address, coords_ready, selection_kind, canonical_query}
+const _privateRouteEndpoints = { origin: false, dest: false };
+let _mapCenteredOnPrivateRoute = false;
+const DEFAULT_MAP_CENTER = [37.5665, 126.978];
+const DEFAULT_MAP_ZOOM = 12;
 
 // 자동완성 상태
 let _acTimerOrigin = null;
@@ -1094,6 +1098,7 @@ function saveJSON(key, val) {
 }
 
 function addRecentSearch(origin, dest, originCoords, destCoords) {
+  if (hasPrivateRouteInput()) return;
   var list = loadJSON(RECENT_KEY, []);
   // 중복 제거
   list = list.filter(function (r) {
@@ -1120,28 +1125,9 @@ function clearRecentSearches() {
   renderRecentSearches();
 }
 
-function addFavorite(name, address, lat, lon) {
-  var list = loadJSON(FAV_KEY, []);
-  if (list.length >= FAV_MAX) return false;
-  // 중복 체크
-  for (var i = 0; i < list.length; i++) {
-    if (list[i].name === name) return false;
-  }
-  list.push({ name: name, address: address, lat: lat, lon: lon });
-  saveJSON(FAV_KEY, list);
-  renderFavorites();
-  return true;
-}
-
-function removeFavorite(idx) {
-  var list = loadJSON(FAV_KEY, []);
-  list.splice(idx, 1);
-  saveJSON(FAV_KEY, list);
-  renderFavorites();
-}
-
 function getFavorites() {
-  return loadJSON(FAV_KEY, []);
+  var items = loadJSON(FAV_KEY, []);
+  return Array.isArray(items) ? items : [];
 }
 
 /* ── Map (Leaflet + OpenStreetMap) ────────────────── */
@@ -1153,7 +1139,7 @@ function initMap() {
 
   function mountMap() {
     try {
-      _map = window.L.map($mapEl, { zoomControl: true }).setView([37.5665, 126.978], 12);
+      _map = window.L.map($mapEl, { zoomControl: true }).setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM);
       window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         maxZoom: 19,
@@ -1172,6 +1158,8 @@ function initMap() {
   var timeout = window.setTimeout(showFallback, 5000);
   var script = document.createElement("script");
   script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+  script.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+  script.crossOrigin = "anonymous";
   script.addEventListener("load", function () {
     window.clearTimeout(timeout);
     mountMap();
@@ -1275,16 +1263,17 @@ function addMarker(latlng, opts) {
 function geocodeQueryToCoords(query, signal) {
   var geocodeQuery = String(query || "").trim();
   if (!geocodeQuery) return Promise.resolve(null);
+  var privateRoute = hasPrivateRouteInput();
   var url = "/api/geocode?q=" + encodeURIComponent(geocodeQuery) + buildMapCenterQueryString();
-  var cached = _geocodeCache.get(url);
+  var cached = privateRoute ? null : _geocodeCache.get(url);
   if (cached) return Promise.resolve(cached);
-  return fetch(url, { signal: signal })
+  return fetch(url, { signal: signal, cache: privateRoute ? "no-store" : "default" })
     .then(function (res) { return res.ok ? res.json() : null; })
     .then(function (data) {
       var coords = normalizeCoords(Array.isArray(data) ? data[0] : null);
       if (!coords) return null;
-      _geocodeCache.set(url, coords);
-      if (data[0].source) {
+      if (!privateRoute) _geocodeCache.set(url, coords);
+      if (!privateRoute && data[0].source) {
         console.info(
           "[geocode]",
           geocodeQuery,
@@ -1335,6 +1324,7 @@ function fitBounds() {
     _routeGroup.eachLayer(function (l) { layers.push(l); });
   }
   if (layers.length === 0) return;
+  if (hasPrivateRouteInput()) _mapCenteredOnPrivateRoute = true;
   if (layers.length === 1 && _markers.length === 1) {
     _map.setView(_markers[0].getLatLng(), 16, { animate: true });
     return;
@@ -1354,7 +1344,7 @@ function fetchAndDrawRoute(lat1, lon1, lat2, lon2, isCurrentRoute, signal) {
   }
   var url = "/api/route?olat=" + lat1 + "&olon=" + lon1 +
             "&dlat=" + lat2 + "&dlon=" + lon2;
-  return fetch(url, { signal: signal })
+  return fetch(url, { signal: signal, cache: hasPrivateRouteInput() ? "no-store" : "default" })
     .then(function (res) { return res.json(); })
     .then(function (data) {
       if (typeof isCurrentRoute === "function" && !isCurrentRoute()) {
@@ -1462,7 +1452,7 @@ function clearAutocompleteTimer(timerKey) {
 }
 
 function buildMapCenterQueryString() {
-  if (!_map || typeof _map.getCenter !== "function") return "";
+  if (_mapCenteredOnPrivateRoute || !_map || typeof _map.getCenter !== "function") return "";
   try {
     var center = _map.getCenter();
     if (!center) return "";
@@ -1666,7 +1656,9 @@ function buildAutocompleteCacheKey(query) {
     // Keep the raw trimmed value when the browser lacks normalize().
   }
   normalized = normalized.toLowerCase();
-  if (!_map || typeof _map.getCenter !== "function") return normalized + "|nomap";
+  if (_mapCenteredOnPrivateRoute || !_map || typeof _map.getCenter !== "function") {
+    return normalized + "|nomap";
+  }
   try {
     var center = _map.getCenter();
     if (!center) return normalized + "|nomap";
@@ -1783,7 +1775,7 @@ function collectWarmupQueries() {
   return deduped;
 }
 
-function queueAutocompleteWarmup() {
+function queueAutocompleteWarmup(isStillGuest) {
   if (_autocompleteWarmupQueued) return;
   var warmupQueries = collectWarmupQueries();
   _autocompleteWarmupQueued = true;
@@ -1791,7 +1783,7 @@ function queueAutocompleteWarmup() {
   var requestBody = {
     queries: warmupQueries,
   };
-  if (_map && typeof _map.getCenter === "function") {
+  if (!_mapCenteredOnPrivateRoute && _map && typeof _map.getCenter === "function") {
     try {
       var center = _map.getCenter();
       if (center) {
@@ -1804,6 +1796,10 @@ function queueAutocompleteWarmup() {
   }
 
   var runWarmup = function () {
+    if (!isStillGuest()) {
+      _autocompleteWarmupQueued = false;
+      return;
+    }
     fetch("/api/autocomplete/warmup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3194,6 +3190,12 @@ function renderRecentSearches() {
     el.addEventListener("click", function () {
       var idx = parseInt(el.getAttribute("data-idx"), 10);
       var r = items[idx];
+      if (hasPrivateRouteInput()) {
+        setPrivateRouteEndpoint("origin", false);
+        setPrivateRouteEndpoint("dest", false);
+        resetRouteAutocomplete($origin);
+        resetRouteAutocomplete($destination);
+      }
       $origin.value = r.origin;
       $destination.value = r.destination;
       _selectedOrigin = buildStableSelection(r.origin_coords, {
@@ -3212,85 +3214,61 @@ function renderRecentSearches() {
   });
 }
 
-/* ── Favorites UI ────────────────────────────────── */
+/* ── Favorites route selection ───────────────────── */
 
-function renderFavorites() {
-  var $section = document.getElementById("favorites-section");
-  var $list = document.getElementById("favorites-list");
-  var items = getFavorites();
+function hasPrivateRouteInput() {
+  return _privateRouteEndpoints.origin || _privateRouteEndpoints.dest;
+}
 
-  if (items.length === 0 && !$section.classList.contains("manage-mode")) {
-    $section.classList.add("hidden");
-    return;
+function setPrivateRouteEndpoint(endpoint, isPrivate) {
+  _privateRouteEndpoints[endpoint] = isPrivate;
+}
+
+function resetRouteAutocomplete(input) {
+  input.dispatchEvent(new Event("tts:reset-autocomplete"));
+}
+
+function clearPrivateRouteState() {
+  if (!hasPrivateRouteInput() && !_mapCenteredOnPrivateRoute) return;
+
+  if (_privateRouteEndpoints.origin) {
+    $origin.value = "";
+    _selectedOrigin = null;
+    resetRouteAutocomplete($origin);
   }
-  $section.classList.remove("hidden");
-
-  var html = "";
-  for (var i = 0; i < items.length; i++) {
-    var f = items[i];
-    var safeAddress = escapeHtml(f.address || "");
-    var safeName = escapeHtml(f.name || "");
-    html +=
-      '<div class="fav-chip" data-idx="' + i + '" title="' + safeAddress + '">' +
-      '  <span class="fav-chip-name">' + safeName + '</span>' +
-      '  <span class="fav-chip-del" data-delidx="' + i + '">&times;</span>' +
-      '</div>';
+  if (_privateRouteEndpoints.dest) {
+    $destination.value = "";
+    _selectedDest = null;
+    resetRouteAutocomplete($destination);
   }
-  $list.innerHTML = html;
+  _privateRouteEndpoints.origin = false;
+  _privateRouteEndpoints.dest = false;
+  invalidateRouteInputState();
+  if (_mapCenteredOnPrivateRoute && _map) {
+    _map.stop();
+    _map.setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, { animate: false });
+  }
+  _mapCenteredOnPrivateRoute = false;
+}
 
-  // 칩 클릭: 활성 입력 필드에 주소 자동 입력
-  $list.querySelectorAll(".fav-chip").forEach(function (el) {
-    el.addEventListener("click", function (e) {
-      if (e.target.classList.contains("fav-chip-del")) return;
-      var idx = parseInt(el.getAttribute("data-idx"), 10);
-      var f = items[idx];
-      // 현재 포커스된 필드 또는 비어있는 필드에 입력
-      var target = document.activeElement;
-      var coords = buildStableSelection(
-        {
-          lat: parseFloat(f.lat),
-          lon: parseFloat(f.lon),
-          display_name: f.name,
-          address: f.address,
-          selection_kind: "poi",
-          canonical_query: f.address,
-          source: "favorite",
-        },
-        {
-          display_name: f.name,
-          address: f.address,
-          selection_kind: "poi",
-          canonical_query: f.address,
-          source: "favorite",
-        }
-      );
-      if (target === $origin || target === $destination) {
-        target.value = f.address;
-        if (target === $origin) _selectedOrigin = coords;
-        else _selectedDest = coords;
-      } else if (!$origin.value) {
-        $origin.value = f.address;
-        _selectedOrigin = coords;
-      } else if (!$destination.value) {
-        $destination.value = f.address;
-        _selectedDest = coords;
-      } else {
-        $origin.value = f.address;
-        _selectedOrigin = coords;
-      }
-      invalidateRouteInputState();
-      refreshMapMarkersLive();
-    });
+function useFavoriteForRoute(favorite, endpoint, isPrivate) {
+  var selection = buildStableSelection({
+    lat: favorite.lat,
+    lon: favorite.lon,
+    display_name: favorite.name,
+    address: favorite.address,
+    selection_kind: "poi",
+    canonical_query: favorite.address,
+    source: "favorite",
   });
-
-  // 삭제 버튼
-  $list.querySelectorAll(".fav-chip-del").forEach(function (el) {
-    el.addEventListener("click", function (e) {
-      e.stopPropagation();
-      var idx = parseInt(el.getAttribute("data-delidx"), 10);
-      removeFavorite(idx);
-    });
-  });
+  var input = endpoint === "origin" ? $origin : $destination;
+  resetRouteAutocomplete(input);
+  setPrivateRouteEndpoint(endpoint, isPrivate);
+  input.value = favorite.address;
+  if (endpoint === "origin") _selectedOrigin = selection;
+  else _selectedDest = selection;
+  invalidateRouteInputState(endpoint);
+  refreshMapMarkersLive(endpoint);
 }
 
 /* ── Events ───────────────────────────────────────── */
@@ -3328,6 +3306,13 @@ $swapBtn.addEventListener("click", function () {
   var tmpCoords = _selectedOrigin;
   _selectedOrigin = _selectedDest;
   _selectedDest = tmpCoords;
+  if (hasPrivateRouteInput()) {
+    var privateOrigin = _privateRouteEndpoints.origin;
+    setPrivateRouteEndpoint("origin", _privateRouteEndpoints.dest);
+    setPrivateRouteEndpoint("dest", privateOrigin);
+    resetRouteAutocomplete($origin);
+    resetRouteAutocomplete($destination);
+  }
   invalidateRouteInputState();
   refreshMapMarkersLive();
 });
@@ -3952,41 +3937,6 @@ $datetimeInput.addEventListener("change", onDatetimeInputEdit);
   });
 });
 
-/* ── Favorites Event Setup ───────────────────────── */
-(function () {
-  var $toggle = document.getElementById("favorites-toggle");
-  var $section = document.getElementById("favorites-section");
-  var $addForm = document.getElementById("favorites-add-form");
-  var $favName = document.getElementById("fav-name");
-  var $favAddr = document.getElementById("fav-address");
-  var $favAddBtn = document.getElementById("fav-add-btn");
-
-  $toggle.addEventListener("click", function () {
-    var managing = $section.classList.toggle("manage-mode");
-    $addForm.classList.toggle("hidden", !managing);
-    $toggle.textContent = managing ? "완료" : "관리";
-    if (managing) $section.classList.remove("hidden");
-  });
-
-  $favAddBtn.addEventListener("click", function () {
-    var name = $favName.value.trim();
-    var addr = $favAddr.value.trim();
-    if (!name || !addr) return;
-    // 주소를 지오코딩해서 좌표 저장
-    fetch("/api/geocode?q=" + encodeURIComponent(addr) + buildMapCenterQueryString())
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (data && data.length > 0) {
-          addFavorite(name, addr, data[0].lat, data[0].lon);
-          $favName.value = "";
-          $favAddr.value = "";
-        } else {
-          alert("주소를 찾을 수 없습니다. 다시 입력해 주세요.");
-        }
-      });
-  });
-})();
-
 // 최근 검색 전체 삭제
 document.getElementById("recent-clear").addEventListener("click", function () {
   clearRecentSearches();
@@ -4022,14 +3972,7 @@ async function bootstrap() {
   }, 30000);
 
   initMap();
-  queueAutocompleteWarmup();
   renderRecentSearches();
-  renderFavorites();
-
-  // 즐겨찾기가 있으면 섹션 표시
-  if (getFavorites().length > 0) {
-    document.getElementById("favorites-section").classList.remove("hidden");
-  }
 }
 
 bootstrap();

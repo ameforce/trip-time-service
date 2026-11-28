@@ -68,7 +68,7 @@ def test_touch_form_controls_meet_ios_zoom_safe_font_size() -> None:
     body = match.group("body")
     for selector in (
         ".input-wrap input",
-        ".favorites-add-form input",
+        ".place-form input",
         ".datetime-input-wrap input",
         ".datetime-ymd-inputs input",
         ".datetime-time-col select",
