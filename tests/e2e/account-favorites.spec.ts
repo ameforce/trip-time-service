@@ -132,6 +132,11 @@ async function selectPlace(page: Page, place: Place, field: '출발지' | '도�
 }
 
 async function searchWithFavoriteCoordinates(page: Page) {
+  const departure = page.locator('#datetime-input');
+  const tomorrow = new Date((await departure.inputValue()) + ':00Z');
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  await departure.fill(tomorrow.toISOString().slice(0, 16));
+
   const request = page.waitForRequest((req) =>
     new URL(req.url()).pathname.endsWith('/arrival-time-with-recommendation/stream') &&
       req.method() === 'POST'
