@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
 const GUEST_KEY = 'tts_favorites';
 const SEOUL = {
@@ -132,6 +132,11 @@ async function selectPlace(page: Page, place: Place, field: '출발지' | '도�
 }
 
 async function searchWithFavoriteCoordinates(page: Page) {
+  const departure = page.locator('#datetime-input');
+  const tomorrow = new Date((await departure.inputValue()) + ':00Z');
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  await departure.fill(tomorrow.toISOString().slice(0, 16));
+
   const request = page.waitForRequest((req) =>
     new URL(req.url()).pathname.endsWith('/arrival-time-with-recommendation/stream') &&
       req.method() === 'POST'
@@ -491,4 +496,71 @@ test('matches provider geocode coordinates to the selected favorite address', as
   await expect(dialog).toBeVisible();
   expect(await guestPlaces(page)).toEqual([savedPlace(matching)]);
   expect(answeredGeocodes).toEqual(new Set([matchGeocodeQuery, conflictGeocodeQuery]));
+});
+
+test('shows password limits when relevant and preserves the exact password', async ({ page }) => {
+  const credentials = { ...account('암호검증'), password: ' 🔑abcdefg ' };
+  const dialog = page.getByRole('dialog');
+  const status = dialog.locator('#account-status');
+  const tooShort = '🔑'.repeat(9);
+  const tooLong = '🔑'.repeat(129);
+  const checkRejectedLengths = async (input: Locator, submit: Locator) => {
+    await input.fill(tooShort);
+    await submit.click();
+    await expect(status).toHaveText('비밀번호는 10자 이상 입력해 주세요.');
+    await expect(dialog.getByText(/128자/)).toHaveCount(0);
+
+    await input.fill(tooLong);
+    await submit.click();
+    await expect(status).toHaveText('비밀번호는 128자까지 입력할 수 있습니다.');
+  };
+
+  await open(page);
+  await page.getByRole('button', { name: '로그인', exact: true }).click();
+  await dialog.getByRole('button', { name: '회원가입', exact: true }).click();
+  const password = dialog.getByLabel('비밀번호', { exact: true });
+  const register = dialog.locator('#account-form').getByRole('button', { name: '회원가입', exact: true });
+  const hint = dialog.locator('#account-password-hint');
+  await expect(hint).toBeVisible();
+  await expect(hint).toHaveText('10자 이상');
+  await expect(password).toHaveAccessibleDescription('10자 이상');
+  await expect(dialog.getByText(/128자/)).toHaveCount(0);
+  await dialog.getByLabel('아이디', { exact: true }).fill(credentials.username);
+  await checkRejectedLengths(password, register);
+  await expect(hint).toHaveText('10자 이상');
+  expect(await snapshot(page)).toEqual({ user: null, favorites: [] });
+
+  await password.fill(credentials.password);
+  const [registered] = await Promise.all([
+    page.waitForResponse((res) => new URL(res.url()).pathname === '/api/auth/register' &&
+      res.request().method() === 'POST'),
+    register.click(),
+  ]);
+  expect(registered.status()).toBe(201);
+  await expect(dialog).toBeHidden();
+  await expect(page.locator('#favorites-status')).not.toContainText('128자');
+  const { user } = await snapshot(page);
+  expect(user).toMatchObject({ username: credentials.username });
+
+  await logout(page);
+  await submitAccount(page, 'login', credentials);
+  expect((await snapshot(page)).user).toEqual(user);
+  await expect(page.locator('#favorites-status')).not.toContainText('128자');
+
+  await page.getByRole('button', { name: '내 계정 · ' + credentials.username, exact: true }).click();
+  await dialog.getByRole('button', { name: '계정 삭제', exact: true }).click();
+  const current = dialog.getByLabel('현재 비밀번호', { exact: true });
+  const confirmDelete = dialog.getByRole('button', { name: '계정과 즐겨찾기 삭제', exact: true });
+  await checkRejectedLengths(current, confirmDelete);
+  expect((await snapshot(page)).user).toEqual(user);
+  await current.fill(credentials.password);
+  const [removed] = await Promise.all([
+    page.waitForResponse((res) => new URL(res.url()).pathname === '/api/auth/account' &&
+      res.request().method() === 'DELETE'),
+    confirmDelete.click(),
+  ]);
+  expect(removed.status()).toBe(204);
+  await expect(dialog).toBeHidden();
+  await expect(page.locator('#favorites-status')).not.toContainText('128자');
+  expect(await snapshot(page)).toEqual({ user: null, favorites: [] });
 });
