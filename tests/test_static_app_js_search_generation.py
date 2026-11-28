@@ -21,11 +21,11 @@ def test_route_mutation_handlers_invalidate_search_generation() -> None:
     )
     recent_click = _between(
         '$list.querySelectorAll(".recent-item").forEach(function (el) {',
-        "function renderFavorites()",
+        "function hasPrivateRouteInput()",
     )
     favorite_click = _between(
-        '$list.querySelectorAll(".fav-chip").forEach(function (el) {',
-        '$list.querySelectorAll(".fav-chip-del").forEach(function (el) {',
+        "function useFavoriteForRoute(",
+        "function switchMode(",
     )
     swap_click = _between(
         '$swapBtn.addEventListener("click", function () {',
@@ -35,7 +35,8 @@ def test_route_mutation_handlers_invalidate_search_generation() -> None:
     assert "invalidateRouteInputState(routeEndpoint);" in autocomplete_selection
     assert "refreshMapMarkersLive(routeEndpoint);" in autocomplete_selection
     assert "invalidateRouteInputState();" in recent_click
-    assert "invalidateRouteInputState();" in favorite_click
+    assert "invalidateRouteInputState(endpoint);" in favorite_click
+    assert "refreshMapMarkersLive(endpoint);" in favorite_click
     assert "invalidateRouteInputState();" in swap_click
 
 

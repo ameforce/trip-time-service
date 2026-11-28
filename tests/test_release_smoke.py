@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import re
+import sqlite3
 import sys
 import threading
+from contextlib import closing
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.util import module_from_spec, spec_from_file_location
 from io import BytesIO
 from pathlib import Path
 
+import httpx
 import pytest
+from fastapi import FastAPI
+
+from trip_time_service.accounts import AccountStore
+from trip_time_service.api.routes_accounts import configured_account_origin, router
 
 _smoke_file = Path(__file__).resolve().parents[1] / "deploy" / "enm" / "smoke.py"
 _smoke_spec = spec_from_file_location("release_smoke", _smoke_file)
@@ -19,6 +28,8 @@ _smoke_spec.loader.exec_module(smoke)
 
 VERSION = "v0.4.3.0"
 PRIVATE_VALUE = "response-value-excluded-from-release-evidence"
+ACCOUNT_ID = "9f0c8baa40554aa5ba03db052da6a9f80"
+OTHER_ACCOUNT_ID = "07ac7dbf7d334ca29bd5f4e18a68ffee"
 RECOMMENDATION = {
     "provider": smoke.PROVIDER,
     "duration_seconds": 650,
@@ -128,6 +139,7 @@ def test_release_smoke_reports_bounded_public_api_evidence(
                 VERSION,
                 "--artifact",
                 str(artifact),
+                *(["--check-accounts"] if version != VERSION else []),
             ],
         )
         try:
@@ -143,6 +155,7 @@ def test_release_smoke_reports_bounded_public_api_evidence(
     assert report["ok"] is (expected_bucket is None)
     assert report["expected_version"] == VERSION
     checks = report["checks"]
+    assert "accounts" not in checks
     if version != VERSION:
         assert requests == [("GET", "/api/config", None)]
         assert checks["config"]["bucket"] == "version_mismatch"
@@ -177,3 +190,283 @@ def test_stream_reader_limits_unterminated_response_body() -> None:
     oversized_line = BytesIO(b"x" * (smoke.MAX_BODY_BYTES + 1))
     with pytest.raises(smoke.SmokeFailure, match="response_too_large"):
         list(smoke._events(oversized_line))
+
+
+def test_account_release_smoke_uses_the_real_secure_session(
+    monkeypatch, tmp_path
+) -> None:
+    origin = "https://trip-time-smoke.test"
+    database = tmp_path / "accounts.sqlite3"
+    app = FastAPI()
+    app.state.account_store = AccountStore(database)
+    app.state.account_allowed_origin = configured_account_origin(origin)
+    app.include_router(router)
+    make_client = httpx.AsyncClient
+    mutation_ids: list[bytes] = []
+
+    async def record_mutation_id(scope, receive, send) -> None:
+        if account_id := dict(scope["headers"]).get(b"x-triptime-account"):
+            mutation_ids.append(account_id)
+        await app(scope, receive, send)
+
+    async def check() -> dict:
+        transport = httpx.ASGITransport(app=record_mutation_id)
+
+        def in_process_client(**options):
+            return make_client(transport=transport, **options)
+
+        monkeypatch.setattr(httpx, "AsyncClient", in_process_client)
+        return await smoke._check_accounts(origin)
+
+    report = asyncio.run(check())
+    assert report["ok"] and report["roundtrip"]
+    assert report["cleanup"] == "deleted"
+    assert len(mutation_ids) == 3 and len(set(mutation_ids)) == 1
+    with closing(sqlite3.connect(database)) as conn:
+        assert conn.execute("SELECT count(*) FROM accounts").fetchone() == (0,)
+        assert conn.execute("SELECT count(*) FROM sessions").fetchone() == (0,)
+        assert conn.execute("SELECT count(*) FROM favorites").fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    ("case", "stage", "bucket", "cleanup"),
+    [
+        ("success", None, None, "deleted"),
+        ("duplicate", "register", "http_error", "not_needed"),
+        ("lost_registration_reply", "register", "network_error", "deleted"),
+        ("registration_timeout", "register", "request_timeout", "deleted"),
+        ("lost_cookie", "save_favorite", "http_error", "deleted"),
+        ("cleanup_failed", "save_favorite", "http_error", "unconfirmed"),
+        ("foreign_recovery", "register", "network_error", "unconfirmed"),
+        ("changed_id_at_login", "login", "account_state_mismatch", "unconfirmed"),
+        ("changed_id_in_state", "verify_favorite", "account_state_mismatch", "deleted"),
+        ("incorrect_favorite", "verify_favorite", "favorite_mismatch", "deleted"),
+        ("redirect", "save_favorite", "http_error", "deleted"),
+        ("wrong_provider", None, "provider_mismatch", None),
+    ],
+)
+def test_release_smoke_checks_private_account_roundtrip(
+    monkeypatch, tmp_path, capsys, case, stage, bucket, cleanup
+) -> None:
+    calls: list[tuple[str, str]] = []
+    credentials: dict[str, str] = {}
+    favorites: list[dict] = []
+    session_token = ""
+    deleted = False
+    release_registration = threading.Event()
+    if case == "registration_timeout":
+        monkeypatch.setattr(smoke, "ACCOUNT_REQUEST_SECONDS", 0.5)
+
+    class Handler(BaseHTTPRequestHandler):
+        def reply(self, status: int, result=None, cookie: str | None = None) -> None:
+            body = b"" if result is None else json.dumps(result).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            if cookie is not None:
+                self.send_header("Set-Cookie", cookie)
+            if status == 307:
+                self.send_header(
+                    "Location", f"http://localhost:{self.server.server_port}/unexpected"
+                )
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args) -> None:
+            pass
+
+        def snapshot(self, signed_in: bool) -> dict:
+            return {
+                "user": {"id": ACCOUNT_ID, "username": credentials["username"]}
+                if signed_in
+                else None,
+                "favorites": favorites if signed_in else [],
+            }
+
+        def authed(self) -> bool:
+            return bool(session_token) and (
+                self.headers.get("Cookie") == f"tts_session={session_token}"
+            )
+
+        def do_GET(self) -> None:
+            calls.append(("GET", self.path))
+            if self.path == "/api/config":
+                provider = "fixture" if case == "wrong_provider" else smoke.PROVIDER
+                self.reply(200, {"version": VERSION, "provider": provider})
+                return
+            assert self.path == "/api/auth/me"
+            snapshot = self.snapshot(self.authed())
+            if case == "incorrect_favorite" and self.authed():
+                snapshot["favorites"] = [{**favorites[0], "lon": 127.0}]
+            if case == "changed_id_in_state" and self.authed():
+                snapshot["user"]["id"] = OTHER_ACCOUNT_ID
+            self.reply(200, snapshot)
+
+        def do_POST(self) -> None:
+            self.mutate()
+
+        def do_DELETE(self) -> None:
+            self.mutate()
+
+        def mutate(self) -> None:
+            nonlocal session_token, deleted
+            calls.append((self.command, self.path))
+            assert (
+                self.headers["Origin"] == f"http://127.0.0.1:{self.server.server_port}"
+            )
+            assert self.headers["X-Requested-With"] == "TripTime"
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            payload = json.loads(body) if body else None
+            if self.path == "/api/auth/register":
+                credentials.update(payload)
+                assert re.fullmatch(r"[a-z0-9_]{3,32}", credentials["username"])
+                assert len(credentials["password"]) >= 32
+                if case == "duplicate":
+                    self.reply(409, {"detail": PRIVATE_VALUE})
+                    return
+                if case in {"lost_registration_reply", "foreign_recovery"}:
+                    return
+                if case == "registration_timeout":
+                    release_registration.wait(timeout=3)
+                    return
+                session_token = "registration-session-test-token"
+                self.reply(
+                    201, self.snapshot(True), f"tts_session={session_token}; Path=/"
+                )
+                return
+            if self.path == "/api/auth/login":
+                release_registration.set()
+                assert self.headers.get("Cookie") is None
+                if payload != credentials:
+                    raise AssertionError("unexpected recovery credentials")
+                if case == "cleanup_failed":
+                    self.reply(429, {"detail": PRIVATE_VALUE})
+                    return
+                session_token = "login-session-test-token"
+                snapshot = self.snapshot(True)
+                if case == "foreign_recovery":
+                    snapshot["user"]["username"] = "foreign_account"
+                if case == "changed_id_at_login":
+                    snapshot["user"]["id"] = OTHER_ACCOUNT_ID
+                self.reply(200, snapshot, f"tts_session={session_token}; Path=/")
+                return
+            assert self.headers["X-TripTime-Account"] == ACCOUNT_ID
+            if not self.authed():
+                self.reply(401)
+                return
+            if self.path == "/api/favorites":
+                if case in {"lost_cookie", "cleanup_failed"}:
+                    session_token = ""
+                    self.reply(503, {"detail": PRIVATE_VALUE})
+                elif case == "redirect":
+                    self.reply(307)
+                else:
+                    assert payload == smoke.ACCOUNT_FAVORITE
+                    favorites.append({"id": 1, **payload})
+                    self.reply(201, self.snapshot(True))
+            elif self.path == "/api/auth/logout":
+                session_token = ""
+                self.reply(204, cookie="tts_session=; Max-Age=0; Path=/")
+            else:
+                assert self.command == "DELETE" and self.path == "/api/auth/account"
+                if payload != {"password": credentials["password"]}:
+                    raise AssertionError("unexpected password confirmation")
+                deleted = True
+                favorites.clear()
+                session_token = ""
+                self.reply(204, cookie="tts_session=; Max-Age=0; Path=/")
+
+    def skip_provider_call(*_args, **_kwargs) -> dict:
+        return {}
+
+    artifact = tmp_path / "account-release-smoke.json"
+    monkeypatch.setattr(smoke, "_check_autocomplete", skip_provider_call)
+    monkeypatch.setattr(smoke, "_check_trip", skip_provider_call)
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "smoke.py",
+                "--base-url",
+                f"http://127.0.0.1:{server.server_port}/",
+                "--expected-version",
+                VERSION,
+                "--check-accounts",
+                "--artifact",
+                str(artifact),
+            ],
+        )
+        try:
+            assert smoke.main() == (0 if bucket is None else 1)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+
+    raw = artifact.read_text(encoding="utf-8")
+    captured = capsys.readouterr()
+    assert captured.out == raw
+    assert not captured.err
+    report = json.loads(raw)
+    assert report["ok"] is (bucket is None)
+    for value in (
+        *credentials.values(),
+        PRIVATE_VALUE,
+        ACCOUNT_ID,
+        OTHER_ACCOUNT_ID,
+        "foreign_account",
+        "session-test-token",
+        "tts_session",
+        smoke.ACCOUNT_FAVORITE["name"],
+        smoke.ACCOUNT_FAVORITE["address"],
+    ):
+        assert value not in raw and json.dumps(value).strip('"') not in raw
+    if case == "wrong_provider":
+        assert calls == [("GET", "/api/config")]
+        assert report["checks"]["config"]["bucket"] == bucket
+        assert "accounts" not in report["checks"]
+        return
+
+    result = report["checks"]["accounts"]
+    assert result["ok"] is (bucket is None)
+    assert result.get("stage") == stage
+    assert result.get("bucket") == bucket
+    assert result["cleanup"] == cleanup
+    assert result["elapsed_ms"] >= 0
+    assert deleted is (cleanup == "deleted")
+    if case == "success":
+        assert result["roundtrip"] is True
+        assert calls == [
+            ("GET", "/api/config"),
+            ("POST", "/api/auth/register"),
+            ("POST", "/api/favorites"),
+            ("POST", "/api/auth/logout"),
+            ("GET", "/api/auth/me"),
+            ("POST", "/api/auth/login"),
+            ("GET", "/api/auth/me"),
+            ("DELETE", "/api/auth/account"),
+        ]
+    elif case == "duplicate":
+        assert calls == [("GET", "/api/config"), ("POST", "/api/auth/register")]
+    elif case in {
+        "lost_registration_reply",
+        "registration_timeout",
+        "lost_cookie",
+        "changed_id_in_state",
+    }:
+        assert calls[-2:] == [
+            ("POST", "/api/auth/login"),
+            ("DELETE", "/api/auth/account"),
+        ]
+    elif case == "cleanup_failed":
+        assert calls[-1] == ("POST", "/api/auth/login")
+        assert result["http_status"] == 503
+        assert result["cleanup_http_status"] == 429
+    elif case in {"foreign_recovery", "changed_id_at_login"}:
+        assert calls[-1] == ("POST", "/api/auth/login")
+        assert ("DELETE", "/api/auth/account") not in calls
+        assert result["cleanup_bucket"] == "account_state_mismatch"
+    elif case == "redirect":
+        assert all(path != "/unexpected" for _, path in calls)

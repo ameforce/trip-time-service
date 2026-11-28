@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    TTS_ACCOUNT_DB_PATH=/var/lib/triptime/accounts.sqlite3 \
     TTS_HOST=0.0.0.0 \
     TTS_PORT=8500 \
     TTS_RELOAD=false
@@ -20,6 +21,7 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir uv
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
+    && install -d -m 0700 -o appuser -g appuser /var/lib/triptime \
     && mkdir -p /app /home/appuser/.cache /home/appuser/.config /ms-playwright \
     && chown -R appuser:appuser /app /home/appuser /ms-playwright
 

@@ -8,7 +8,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/style.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous">
 </head>
 <body>
 
@@ -22,18 +23,20 @@
       <p class="subtitle">네이버 지도 기반 소요시간 분석</p>
     </header>
 
-    <!-- Favorites (자주 가는 곳) -->
-    <section id="favorites-section" class="favorites-section hidden">
+    <section id="favorites-section" class="favorites-section" aria-labelledby="favorites-title">
       <div class="section-header">
-        <span class="section-title">⭐ 자주 가는 곳</span>
-        <button id="favorites-toggle" class="section-toggle" type="button">관리</button>
+        <h2 id="favorites-title" class="section-title">즐겨찾기</h2>
+        <div class="favorites-actions">
+          <button id="account-toggle" class="place-button" type="button" aria-haspopup="dialog" disabled>로그인</button>
+          <button id="favorites-add" class="place-button place-button-accent" type="button" aria-haspopup="dialog" disabled>장소 추가</button>
+        </div>
       </div>
-      <div id="favorites-list" class="favorites-list"></div>
-      <div id="favorites-add-form" class="favorites-add-form hidden">
-        <input id="fav-name" type="text" placeholder="별칭 (예: 회사)" maxlength="20">
-        <input id="fav-address" type="text" placeholder="주소 (예: 판교역로 230)" maxlength="100">
-        <button id="fav-add-btn" class="fav-add-btn" type="button">추가</button>
-      </div>
+      <p id="favorites-empty" class="favorites-note hidden">등록된 즐겨찾기가 없습니다.</p>
+      <ul id="favorites-list" class="favorites-list" aria-label="저장한 장소"></ul>
+      <button id="favorites-expand" class="place-button hidden" type="button" aria-expanded="false" aria-controls="favorites-list"></button>
+      <button id="favorites-import" class="place-button hidden" type="button">이 기기의 즐겨찾기 가져오기</button>
+      <p id="favorites-status" class="favorites-status" role="status">계정 상태를 확인하고 있습니다.</p>
+      <button id="account-retry" class="place-button hidden" type="button">계정 다시 불러오기</button>
     </section>
 
     <!-- Route inputs -->
@@ -211,7 +214,66 @@
 
   <div id="version-badge" class="version-badge" aria-live="polite">v0.0.0.0</div>
 
+  <dialog id="account-dialog" class="place-dialog" aria-labelledby="account-title">
+    <div class="place-dialog-heading">
+      <h2 id="account-title">로그인</h2>
+      <button class="place-button" type="button" data-close-dialog>닫기</button>
+    </div>
+    <form id="account-form" class="place-form" method="dialog">
+      <label for="account-username">아이디</label>
+      <input id="account-username" name="username" type="text" autocomplete="username"
+        autocapitalize="none" spellcheck="false" required autofocus>
+      <label for="account-password">비밀번호</label>
+      <input id="account-password" name="password" type="password" autocomplete="current-password" required>
+      <p id="account-password-hint" class="favorites-note hidden">아이디는 한글, 영문, 숫자, 밑줄로 3~32자, 비밀번호는 15~128자로 입력해 주세요.</p>
+      <button id="account-submit" class="place-button place-button-accent" type="submit">로그인</button>
+      <button id="account-switch" class="place-button" type="button">회원가입</button>
+    </form>
+    <div id="account-management" class="place-form hidden">
+      <p id="account-identity"></p>
+      <button id="account-logout" class="place-button" type="button">로그아웃</button>
+      <button id="account-delete-start" class="place-button place-button-danger" type="button">계정 삭제</button>
+    </div>
+    <form id="account-delete-form" class="place-form hidden" method="dialog" aria-describedby="account-delete-effect">
+      <p id="account-delete-effect">계정과 계정에 저장한 즐겨찾기가 모두 삭제됩니다.</p>
+      <input id="account-delete-username" name="username" type="text" autocomplete="username" hidden>
+      <label for="account-delete-password">현재 비밀번호</label>
+      <input id="account-delete-password" name="password" type="password" autocomplete="current-password" required>
+      <button id="account-delete-confirm" class="place-button place-button-danger" type="submit">계정과 즐겨찾기 삭제</button>
+      <button id="account-delete-cancel" class="place-button" type="button">취소</button>
+    </form>
+    <p id="account-status" class="favorites-status" role="status"></p>
+  </dialog>
+
+  <dialog id="favorite-dialog" class="place-dialog" aria-labelledby="favorite-dialog-title">
+    <div class="place-dialog-heading">
+      <h2 id="favorite-dialog-title">즐겨찾기 추가</h2>
+      <button class="place-button" type="button" data-close-dialog>닫기</button>
+    </div>
+    <div id="favorite-current-places" class="favorites-actions hidden">
+      <button id="favorite-use-origin" class="place-button hidden" type="button">현재 출발지 가져오기</button>
+      <button id="favorite-use-destination" class="place-button hidden" type="button">현재 도착지 가져오기</button>
+    </div>
+    <form id="favorite-place-search" class="place-form" method="dialog">
+      <label for="fav-address">장소 검색</label>
+      <div class="place-search-row">
+        <input id="fav-address" type="search" placeholder="장소 이름이나 주소" autocomplete="off" required autofocus>
+        <button id="favorite-search-btn" class="place-button" type="submit">검색</button>
+      </div>
+    </form>
+    <ul id="favorite-place-results" class="favorite-place-results" aria-label="장소 검색 결과"></ul>
+    <p id="favorite-search-status" class="favorites-status" role="status"></p>
+    <form id="favorites-add-form" class="place-form favorites-add-form" method="dialog">
+      <p id="favorite-selected-place" class="favorite-selected-place hidden"></p>
+      <label for="fav-name">즐겨찾기 이름</label>
+      <input id="fav-name" type="text" placeholder="예: 회사" maxlength="20" autocomplete="off" required>
+      <button id="fav-add-btn" class="place-button place-button-accent" type="submit" disabled>저장</button>
+    </form>
+    <p id="favorite-status" class="favorites-status" role="status"></p>
+  </dialog>
+
   <script src="/static/js/app.js"></script>
   <script src="/static/js/autocomplete-controller.js"></script>
+  <script src="/static/js/account-favorites.js"></script>
 </body>
 </html>

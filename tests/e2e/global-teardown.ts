@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { writeLiveSummary } from './live-summary.mjs';
@@ -59,7 +60,27 @@ function readProcessesForProfileWithPs(profilePath: string): ProcessInfo[] {
   }
 }
 
+export function cleanupAccountDatabaseFixture(path: string | undefined): void {
+  if (!path) return;
+  const directory = resolve(path);
+  if (dirname(directory) !== resolve(tmpdir()) ||
+      !/^trip-time-e2e-accounts-[A-Za-z0-9]{6}$/.test(basename(directory)) ||
+      !existsSync(directory) || !lstatSync(directory).isDirectory()) {
+    return;
+  }
+  try {
+    for (const suffix of ['', '-wal', '-shm', '-journal']) {
+      rmSync(join(directory, 'accounts.sqlite3' + suffix), { force: true });
+    }
+    rmdirSync(directory);
+  } catch (error) {
+    console.warn('Could not remove the Playwright account database fixture.', error);
+  }
+}
+
 async function globalTeardown(): Promise<void> {
+  // All browser and test request contexts have finished using the fixture.
+  cleanupAccountDatabaseFixture(process.env.TTS_E2E_ACCOUNT_DB_DIR);
   const artifactRoot = process.env.TTS_E2E_ARTIFACTS_DIR
     ? resolve(process.env.TTS_E2E_ARTIFACTS_DIR)
     : resolve('.artifacts/live');

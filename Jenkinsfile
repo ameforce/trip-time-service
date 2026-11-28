@@ -312,6 +312,7 @@ pipeline {
           uv run --no-sync python deploy/enm/smoke.py \
             --base-url "https://$TARGET_DOMAIN" \
             --expected-version "$DEPLOY_APP_VERSION" \
+            --check-accounts \
             --artifact ".ci-artifacts/release-smoke-$BUILD_NUMBER.json"
           touch ".ci-artifacts/release-smoke-$BUILD_NUMBER.verified"
         '''
