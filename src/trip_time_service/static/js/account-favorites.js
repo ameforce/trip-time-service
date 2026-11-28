@@ -32,6 +32,8 @@
     : null;
   const checkingSession = "계정 상태를 확인하고 있습니다.";
   const initialFavoriteCount = 3;
+  const minPasswordLength = 10;
+  const maxPasswordLength = 128;
 
   // A null snapshot is unverified; a verified guest is a snapshot with user: null.
   let snapshot = null;
@@ -61,6 +63,18 @@
   function status(element, message = "", isError = false) {
     element.textContent = message;
     element.classList.toggle("is-error", isError);
+  }
+
+  function validatePassword(input) {
+    const length = Array.from(input.value).length;
+    if (length >= minPasswordLength && length <= maxPasswordLength) return true;
+    const message = length < minPasswordLength
+      ? `비밀번호는 ${minPasswordLength}자 이상 입력해 주세요.`
+      : `비밀번호는 ${maxPasswordLength}자까지 입력할 수 있습니다.`;
+    input.setAttribute("aria-invalid", "true");
+    status(accountStatus, message, true);
+    input.focus();
+    return false;
   }
 
   async function fetchJson(path, { controller = new AbortController(), timeout = 20000, ...options } = {}) {
@@ -428,10 +442,15 @@
     password.value = "";
     password.autocomplete = registering ? "new-password" : "current-password";
     accountSwitch.textContent = registering ? "로그인" : "회원가입";
+    show(byId("account-username-hint"), registering);
     show(byId("account-password-hint"), registering);
+    password.removeAttribute("aria-invalid");
+    deletePassword.removeAttribute("aria-invalid");
     if (registering) {
+      username.setAttribute("aria-describedby", "account-username-hint");
       password.setAttribute("aria-describedby", "account-password-hint");
     } else {
+      username.removeAttribute("aria-describedby");
       password.removeAttribute("aria-describedby");
     }
     status(accountStatus);
@@ -589,12 +608,7 @@
       username.focus();
       return;
     }
-    const length = Array.from(password.value).length;
-    if (length < 15 || length > 128) {
-      status(accountStatus, "비밀번호는 15~128자로 입력해 주세요.", true);
-      password.focus();
-      return;
-    }
+    if (!validatePassword(password)) return;
     void write("/api/auth/" + mode, {
       action: mode,
       body: { username: name, password: password.value },
@@ -602,6 +616,15 @@
       dialog: accountDialog,
     });
   });
+
+  for (const input of [password, deletePassword]) {
+    input.addEventListener("input", () => {
+      if (input.hasAttribute("aria-invalid")) {
+        input.removeAttribute("aria-invalid");
+        status(accountStatus);
+      }
+    });
+  }
 
   byId("account-logout").addEventListener("click", () => {
     if (!activeAccountId()) return;
@@ -621,7 +644,7 @@
   });
   deleteForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!activeAccountId()) return;
+    if (!activeAccountId() || !validatePassword(deletePassword)) return;
     void write("/api/auth/account", {
       method: "DELETE",
       action: "delete-account",
