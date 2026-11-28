@@ -1,7 +1,10 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { defineConfig } from '@playwright/test';
+
+import { cleanupAccountDatabaseFixture } from './tests/e2e/global-teardown';
 
 const e2ePort = process.env.E2E_PORT ?? '39080';
 const baseURL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${e2ePort}`;
@@ -53,7 +56,12 @@ writeFileSync(
   )}\n`,
   'utf-8',
 );
+const accountDatabaseDir = mkdtempSync(join(tmpdir(), 'trip-time-e2e-accounts-'));
+const accountDatabasePath = join(accountDatabaseDir, 'accounts.sqlite3');
+process.env.TTS_E2E_ACCOUNT_DB_DIR = accountDatabaseDir;
+process.once('exit', () => cleanupAccountDatabaseFixture(accountDatabaseDir));
 const serverEnv = {
+  TTS_ACCOUNT_DB_PATH: accountDatabasePath,
   TTS_PROVIDER: e2eProvider,
   TTS_E2E_FIXTURE_MODE: fixtureMode,
   TTS_AUTOCOMPLETE_BROWSER_ENABLE: autocompleteBrowserEnable,

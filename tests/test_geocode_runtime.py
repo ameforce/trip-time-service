@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
-from trip_time_service.api import geocode_services
+from trip_time_service.api import geocode_services, naver_playwright_geo
 
 
 class _FakeJsonResponse:
@@ -21,6 +22,30 @@ class _FakeJsonResponse:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
+
+
+@pytest.mark.parametrize("source", ["url", "entry", "road"])
+def test_browser_geocode_keeps_road_address_separate_from_label(
+    monkeypatch, source
+) -> None:
+    geo = naver_playwright_geo
+    name, road = "서울시청", "서울 중구 세종대로 110"
+    coords = {"lat": "37.566295", "lon": "126.977945"}
+    session = SimpleNamespace(page=SimpleNamespace(url="https://map.naver.com"))
+    monkeypatch.setattr(geo, "_ensure_naver_session", lambda: session)
+    monkeypatch.setattr(geo, "_naver_search", lambda *_: None)
+    monkeypatch.setattr(geo, "_sleep", lambda _: None)
+    monkeypatch.setattr(geo, "_naver_read_entry_detail", lambda _: road)
+    url_coords = (37.566295, 126.977945) if source == "url" else None
+    monkeypatch.setattr(geo, "extract_coords_from_naver_url", lambda _: url_coords)
+    monkeypatch.setattr(
+        geo,
+        "_naver_extract_entry_coords",
+        lambda _: coords if source == "entry" else None,
+    )
+    result = geo._geocode_naver_on_owner(name, fallback_geocode=lambda _: coords)
+    assert result == {**coords, "display_name": f"{name} ({road})", "address": road}
+    assert "display_name" not in coords
 
 
 @pytest.fixture(autouse=True)

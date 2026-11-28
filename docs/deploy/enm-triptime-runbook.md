@@ -43,6 +43,12 @@ TripTime를 Jenkins 기반으로 빌드하고 `enm-server`에 Docker 컨테이�
   그리고 최신 `IMAGE_RETENTION_COUNT`개 태그는 보존한다.
 - `docker image prune`, `docker system prune` 같은 broad cleanup은 사용하지 않는다.
 
+### 계정 및 즐겨찾기 데이터
+
+배포와 롤백은 환경별 Docker 볼륨을 `/var/lib/triptime`에 연결한다. 기본 볼륨은 운영의 `triptime-prod-accounts`와 dev의 `triptime-dev-accounts`다. 계정, 세션, 즐겨찾기는 해당 볼륨의 `accounts.sqlite3`에 저장되므로 컨테이너를 교체할 때도 같은 볼륨을 연결한다. 공개 로그인 요청의 허용 출처는 각 환경의 HTTPS 도메인이다.
+
+실행 중인 데이터베이스는 SQLite의 온라인 백업 기능(`sqlite3.Connection.backup`)으로 일관된 사본을 만든다. 복구용 사본에는 계정과 저장 장소가 포함되므로 접근을 제한한 별도 저장소에 보관한다.
+
 ## 5) 기본 배포 절차
 
 1. Jenkins 멀티브랜치 잡에서 대상 브랜치 빌드 시작
@@ -55,6 +61,7 @@ TripTime를 Jenkins 기반으로 빌드하고 `enm-server`에 Docker 컨테이�
      - 빌드 워크스페이스에 ENM SSH known_hosts 파일을 생성한 뒤 `StrictHostKeyChecking=yes`로 배포
    - `Smoke Verify`
      - 공개 `/api/config`의 버전과 제공자를 확인한 뒤 자동완성과 출발 시각·도착 시각 기준 경로 API의 최종 응답을 검증
+     - 임시 계정에 즐겨찾기를 저장하고 다시 로그인해 같은 장소를 확인한 뒤 해당 계정을 삭제
      - 단계별 결과와 실패 유형은 Jenkins의 `.ci-artifacts/release-smoke-<build-number>.json`에 보관
 3. 배포 스크립트
    - `deploy/enm/deploy.sh`
@@ -106,9 +113,10 @@ bash deploy/enm/rollback.sh
 이미지 태그를 지정해 같은 검증을 실행한다.
 
 ```bash
-uv run --no-sync python deploy/enm/smoke.py \
+uv run --frozen --extra dev python deploy/enm/smoke.py \
   --base-url "https://${DEPLOY_DOMAIN}" \
   --expected-version "${APP_VERSION}" \
+  --check-accounts \
   --artifact .ci-artifacts/release-smoke.json
 ```
 

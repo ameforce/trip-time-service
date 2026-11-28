@@ -50,4 +50,5 @@ def test_static_entrypoints_force_revalidation(monkeypatch) -> None:
     assert app_js_response.headers["cache-control"] == "no-cache"
     assert '/static/js/app.js?v=' in index_response.text
     assert '/static/js/autocomplete-controller.js?v=' in index_response.text
+    assert '/static/js/account-favorites.js?v=' in index_response.text
     assert '/static/css/style.css?v=' in index_response.text

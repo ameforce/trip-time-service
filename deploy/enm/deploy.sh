@@ -293,6 +293,9 @@ run_container() {
     --name "\${CONTAINER_NAME}"
     --restart unless-stopped
     --env-file "\${ENV_FILE}"
+    --mount "type=volume,source=\${CONTAINER_NAME}-accounts,target=/var/lib/triptime"
+    --env "TTS_ACCOUNT_DB_PATH=/var/lib/triptime/accounts.sqlite3"
+    --env "TTS_ACCOUNT_ALLOWED_ORIGIN=https://\${DEPLOY_DOMAIN}"
     --env "TTS_CHROME_NO_SANDBOX=\${TTS_CHROME_NO_SANDBOX}"
     --publish "127.0.0.1:\${HOST_PORT}:\${CONTAINER_PORT}"
     --label "service=\${CONTAINER_PREFIX}"

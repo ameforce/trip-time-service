@@ -284,6 +284,16 @@ def _click_first_search_result(page: Any) -> None:
             _log.debug("Naver search result click failed", exc_info=True)
 
 
+def _named_geocode(result: dict, query: str, road_address: str | None) -> dict:
+    if not road_address:
+        return {**result, "display_name": query}
+    return {
+        **result,
+        "display_name": f"{query} ({road_address})",
+        "address": result.get("address") or road_address,
+    }
+
+
 def _geocode_naver_on_owner(
     query: str,
     *,
@@ -311,26 +321,19 @@ def _geocode_naver_on_owner(
             lat, lon = coords
             if not road_addr:
                 road_addr = extract_addr_from_naver_url(page.url)
-            display_name = f"{query} ({road_addr})" if road_addr else query
             _log.info(
                 "Naver geocode query=%s source=url_coords",
                 redact_text(query),
             )
-            return {
-                "lat": str(lat),
-                "lon": str(lon),
-                "display_name": display_name,
-            }
+            return _named_geocode({"lat": str(lat), "lon": str(lon)}, query, road_addr)
 
         entry_coords = _naver_extract_entry_coords(page)
         if entry_coords:
-            display_name = f"{query} ({road_addr})" if road_addr else query
-            entry_coords["display_name"] = display_name
             _log.info(
                 "Naver geocode query=%s source=entry_coords",
                 redact_text(query),
             )
-            return entry_coords
+            return _named_geocode(entry_coords, query, road_addr)
 
         if not road_addr:
             _log.info(
@@ -349,8 +352,7 @@ def _geocode_naver_on_owner(
 
         result = fallback_geocode(road_addr)
         if result:
-            result["display_name"] = f"{query} ({road_addr})"
-            return result
+            return _named_geocode(result, query, road_addr)
         _log.info(
             "Naver geocode failed address=%s",
             redact_text(road_addr),

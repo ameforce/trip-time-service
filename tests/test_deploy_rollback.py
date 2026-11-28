@@ -31,7 +31,7 @@ IFS='|' read -r id image attempt previous image_id previous_image_id \
 running="${running:-true}"
 case "$1 $2" in
   "container inspect")
-    [[ -n "$id" && ("$5" == "$id" || "$5" == triptime-dev) ]] || exit 1
+    [[ -n "$id" && ("$5" == "$id" || "$5" == "triptime-$DEPLOY_ENV") ]] || exit 1
     if [[ "$MOCK_MODE" == "legacy-labels" \
       && "$4" != *'{{with .Config.Labels}}'* ]]; then
       restored_ref="${restored_ref:-<no value>}"
@@ -190,6 +190,7 @@ def deploy_mock(tmp_path):
         expected_image="triptime:new",
         rollback_ref="",
         deploy_attempt="job-43",
+        deploy_env="dev",
     ):
         state.write_text(initial + "\n", encoding="utf-8", newline="\n")
         log.write_text("", encoding="utf-8")
@@ -204,19 +205,22 @@ def deploy_mock(tmp_path):
             "MOCK_CANDIDATE_ID": CANDIDATE_ID,
             "MOCK_CHANGED_IMAGE": CANDIDATE.replace(NEW_IMAGE_ID, "sha256:other"),
             "MOCK_NEW_IMAGE_ID": NEW_IMAGE_ID,
-            "MOCK_HANDOFF": (markers / "deploy-handoff.txt").as_posix(),
+            "MOCK_HANDOFF": (
+                tmp_path / "rollback" / deploy_env / "deploy-handoff.txt"
+            ).as_posix(),
             "MOCK_REMOVAL_HANDOFF": (tmp_path / "removal-handoff.txt").as_posix(),
             "MOCK_RESTORED_ID": RESTORED_ID,
             "MOCK_OLD_IMAGE_ID": OLD_IMAGE_ID,
             "MOCK_MOVED_IMAGE_ID": "sha256:" + "c" * 64,
             "MOCK_OLD_VERSION_ENV": old_version_env,
             "MOCK_REPLACEMENT": REPLACEMENT,
-            "DEPLOY_ENV": "dev",
+            "DEPLOY_ENV": deploy_env,
             "ENM_HOST": "mock",
             "ENM_PORT": "22",
             "ENM_USER": "mock",
             "ENM_SSH_KEY": "in-memory-test",
             "ENV_FILE_DEV": env_file.as_posix(),
+            "ENV_FILE_PROD": env_file.as_posix(),
             "REMOTE_APP_ROOT": tmp_path.as_posix(),
             "HEALTHCHECK_RETRIES": "1",
             "HEALTHCHECK_DELAY_SECONDS": "0",
@@ -249,6 +253,24 @@ exec bash "$1"
         return result, state.read_text().strip(), log.read_text().splitlines()
 
     return run
+
+
+@pytest.mark.parametrize("script", ["deploy", "rollback"])
+@pytest.mark.parametrize(
+    ("env", "domain"),
+    [("dev", "dev.triptime.enmsoftware.com"), ("prod", "triptime.enmsoftware.com")],
+)
+def test_account_volume_and_origin_survive_container_replacement(
+    deploy_mock, script, env, domain
+) -> None:
+    initial = PREVIOUS if script == "deploy" else CANDIDATE
+    result, _, actions = deploy_mock(script, initial, deploy_env=env)
+    assert result.returncode == 0, result.stderr
+    create = next(action for action in actions if action.startswith("create "))
+    mount = f"type=volume,source=triptime-{env}-accounts,target=/var/lib/triptime"
+    assert f"--mount {mount} " in create
+    assert "--env TTS_ACCOUNT_DB_PATH=/var/lib/triptime/accounts.sqlite3 " in create
+    assert f"--env TTS_ACCOUNT_ALLOWED_ORIGIN=https://{domain} " in create
 
 
 @pytest.mark.parametrize(

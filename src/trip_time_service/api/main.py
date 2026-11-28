@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from trip_time_service import __version__
+from trip_time_service.accounts import AccountStore, default_account_db_path
 from trip_time_service.api.e2e_fixtures import is_fixture_mode_enabled
 from trip_time_service.api.geocode_services import (
     shutdown_autocomplete_runtime,
@@ -22,6 +23,8 @@ from trip_time_service.api.geocode_services import (
 )
 from trip_time_service.api.naver_playwright_geo import shutdown_naver_driver
 from trip_time_service.api.routes import router
+from trip_time_service.api.routes_accounts import configured_account_origin
+from trip_time_service.api.routes_accounts import router as account_router
 from trip_time_service.api.routes_trip import (
     RouteInputContractError,
     route_input_contract_exception_handler,
@@ -60,15 +63,14 @@ def _static_cache_needs_revalidation(path: str) -> bool:
 def _versioned_index_html() -> str:
     version = quote(resolve_display_version(), safe="._-")
     html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    replacements = {
-        '/static/css/style.css"': f'/static/css/style.css?v={version}"',
-        '/static/js/app.js"': f'/static/js/app.js?v={version}"',
-        '/static/js/autocomplete-controller.js"': (
-            f'/static/js/autocomplete-controller.js?v={version}"'
-        ),
-    }
-    for source, target in replacements.items():
-        html = html.replace(source, target)
+    assets = (
+        "/static/css/style.css",
+        "/static/js/app.js",
+        "/static/js/autocomplete-controller.js",
+        "/static/js/account-favorites.js",
+    )
+    for asset in assets:
+        html = html.replace(f'{asset}"', f'{asset}?v={version}"')
     return html
 
 
@@ -115,6 +117,12 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.enable_docs else None,
         openapi_url="/openapi.json" if settings.enable_docs else None,
     )
+    app.state.account_store = AccountStore(
+        settings.account_db_path or default_account_db_path(),
+    )
+    app.state.account_allowed_origin = configured_account_origin(
+        settings.account_allowed_origin,
+    )
     if settings.cors_allowed_origins:
         app.add_middleware(
             CORSMiddleware,
@@ -158,11 +166,17 @@ def create_app() -> FastAPI:
             "Strict-Transport-Security",
             "max-age=31536000; includeSubDomains",
         )
-        if _static_cache_needs_revalidation(request.url.path):
+        path = request.url.path
+        if path in {"/api/auth", "/api/favorites"} or path.startswith(
+            ("/api/auth/", "/api/favorites/"),
+        ):
+            headers["Cache-Control"] = "no-store"
+        elif _static_cache_needs_revalidation(path):
             headers["Cache-Control"] = "no-cache"
         return response
 
     app.include_router(router)
+    app.include_router(account_router)
 
     app.add_exception_handler(
         RouteInputContractError,
