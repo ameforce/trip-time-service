@@ -139,7 +139,7 @@ class _Payload(BaseModel):
 
 
 class _PasswordPayload(_Payload):
-    password: SecretStr = Field(min_length=15, max_length=128)
+    password: SecretStr = Field(min_length=10, max_length=128)
 
     @field_validator("password")
     @classmethod

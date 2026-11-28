@@ -43,11 +43,13 @@ def _credentials(username: str, password: str = _PASSWORD) -> dict[str, str]:
     return {"username": username, "password": password}
 
 
-def _sign_up(client: TestClient, username: str) -> dict[str, str]:
+def _sign_up(
+    client: TestClient, username: str, *, password: str = _PASSWORD
+) -> dict[str, str]:
     response = client.post(
         "/api/auth/register",
         headers=_MUTATION,
-        json=_credentials(username),
+        json=_credentials(username, password),
     )
     assert response.status_code == 201
     assert response.headers["cache-control"] == "no-store"
@@ -56,6 +58,83 @@ def _sign_up(client: TestClient, username: str) -> dict[str, str]:
     assert isinstance(snapshot["user"]["id"], str)
     assert snapshot["user"]["id"]
     return snapshot["user"]
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        pytest.param(" \U0001f511abcdefg ", id="minimum-10-with-spaces"),
+        pytest.param("legacy-password", id="previous-minimum-15"),
+        pytest.param(" " + "\U0001f511" * 126 + " ", id="maximum-128-non-bmp"),
+    ],
+)
+def test_password_boundaries_are_consistent_across_account_routes(
+    database_path, password: str
+) -> None:
+    owner, new_device = _client(), _client()
+    user = _sign_up(owner, "password_boundaries", password=password)
+
+    stripped = password.strip()
+    if stripped != password:
+        response = new_device.post(
+            "/api/auth/login",
+            headers=_MUTATION,
+            json=_credentials(user["username"], stripped),
+        )
+        assert response.status_code == (422 if len(stripped) < 10 else 401)
+
+    signed_in = new_device.post(
+        "/api/auth/login",
+        headers=_MUTATION,
+        json=_credentials(user["username"], password),
+    )
+    assert signed_in.status_code == 200
+    assert signed_in.json()["user"] == user
+    removed = new_device.request(
+        "DELETE",
+        "/api/auth/account",
+        headers=_account_headers(user["id"]),
+        json={"password": password},
+    )
+    assert removed.status_code == 204
+    assert new_device.get("/api/auth/me").json() == _GUEST
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        pytest.param("\U0001f511" * 9, id="below-minimum-9"),
+        pytest.param("\U0001f511" * 129, id="above-maximum-129"),
+    ],
+)
+def test_password_boundaries_return_redacted_validation_errors(
+    database_path, password: str
+) -> None:
+    owner, guest = _client(), _client()
+    user = _sign_up(owner, "password_validation")
+    invalid_registration = guest.post(
+        "/api/auth/register",
+        headers=_MUTATION,
+        json=_credentials("boundary_signup", password),
+    )
+    invalid_login = guest.post(
+        "/api/auth/login",
+        headers=_MUTATION,
+        json=_credentials(user["username"], password),
+    )
+    invalid_deletion = owner.request(
+        "DELETE",
+        "/api/auth/account",
+        headers=_account_headers(user["id"]),
+        json={"password": password},
+    )
+    for response in (invalid_registration, invalid_login, invalid_deletion):
+        assert response.status_code == 422
+        assert response.json() == {"detail": "입력 내용을 확인해 주세요."}
+        assert response.headers["cache-control"] == "no-store"
+
+    assert guest.get("/api/auth/me").json() == _GUEST
+    assert owner.get("/api/auth/me").json()["user"] == user
 
 
 def _place(name: str, address: str = "정상 테스트 주소") -> dict[str, object]:
